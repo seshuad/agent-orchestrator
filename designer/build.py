@@ -17,6 +17,8 @@ KIND = {  # step kind -> (pill bg, pill text)
     "act": ("#E1F5EE", "#085041"),
     "record": ("#EFEAFB", "#5B3FA8"),
     "trigger": ("#EDEDE8", "#6B6B63"),
+    "parallel": ("#FBE9EF", "#8C2F55"),   # flow blocks share one color: they shape the run, they don't do work
+    "branch": ("#FBE9EF", "#8C2F55"),
 }
 
 ICON = {
@@ -31,6 +33,9 @@ ICON = {
     "down": '<path d="M12 5v14"></path><path d="M19 12l-7 7-7-7"></path>',
     "check": '<path d="M5 12l5 5L20 7"></path>',
     "lock": '<rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path>',
+    "parallel": '<path d="M12 3v5"></path><path d="M12 8L5 14v7"></path><path d="M12 8v13"></path><path d="M12 8l7 6v7"></path>',
+    "branch": '<path d="M12 3l9 9-9 9-9-9 9-9z"></path>',
+    "stop": '<circle cx="12" cy="12" r="9"></circle><rect x="9" y="9" width="6" height="6" rx="1"></rect>',
     "alert": '<path d="M12 3l10 18H2L12 3z"></path><path d="M12 10v5"></path><path d="M12 18v.5"></path>',
 }
 
@@ -48,6 +53,7 @@ def pill(kind, text=None):
 
 # ------------------------------------------------------------------ the workflow
 
+PARALLEL_NAME = "Read emails"
 READERS = [
     ("air", "Read airline emails", "Main.dc.html"),
     ("hotel", "Read hotel emails", None),
@@ -55,6 +61,7 @@ READERS = [
 ]
 STEPS = [  # (id, label, kind, icon, link)
     ("tidy", "Tidy up", "built-in", "layers", "Tidy.dc.html"),
+    ("branch", "Any trips found?", "branch", "branch", "Branch.dc.html"),
     ("verify", "Double-check bookings", "ask", "shield", "Verify.dc.html"),
     ("approve", "Approve trips", "approve", "person", "Approve.dc.html"),
     ("calendar", "Add to calendar", "act", "calendar", "Calendar.dc.html"),
@@ -82,6 +89,23 @@ def section_label(text):
             f'color: {FAINT}; padding: 0 4px">{text}</span>')
 
 
+def group_border(selected):
+    return f"1.5px solid {ACC}" if selected else "1.5px dashed #C9C9BF"
+
+
+def group_bg(selected):
+    return "#F4F7FB" if selected else "transparent"
+
+
+def group_label(selected, size, caption=None):
+    """Header of the Parallel group; clicking it opens the group's own settings."""
+    stroke, color = (ACC, INK) if selected else (FAINT, MUTED)
+    cap = f'<span style="font-size: 11px; color: {FAINT}">{caption}</span>' if caption else ""
+    return (f'<a href="Parallel.dc.html" style="display: flex; align-items: center; gap: 6px; padding: 0 2px 2px 2px; text-decoration: none">'
+            f'{icon("parallel", 14, stroke)}<span style="font-size: {size}px; font-weight: 700; color: {color}">{PARALLEL_NAME}</span>'
+            f'{pill("parallel")}{cap}</a>')
+
+
 def sidebar(selected):
     readers = "".join(side_row(label, "ask", "mail", sel_id == selected, href)
                       for sel_id, label, href in READERS)
@@ -94,8 +118,8 @@ def sidebar(selected):
         <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: {FAINT}">Steps</span>
         <button type="button" aria-label="Add step" style="width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: #FFFFFF; border: 1px solid #D8D8D0; border-radius: 6px; color: {MUTED}; cursor: pointer">{icon("plus", 14, "currentColor", 2)}</button>
       </div>
-      <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed #C9C9BF; border-radius: 10px">
-        <span style="font-size: 10.5px; font-weight: 600; color: {FAINT}">Run together</span>
+      <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px; border: {group_border(selected == "parallel")}; border-radius: 10px; background: {group_bg(selected == "parallel")}">
+        {group_label(selected == "parallel", 12)}
         {readers}
       </div>
       {steps}
@@ -145,22 +169,40 @@ def node(label, caption, kind, ico, selected, width=210):
         </div>'''
 
 
+def branch_node(label, caption, selected):
+    """A Branch node: the main path continues down, the other path exits to the side."""
+    return f'''<div style="position: relative">{node(label, caption, "branch", "branch", selected)}
+          <div style="position: absolute; left: 100%; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 6px; padding-left: 6px; white-space: nowrap">
+            <span style="width: 26px; border-top: 1.5px dashed #B7B7AC"></span>
+            <span style="font-size: 10.5px; color: {FAINT}">no trips</span>
+            <span style="display: flex; align-items: center; gap: 5px; padding: 4px 10px; background: #FFFFFF; border: 1px solid {LINE}; border-radius: 20px">{icon("stop", 13)}<span style="font-size: 11px; font-weight: 600; color: {MUTED}">End run</span></span>
+          </div>
+        </div>'''
+
+
 def flow(selected):
     captions = {"air": "Haiku · airline senders", "hotel": "Haiku · hotel senders", "portal": "Haiku · portal senders"}
     readers = "".join(node(label.replace(" emails", ""), captions[rid], "ask", "mail", rid == selected, 188)
                       for rid, label, _ in READERS)
-    step_caps = {"tidy": "no model", "verify": "Opus · cited emails only", "approve": "you, by email or web",
+    step_caps = {"tidy": "no model", "branch": "number of trips", "verify": "Opus · cited emails only", "approve": "you, by email or web",
                  "calendar": "create only"}
-    steps = f"\n        {arrow()}\n        ".join(node(label, step_caps[sid], kind, ico, sid == selected)
-                                                for sid, label, kind, ico, _ in STEPS)
+    steps = ""
+    for i, (sid, label, kind, ico, _) in enumerate(STEPS):
+        if i:
+            steps += f"\n        {arrow()}\n        "
+        if kind == "branch":
+            steps += branch_node(label, step_caps[sid], sid == selected)
+            steps += f'\n        <span style="font-size: 10.5px; color: {FAINT}">trips found</span>'
+        else:
+            steps += node(label, step_caps[sid], kind, ico, sid == selected)
     return f'''
     <div style="flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 28px; display: flex; flex-direction: column; align-items: center; gap: 7px; overflow: auto">
       {access_summary()}
       <div style="height: 6px"></div>
       <div style="padding: 7px 14px; background: #FFFFFF; border: 1px solid {LINE}; border-radius: 10px; display: flex; align-items: center; gap: 6px; opacity: 0.8">{icon("clock", 14)}<span style="font-size: 11.5px; font-weight: 600; color: {MUTED}">Every weekday · 7:00</span></div>
       {arrow()}
-      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 12px 12px 12px; border: 1.5px dashed #C9C9BF; border-radius: 12px">
-        <span style="font-size: 10.5px; font-weight: 600; color: {FAINT}">Run together · each sees only its own senders</span>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 12px 12px 12px; border: {group_border(selected == "parallel")}; border-radius: 12px; background: {group_bg(selected == "parallel")}">
+        {group_label(selected == "parallel", 12, "keep going if one fails")}
         <div style="display: flex; gap: 10px">{readers}</div>
       </div>
       <span style="font-size: 10.5px; color: {FAINT}">list of Booking</span>
@@ -172,13 +214,13 @@ def flow(selected):
 
 # ------------------------------------------------------------------ right-panel pieces
 
-def panel(inner):
+def panel(inner, save="Save step"):
     return f'''
     <div style="width: 400px; flex: none; box-sizing: border-box; padding: 20px 22px 18px 22px; background: #FFFFFF; border-left: 1px solid {LINE}; display: flex; flex-direction: column; gap: 14px; overflow-y: auto">
 {inner}
       <div style="margin-top: auto; display: flex; gap: 10px; padding-top: 6px">
         <button type="button" style="flex: 1; font: inherit; font-size: 13px; font-weight: 600; color: {INK}; background: #FFFFFF; border: 1px solid #D8D8D0; border-radius: 8px; padding: 9px 0; cursor: pointer">Run test</button>
-        <button type="button" style="flex: 1; font: inherit; font-size: 13px; font-weight: 600; color: #FFFFFF; background: {ACC}; border: none; border-radius: 8px; padding: 9px 0; cursor: pointer">Save step</button>
+        <button type="button" style="flex: 1; font: inherit; font-size: 13px; font-weight: 600; color: #FFFFFF; background: {ACC}; border: none; border-radius: 8px; padding: 9px 0; cursor: pointer">{save}</button>
       </div>
     </div>'''
 
@@ -200,6 +242,37 @@ def header(name, kind_selected, note):
         <div style="display: flex; gap: 6px">{btns}</div>
         <span style="font-size: 11.5px; color: #6B6B63; line-height: 1.45">{note}</span>
       </div>'''
+
+
+FLOW_BLOCKS = {  # kind -> one-line meaning, shown in the Add menu and on the block's panel
+    "parallel": "Run these steps at the same time.",
+    "branch": "Pick one path based on an earlier result.",
+}
+STEP_KINDS = {
+    "ask": "A model reads and extracts. It can never change anything.",
+    "built-in": "Fixed rules, no model: remove duplicates, filter, group.",
+    "approve": "A person decides before anything changes.",
+    "act": "Changes something outside the agent, e.g. creates events.",
+}
+
+
+def flow_header(name, kind, note):
+    return f'''
+      <div>
+        <label for="stepname" style="display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: {FAINT}; margin-bottom: 4px">Configure flow block</label>
+        <input id="stepname" type="text" value="{name}" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 17px; font-weight: 700; color: {INK}; padding: 4px 0; border: none; background: transparent">
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: #FDF5F8; border: 1px solid #F0D5DF; border-radius: 8px">
+        <span style="display: flex; align-items: center; gap: 7px">{icon(kind, 15, "#8C2F55")}{pill(kind, kind.capitalize())}<span style="font-size: 12.5px; font-weight: 600; color: {INK}">{FLOW_BLOCKS[kind]}</span></span>
+        <span style="font-size: 11.5px; color: #6B6B63; line-height: 1.45">{note}</span>
+      </div>'''
+
+
+def radio(name, rid, text, detail=None, checked=False):
+    det = f'<span style="display: block; font-size: 11px; color: {FAINT}; margin-top: 1px">{detail}</span>' if detail else ""
+    return (f'<div style="display: flex; align-items: flex-start; gap: 9px"><input id="{rid}" name="{name}" type="radio"{" checked" if checked else ""} '
+            f'style="margin: 2px 0 0 0; width: 15px; height: 15px; accent-color: #2F5D9F; flex: none">'
+            f'<label for="{rid}" style="font-size: 12.5px; color: {INK}; line-height: 1.4">{text}{det}</label></div>')
 
 
 def block(title, inner, last=False):
@@ -259,7 +332,7 @@ def record_ref(text):
 
 # ------------------------------------------------------------------ page shell
 
-def page(title, sidebar_sel, center, right):
+def page(title, sidebar_sel, center, right, overlay=""):
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -278,13 +351,13 @@ a:hover{{color:#1F3E63}}
 ::placeholder{{color:#8A8A80}}
 </style>
 </helmet>
-<div style="width: 1440px; height: 900px; box-sizing: border-box; display: flex; flex-direction: column; background: #F1F1EE; color: {INK}; overflow: hidden">
+<div style="position: relative; width: 1440px; height: 900px; box-sizing: border-box; display: flex; flex-direction: column; background: #F1F1EE; color: {INK}; overflow: hidden">
 {topbar()}
   <div style="flex: 1; min-height: 0; display: flex">
 {sidebar(sidebar_sel)}
 {center}
 {right}
-  </div>
+  </div>{overlay}
 </div>
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props='{{"accent":{{"editor":"color","default":"#2F5D9F"}},"$preview":{{"width":1440,"height":900}}}}'>
@@ -300,6 +373,84 @@ class Component extends DCLogic {{
 
 
 # ------------------------------------------------------------------ the screens
+
+def parallel():
+    inner = "".join(
+        f'<div style="display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF">'
+        f'{icon("mail", 15, MUTED)}<span style="flex: 1; font-size: 12.5px; color: {INK}">{label}</span>{pill("ask")}</div>'
+        for _, label, _ in READERS)
+    right = panel(
+        flow_header(PARALLEL_NAME, "parallel", "Each step inside still has its own connection and limits. None of them sees another&#39;s work.")
+        + block("Steps in this group", f'<div style="display: flex; flex-direction: column; gap: 6px">{inner}</div>'
+                + f'<button type="button" style="align-self: flex-start; display: flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 600; color: {ACC}; background: none; border: none; padding: 2px 0; cursor: pointer">{icon("plus", 13, "currentColor", 2)}Add a step to this group</button>')
+        + block("If one step fails",
+                radio("fail", "f1", "Keep going with the others", "Tidy up is told which step failed, so an empty result isn&#39;t mistaken for no bookings", checked=True)
+                + radio("fail", "f2", "Stop the whole run"))
+        + block("Next steps receive", record_ref("One list of <strong>Booking</strong>, from all three steps together"))
+        + block("Checked by the service", guarantees([
+            "The group finishes when every step inside has finished or failed.",
+            "Every step inside returns the same record type, so their results can be combined.",
+        ]), last=True), save="Save block")
+    return page(PARALLEL_NAME, "parallel", flow("parallel"), right)
+
+
+def branch():
+    paths = "".join(
+        f'<div style="display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF">'
+        f'<div style="display: flex; align-items: center; gap: 9px">'
+        f'<span style="width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #EDEDE8; font-size: 11px; font-weight: 700; color: {MUTED}">{i}</span>'
+        f'<span style="flex: 1; font-size: 12.5px; font-weight: 600; color: {INK}">{name}</span></div>'
+        f'<div style="display: flex; flex-direction: column; gap: 5px; padding-left: 29px">{cond}'
+        f'<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: {MUTED}">then go to {to}</span></div></div>'
+        for i, (name, cond, to) in enumerate([
+            ("No trips",
+             '<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap">'
+             f'<span style="font-size: 12px; color: {MUTED}">when</span>'
+             f'<select aria-label="Field" style="font: inherit; font-size: 12px; padding: 5px 6px; border: 1px solid {LINE}; border-radius: 6px; background: #FCFCFA; color: {INK}"><option>Tidy up · number of trips</option><option>Tidy up · trips with notes</option></select>'
+             f'<select aria-label="Comparison" style="font: inherit; font-size: 12px; padding: 5px 6px; border: 1px solid {LINE}; border-radius: 6px; background: #FCFCFA; color: {INK}"><option>is</option><option>is more than</option><option>is less than</option></select>'
+             f'<input aria-label="Value" type="text" value="0" style="width: 40px; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid {LINE}; border-radius: 6px; background: #FCFCFA"></div>',
+             f'<span style="display: flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid {LINE}; border-radius: 20px">{icon("stop", 12)}<strong style="font-size: 11.5px; color: {INK}">End run</strong></span>'),
+            ("Otherwise", "",
+             f'<strong style="font-size: 12px; color: {INK}">Double-check bookings</strong>'),
+        ], 1))
+    right = panel(
+        flow_header("Any trips found?", "branch", "Paths are checked in order and the first match runs. No model decides the path.")
+        + block("Paths, in order", f'<div style="display: flex; flex-direction: column; gap: 6px">{paths}</div>'
+                + f'<button type="button" style="align-self: flex-start; display: flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; font-weight: 600; color: {ACC}; background: none; border: none; padding: 2px 0; cursor: pointer">{icon("plus", 13, "currentColor", 2)}Add a path</button>')
+        + block("When the run ends here",
+                checkbox("b1", "Record it in run history as finished, with nothing to approve")
+                + checkbox("b2", "Email me", "Off: a quiet morning needs no message", checked=False))
+        + block("Checked by the service", guarantees([
+            "Conditions compare fields from earlier results, never free text a model wrote.",
+            "There is always an Otherwise path, so every run goes somewhere.",
+        ]), last=True), save="Save block")
+    return page("Any trips found?", "branch", flow("branch"), right)
+
+
+def add_menu():
+    def item(kind, text):
+        ico = {"ask": "mail", "built-in": "layers", "approve": "person", "act": "calendar"}.get(kind, kind)
+        return (f'<div style="display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 8px">'
+                f'<span style="padding-top: 1px">{icon(ico, 16, MUTED)}</span>'
+                f'<span style="flex: 1; display: flex; flex-direction: column; gap: 2px"><span style="display: flex; align-items: center; gap: 6px">'
+                f'<span style="font-size: 13px; font-weight: 600; color: {KIND[kind][1]}">{kind.capitalize() if kind != "built-in" else "Built-in"}</span></span>'
+                f'<span style="font-size: 11.5px; color: #6B6B63; line-height: 1.4">{text}</span></span></div>')
+    menu = f'''
+  <div role="menu" aria-label="Add" style="position: absolute; left: 236px; top: 128px; width: 330px; box-sizing: border-box; padding: 8px; background: #FFFFFF; border: 1px solid {LINE}; border-radius: 12px; box-shadow: 0 12px 32px rgba(31,36,48,0.16); display: flex; flex-direction: column; gap: 2px">
+    <div style="padding: 6px 10px 2px 10px">{section_label("Steps")}</div>
+    {"".join(item(k, t) for k, t in STEP_KINDS.items())}
+    <div style="margin: 6px 10px; border-top: 1px solid #EDEDE8"></div>
+    <div style="padding: 2px 10px">{section_label("Flow")}</div>
+    {"".join(item(k, t) for k, t in FLOW_BLOCKS.items())}
+  </div>'''
+    right = f'''
+    <div style="width: 400px; flex: none; box-sizing: border-box; padding: 20px 22px; background: #FFFFFF; border-left: 1px solid {LINE}; display: flex; flex-direction: column; gap: 10px">
+      <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: {FAINT}">Add</span>
+      <p style="margin: 0; font-size: 12.5px; line-height: 1.5; color: {MUTED}; text-wrap: pretty">A <strong style="color: {INK}">step</strong> does one piece of work. A <strong style="color: {INK}">flow block</strong> holds steps and decides how they run: all at once (Parallel) or one path of several (Branch).</p>
+      <p style="margin: 0; font-size: 12.5px; line-height: 1.5; color: {MUTED}; text-wrap: pretty">New items are added after the selected step. Drag to move them.</p>
+    </div>'''
+    return page("Add a step or flow block", None, flow(None), right, menu)
+
 
 def read_airlines():
     right = panel(
@@ -486,8 +637,9 @@ def booking():
 
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
-    for name, fn in [("Main", read_airlines), ("Tidy", tidy), ("Verify", verify), ("Approve", approve),
-                     ("Calendar", calendar), ("Booking", booking)]:
+    for name, fn in [("Parallel", parallel), ("Main", read_airlines), ("Tidy", tidy), ("Branch", branch),
+                     ("Verify", verify), ("Approve", approve), ("Calendar", calendar), ("Booking", booking),
+                     ("AddStep", add_menu)]:
         html = fn()
         (OUT / f"{name}.dc.html").write_text(html)
         print(f"{name}.dc.html  {len(html):,} bytes")

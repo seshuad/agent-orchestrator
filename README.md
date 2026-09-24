@@ -21,12 +21,17 @@ Screens, in run order:
 
 | Screen | Kind of step | travel-sync equivalent |
 |---|---|---|
-| Read airline / hotel / portal emails (run together) | Ask | `make_reader` in `agents.py`, one per sender scope |
+| Read emails | Parallel (flow block) | Conductor `parallel:` group, `failure_mode: continue_on_error` |
+| Read airline / hotel / portal emails (inside the group) | Ask | `make_reader` in `agents.py`, one per sender scope |
 | Tidy up | Built-in | `reconcile.py` |
+| Any trips found? | Branch (flow block) | reconcile's `routes:` to `$end` when `trip_count == 0` |
 | Double-check bookings | Ask | `make_verifier` in `agents.py` |
 | Approve trips | Approve | CLI approval / Conductor `human_gate` |
 | Add to calendar | Act | `writer.py` + `calendar.py` |
 | Booking (record type) | Data | `Booking` in `models.py` |
+
+Steps (Ask, Built-in, Approve, Act) do one piece of work; flow blocks (Parallel, Branch)
+hold steps and decide how they run. `AddStep.dc.html` shows the Add menu with both groups.
 
 `FreeForm.dc.html` is an earlier exploration of a model-chosen step, kept for
 reference (a v2 idea in the design doc). It is hand-made; `build.py` leaves it alone.
