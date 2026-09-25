@@ -1,5 +1,6 @@
 // Run an agent now: pick the version, run options, (for an email trigger) the email, and how model steps run.
 import { useContext, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, type AgentDetail, type Connection, type Run } from '../api'
 import { Block, Dialog, Guarantees, Segmented, Select, SessionContext } from '../ui'
 
@@ -42,6 +43,7 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
   const labels = Object.fromEntries(detail.meta.versions.map((v) => [String(v.version), `v${v.version} · published ${new Date(v.published_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}`]))
   labels.draft = 'Draft: a test run of unpublished changes'
   const approves = (d.steps ?? []).some((s: any) => s.kind === 'approve')
+  const mcp = Object.values(d.connections ?? {}).some((c: any) => c.service === 'mcp')
   const start = async () => {
     setBusy(true); setError(null)
     try {
@@ -79,7 +81,12 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
           return (
             <>
               {notSignedIn.length > 0
-                ? <span className="field-error">Sign in first, on Connections: {notSignedIn.map((c) => acct(c)?.label ?? c.account ?? `a ${c.service} connection`).join(', ')}.</span>
+                ? <span className="field-error">Sign in first: {notSignedIn.map((c, i) => {
+                    const a = acct(c)
+                    const how = !a ? 'pick an account in the agent\u2019s Connections' : a.sign_in === 'token' ? 'add its GitHub token on its card'
+                      : a.sign_in === 'shared' ? 'an admin adds the connector\u2019s token' : 'sign it in on its card'
+                    return <span key={i}>{i > 0 && '; '}<Link to="/connections">{a?.label ?? c.account ?? `a ${c.service} connection`}</Link> ({how})</span>
+                  })}. Or run on sample data.</span>
                 : <span className="muted">{live.map((c) => `${c.service === 'github' ? 'GitHub steps read as' : 'Gmail steps read'} ${acct(c)?.signed_in_as}`).join('; ')}, read only, within each step's limits.</span>}
               <span className="faint">Sheets and Calendar steps still use sample data, so nothing is written to your real accounts.</span>
             </>
@@ -98,7 +105,9 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
         <Guarantees items={[
           ...(approves ? ['You’ll be asked to approve before anything outside the agent changes.'] : []),
           `Stops at $${Number(d.limits?.budget_usd ?? 0).toFixed(2)}${d.limits?.timeout_minutes ? ` or ${d.limits.timeout_minutes} minutes` : ''}, whichever comes first.`,
-          source === 'live' ? 'Reads your real Gmail and GitHub (read only). Sheets and Calendar stay on sample data.' : `Runs on ${detail.meta.sample_set ?? 'sample data'}: nothing touches a real account.`,
+          source === 'live' ? 'Reads your real Gmail and GitHub (read only). Sheets and Calendar stay on sample data.'
+            : `Runs on ${detail.meta.sample_set ?? 'sample data'}${mcp ? '' : ': nothing touches a real account'}.`,
+          ...(mcp ? ['MCP connectors have no sample data: their steps always reach the real system. Act tools still follow the dry run.'] : []),
           'Every step and connection call is recorded in the run’s log.',
         ]} />
       </Block>

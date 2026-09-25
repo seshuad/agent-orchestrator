@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Agent Orchestration Service prototype: agent format, compiler to Conductor YAML, and a local run environment."
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=1",
     "cel-python>=0.4",
     "fastapi>=0.141.1",
     "google-api-python-client>=2.200.0",

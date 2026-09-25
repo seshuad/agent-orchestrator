@@ -64,13 +64,22 @@ SEED_LINKS = {  # the example agents' connections -> the seeded accounts
 }
 
 
-def allowed_actions(conn: dict[str, Any]) -> set[str]:
-    perms = SERVICES.get(conn["service"], {}).get("permissions", {})
+def _perms(conn: dict[str, Any], connectors: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
+    from .connectors import catalog
+    connector = (connectors or {}).get(conn.get("connector") or "")
+    if conn["service"] == "mcp" or connector is not None:
+        return catalog(conn["service"], connector)["permissions"]
+    return SERVICES.get(conn["service"], {}).get("permissions", {})
+
+
+def allowed_actions(conn: dict[str, Any], connectors: dict[str, dict[str, Any]] | None = None) -> set[str]:
+    """What steps may do with an account: its permissions, within what its connector's admin offers."""
+    perms = _perms(conn, connectors)
     return {a for p in conn.get("permissions", []) for a in perms.get(p, {}).get("actions", [])}
 
 
-def permission_text(conn: dict[str, Any]) -> str:
-    perms = SERVICES.get(conn["service"], {}).get("permissions", {})
+def permission_text(conn: dict[str, Any], connectors: dict[str, dict[str, Any]] | None = None) -> str:
+    perms = _perms(conn, connectors)
     return ", ".join(perms[p]["label"] for p in conn.get("permissions", []) if p in perms).lower() or "nothing"
 
 
@@ -87,8 +96,10 @@ def steps_using(raw: dict[str, Any], cid: str) -> list[tuple[str, dict[str, Any]
     return out
 
 
-def check_accounts(raw: dict[str, Any], accounts: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    """An agent's connections point at real accounts of the right service, and its steps stay within their permissions."""
+def check_accounts(raw: dict[str, Any], accounts: dict[str, dict[str, Any]],
+                   connectors: dict[str, dict[str, Any]] | None = None) -> list[dict[str, str]]:
+    """An agent's connections point at real accounts of the right service, and its steps stay within their permissions.
+    For an MCP account, Ask steps may use only its read tools and Act steps only its act tools."""
     errors = []
     for cid, conn in (raw.get("connections") or {}).items():
         account_id = conn.get("account")
@@ -100,11 +111,39 @@ def check_accounts(raw: dict[str, Any], accounts: dict[str, dict[str, Any]]) -> 
             errors.append({"path": f"connections.{cid}.account", "message": f"There's no connection {account_id!r} in this workspace any more."})
             continue
         if account["service"] != conn.get("service"):
-            errors.append({"path": f"connections.{cid}.account", "message": f"{account['label']} is {SERVICES[account['service']]['name']}, not {conn.get('service')}."})
+            what = SERVICES.get(account["service"], {}).get("name", "an MCP connector")
+            errors.append({"path": f"connections.{cid}.account", "message": f"{account['label']} is {what}, not {conn.get('service')}."})
             continue
-        allowed = allowed_actions(account)
+        allowed = allowed_actions(account, connectors)
+        connector = (connectors or {}).get(account.get("connector") or "")
         for path, step in steps_using(raw, cid):
             for action in (step.get("uses") or {}).get("actions", []):
+                if account["service"] == "mcp" and connector is not None:
+                    from .connectors import tool_of
+                    tool = tool_of(connector, action)
+                    treat = (tool or {}).get("treat")
+                    if tool is None or treat == "off":
+                        builtin = action in {"search", "open", "read", "append_row", "create_event"}
+                        errors.append({"path": f"{path}.uses.actions", "message": (
+                            f"{action!r} is a built-in action, but this connection now uses the {connector['name']} MCP connector, "
+                            f"whose actions are its tools. Pick this step's tools again." if builtin and tool is None
+                            else f"{connector['name']} doesn't offer {action}" + (": an admin marks it Read or Act under Connectors." if tool else "."))})
+                        continue
+                    if step.get("kind") == "ask" and treat != "read":
+                        errors.append({"path": f"{path}.uses.actions", "message": f"{action} changes things in {connector['name']}: "
+                                       "only Act steps can use it."})
+                        continue
+                    if step.get("kind") == "act" and treat != "act":
+                        errors.append({"path": f"{path}.uses.actions", "message": f"{action} only reads: use it in an Ask step."})
+                        continue
+                    if (tool or {}).get("changed"):
+                        errors.append({"path": f"{path}.uses.actions", "message": f"{action} changed on the server since an admin "
+                                       "approved it. An admin reviews it under Connectors."})
+                        continue
+                    for arg in ((step.get("uses") or {}).get("arg_limits") or {}):
+                        if arg not in (tool or {}).get("limits", []) and not any(arg in (tool_of(connector, a) or {}).get("limits", [])
+                                                                                for a in (step.get("uses") or {}).get("actions", [])):
+                            errors.append({"path": f"{path}.uses.arg_limits", "message": f"{connector['name']} doesn't let steps limit {arg!r}."})
                 if action not in allowed:
                     errors.append({"path": f"{path}.uses.actions",
                                    "message": f"{account['label']} isn't allowed to {action.replace('_', ' ')}. Add that permission to "

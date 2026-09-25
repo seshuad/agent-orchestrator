@@ -251,6 +251,32 @@ def add_rows(sheet: str, row: dict, dry_run: bool, data: dict) -> dict:
     return {"added": added, "would_add": would}
 
 
+def call_tools(tool: str, arguments: dict, dry_run: bool, data: dict) -> dict:
+    """An MCP connector's act tool, once per record, through the gateway's checks. A dry run lists the calls it would make.
+    A refused or failed call stops the step: nothing after it is called."""
+    import asyncio
+    conn = gateway.connect("mcp")
+    calls = [{arg: _fill_value(tpl, record) if isinstance(tpl, str) else tpl for arg, tpl in arguments.items()}
+             for record in data.get("records", [])]
+    if dry_run:
+        return {"called": [], "would_call": [{"tool": tool, "arguments": c} for c in calls]}
+
+    async def run() -> list[dict]:
+        from . import upstream
+        done = []
+        async with conn.session() as session:
+            listed = {t.name: upstream.tool_dict(t) for t in (await session.list_tools()).tools}
+            usable = conn.usable(listed)
+            for args in calls:
+                text, error = await gateway.mcp_call(conn, session, usable, tool, args)
+                if error:
+                    raise gateway.Refused(f"{tool} failed: {text[:300]}")
+                done.append({"tool": tool, "arguments": args, "result": text[:500]})
+        return done
+
+    return {"called": asyncio.run(run()), "would_call": []}
+
+
 # ------------------------------------------------------------------ debugging
 
 def show(data: dict) -> dict:
@@ -262,7 +288,7 @@ def show(data: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -273,6 +299,8 @@ def main() -> None:
     p.add_argument("--match-fields", default="", help="create-events: fields that identify an existing event.")
     p.add_argument("--dry-run", choices=["true", "false"], default="true")
     p.add_argument("--row", help="add-rows: column -> template over each record, as JSON.")
+    p.add_argument("--tool", help="call-tools: the MCP connector's act tool.")
+    p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
     a = p.parse_args()
     data = json.loads(sys.stdin.read() or "{}")
 
@@ -290,6 +318,11 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation == "call-tools":
+        try:
+            out = call_tools(a.tool, json.loads(a.arguments or "{}"), a.dry_run == "true", data)
+        except gateway.Refused as exc:
+            sys.exit(f"Refused: {exc}")
     else:
         out = create_events(a.calendar, json.loads(a.templates), [f for f in a.match_fields.split(",") if f],
                             a.dry_run == "true", data)

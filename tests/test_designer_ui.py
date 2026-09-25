@@ -131,3 +131,50 @@ def test_deleting_an_agent_from_home_and_the_editor(page, base):
     page.wait_for_url(base + "/")
     page.wait_for_selector("text=travel-sync")
     assert page.locator("text=delete-me").count() == 0 and not page.errors
+
+
+def test_describe_it_drafts_an_agent_with_claude(page, base, monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_server import FakeClaude, draft_answer
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    step = """  - id: read_leaks
+    kind: ask
+    name: Read leak alerts
+    model: claude-sonnet-5
+    uses: {connection: gmail, actions: [search, open], senders: [northpeakwater.com]}
+    instructions: Copy each leak exactly.
+    task: Extract each leak.
+    returns: {leaks: {type: list of Leak}}"""
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: FakeClaude([draft_answer(step)]))
+    page.goto(base + "/new")
+    page.click("button:has-text('Describe it')")
+    assert page.input_value("select[aria-label='Test data']") == ""                  # Claude picks unless you do
+    page.fill("textarea[aria-label='What should it do?']", "Log every water leak alert email.")
+    page.click("button:has-text('Draft with Claude')")
+    page.wait_for_url("**/agents/leak-log", timeout=20000)
+    page.wait_for_selector("text=Drafted by Claude")
+    assert page.locator("text=The Leaks sheet already exists.").count() == 1 and not page.errors
+
+
+def test_help_writing_instructions_and_task(page, base, monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_server import FakeClaude
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: FakeClaude(["<text>Return the invoice in the email.</text>"]))
+    page.goto(base + "/agents/invoice-check")
+    page.click(".side-row:has-text('Read invoice')")
+    page.click("button[aria-label='Help with instructions']")
+    template = page.locator(".help-template").inner_text()
+    assert "an Invoice (vendor, invoice_number" in template and "the email that started the run" in template
+    before = page.input_value("textarea[aria-label='Task']")
+    page.click("button[aria-label='Write task with AI']")
+    page.wait_for_selector("text=Written by Claude")
+    assert page.input_value("textarea[aria-label='Task']") == "Return the invoice in the email."
+    page.click("button:has-text('Undo')")
+    assert page.input_value("textarea[aria-label='Task']") == before and not page.errors

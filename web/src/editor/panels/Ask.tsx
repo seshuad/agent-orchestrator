@@ -1,7 +1,8 @@
 // Ask step: a model reads and extracts. It can never change anything.
 import { Area, Block, Check, FieldErrors, Select, Text } from '../../ui'
 import { MODELS, MODEL_LABEL } from '../model'
-import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useStep } from './common'
+import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useMcpTools, useStep } from './common'
+import { WritingHelp } from './WritingHelp'
 
 export default function Ask() {
   const { step, set, draft, p, inside, block } = useStep()
@@ -9,6 +10,7 @@ export default function Ask() {
   const shared = Object.keys(draft.shared_instructions ?? {})
   const usesShared = typeof step.instructions === 'object' && step.instructions !== null
   const others = (block?.steps ?? []).filter((s: any) => s.id !== step.id)
+  const mcpTools = useMcpTools(service === 'mcp' ? step.uses?.connection : undefined)
   return (
     <>
       <StepHeader note={inside ? 'Runs when the planner picks it and what it needs exists.' : undefined} />
@@ -20,7 +22,9 @@ export default function Ask() {
         <TakesEditor />
       </Block>
       <Block title="Can use">
-        <UsesEditor actions={service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read'] : ['search', 'open']}
+        <UsesEditor mcpTools={service === 'mcp' ? mcpTools : undefined}
+          actions={service === 'mcp' ? mcpTools.filter((t) => t.treat === 'read').map((t) => t.name)
+            : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read'] : ['search', 'open']}
           limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
             : service === 'github' ? ['repos', 'lookback_days'] : []} />
         <span className="faint">Ask steps can only read: send, delete and change actions aren't offered.</span>
@@ -33,9 +37,13 @@ export default function Ask() {
         {usesShared
           ? <><span className="muted">Shared: {draft.shared_instructions?.[step.instructions.shared]?.slice(0, 140)}…</span>
               <Area value={step.instructions.extra ?? ''} onChange={(v) => set(['instructions', 'extra'], v || undefined)} rows={2} label="Extra instructions" /></>
-          : <Area value={step.instructions} onChange={(v) => set(['instructions'], v)} rows={4} path={p('instructions')} label="Instructions" />}
+          : <><Area value={step.instructions} onChange={(v) => set(['instructions'], v)} rows={4} path={p('instructions')} label="Instructions" />
+              <WritingHelp field="instructions" value={step.instructions ?? ''} onChange={(v) => set(['instructions'], v)} /></>}
       </Block>
-      <Block title="Task"><Area value={step.task} onChange={(v) => set(['task'], v)} rows={2} path={p('task')} label="Task" /></Block>
+      <Block title="Task">
+        <Area value={step.task} onChange={(v) => set(['task'], v)} rows={2} path={p('task')} label="Task" />
+        <WritingHelp field="task" value={step.task ?? ''} onChange={(v) => set(['task'], v)} />
+      </Block>
       <Block title="Returns"><FieldsEditor fields={step.returns ?? {}} path={[...p().split('.'), 'returns']} onChange={(f) => set(['returns'], f)} /></Block>
       {inside && (
         <Block title="Run again">

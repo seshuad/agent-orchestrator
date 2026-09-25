@@ -67,6 +67,7 @@ ICON = {
     "alert": '<path d="M12 3l10 18H2L12 3z"></path><path d="M12 10v5"></path><path d="M12 18v.01"></path>',
     "search": '<circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path>',
     "edit": '<path d="M4 20h4l11-11-4-4L4 16v4z"></path>',
+    "code": '<path d="M8 8l-5 4 5 4"></path><path d="M16 8l5 4-5 4"></path>',
     "grip": '<circle cx="9" cy="6" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="18" r="1"></circle>',
 }
 
@@ -1306,7 +1307,8 @@ def avatar(initials, size=28, bg=ACC):
             f'border-radius: 50%; background: {bg}; color: #FFFFFF; font-size: {round(size * 0.38)}px; font-weight: 700">{initials}</span>')
 
 
-def app_bar(active):
+def app_bar(active, person=None):
+    name, initials, role, email = person or (USER, "AR", USER_ROLE, "alex@northpeak.co")
     tabs = "".join(
         f'<a href="{href}" style="display: flex; align-items: center; gap: 6px; height: 64px; box-sizing: border-box; padding: 0 2px; '
         f'font-size: 13.5px; font-weight: 600; text-decoration: none; color: {INK if name == active else "#6B6B63"}; '
@@ -1330,8 +1332,8 @@ def app_bar(active):
       <nav style="display: flex; align-items: center; gap: 22px; margin-left: 8px">{tabs}</nav>
     </div>
     <button type="button" aria-label="Account" style="display: flex; align-items: center; gap: 10px; font: inherit; background: none; border: none; cursor: pointer; padding: 0">
-      {avatar("AR", 30)}
-      <span style="display: flex; flex-direction: column; align-items: flex-start"><span style="font-size: 13px; font-weight: 600; color: {INK}">{USER}</span><span style="font-size: 11px; color: {FAINT}">{USER_ROLE} · alex@northpeak.co</span></span>
+      {avatar(initials, 30, ACC if initials == "AR" else "#6E7F99")}
+      <span style="display: flex; flex-direction: column; align-items: flex-start"><span style="font-size: 13px; font-weight: 600; color: {INK}">{name}</span><span style="font-size: 11px; color: {FAINT}">{role} · {email}</span></span>
       {icon("chev", 13, FAINT, 2)}
     </button>
   </div>'''
@@ -1611,6 +1613,232 @@ def run_failed_page():
     return page("travel-sync run failed", body, "", bar=app_bar("Agents"))
 
 
+
+# ------------------------------------------------------------------ connectors: set up by a workspace admin, used by builders
+
+ADMIN = ("Priya Shah", "PS", "Admin", "priya@northpeak.co")
+
+
+def text_field(label, value, hint=None, mono=False, secret=False, action=None):
+    """A labelled one-line setting; secrets show only that they are set."""
+    style = f"font-family: {MONO}; font-size: 11.5px" if mono or secret else "font-size: 12.5px"
+    shown = "•••••••••••••••• set Sep 24 by Priya Shah" if secret else value
+    act = (f'<button type="button" style="font: inherit; font-size: 11.5px; font-weight: 600; color: {ACC}; background: none; border: none; '
+           f'cursor: pointer; flex: none">{action}</button>') if action else ""
+    return (f'<div style="display: flex; flex-direction: column; gap: 3px"><span style="font-size: 11.5px; color: {MUTED}">{label}</span>'
+            f'<div style="display: flex; align-items: center; gap: 8px"><input aria-label="{label}" type="text" value="{shown}" '
+            f'style="flex: 1; min-width: 0; box-sizing: border-box; font: inherit; {style}; padding: 6px 9px; border: 1px solid {LINE}; '
+            f'border-radius: 6px; background: {"#F4F4F0" if secret else "#FCFCFA"}; color: {FAINT if secret else INK}">{act}</div>'
+            + (f'<span style="font-size: 11px; color: {FAINT}; line-height: 1.4">{hint}</span>' if hint else "") + "</div>")
+
+
+def status_dot(state):
+    color, text = {"ready": ("#2E8B57", "Ready"), "attention": ("#C2553A", "Needs attention"), "setup": ("#B7B7AC", "Not set up")}[state]
+    return (f'<span style="display: inline-flex; align-items: center; gap: 5px; flex: none"><span style="width: 7px; height: 7px; border-radius: 50%; '
+            f'background: {color}"></span><span style="font-size: 11px; font-weight: 600; color: {color}">{text}</span></span>')
+
+
+def conn_tabs(active):
+    return f'<div style="display: flex; gap: 18px; border-bottom: 1px solid {LINE}">' + "".join(
+        f'<a href="{href}" style="padding: 0 2px 8px 2px; font-size: 13px; font-weight: 600; text-decoration: none; '
+        f'color: {INK if t == active else "#6B6B63"}; border-bottom: 2px solid {ACC if t == active else "transparent"}">{t}</a>'
+        for t, href in [("Accounts", "ConnectAccount.dc.html"), ("Connectors", "Connectors.dc.html")]) + "</div>"
+
+
+def dialog_page(body_html):
+    return (f'<div style="flex: 1; min-width: 0; box-sizing: border-box; padding: 22px 28px; display: flex; flex-direction: column; '
+            f'gap: 14px; overflow: auto">{body_html}</div>')
+
+
+def page_head(title, text, back=None, action=None):
+    back_link = f'<a href="{back[1]}" style="font-size: 12px; color: {FAINT}; text-decoration: none">← {back[0]}</a>' if back else ""
+    btn = (f'<button type="button" style="display: flex; align-items: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 600; '
+           f'color: #FFFFFF; background: {ACC}; border: none; border-radius: 8px; padding: 9px 14px; cursor: pointer; flex: none">'
+           f'{icon("plus", 14, "#FFFFFF", 2.2)}{action}</button>') if action else ""
+    para = (f'<p style="margin: 0; font-size: 13px; color: {MUTED}; line-height: 1.5; max-width: 700px">{text}</p>') if text else ""
+    return (f'<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 20px">'
+            f'<div style="display: flex; flex-direction: column; gap: 4px">{back_link}'
+            f'<h1 style="margin: 0; font-size: 22px; font-weight: 700">{title}</h1>{para}</div>{btn}</div>')
+
+
+CONNECTORS = [  # (icon, name, what it reaches, how it signs in, state, detail, accounts, selected)
+    ("mail", "Google Workspace", "Gmail · Google Sheets · Google Calendar", "OAuth client “Northpeak agents”", "ready",
+     "Tested Sep 24 by Priya Shah", "4 accounts", True),
+    ("code", "GitHub", "Issues · pull requests · files, read only", "A fine-grained token per account", "ready",
+     "Tested Sep 25 by Priya Shah", "1 account", False),
+    ("plug", "Linear", "MCP server · mcp.linear.app", "OAuth: each builder signs in", "ready",
+     "7 tools: 4 read, 1 act, 2 not offered", "2 accounts", False),
+    ("plug", "Tickets API", "MCP server · tickets.northpeak.internal", "One shared token", "attention",
+     "Test failed 2 h ago: 401 Unauthorized. Runs that use it are paused.", "1 account", False),
+]
+
+
+def connector_card(ico, name, reach, how, state, detail, accounts, selected):
+    extra = f"; border: 2px solid {ACC}; box-shadow: 0 4px 14px rgba(31,62,99,0.10)" if selected else ""
+    tone = "#9A2B2B" if state == "attention" else FAINT
+    return card(
+        f'<div style="display: flex; align-items: center; gap: 10px">{icon(ico, 20, MUTED)}'
+        f'<span style="flex: 1; display: flex; flex-direction: column"><span style="font-size: 14px; font-weight: 700">{name}</span>'
+        f'<span style="font-size: 11.5px; color: {FAINT}">{reach}</span></span>{status_dot(state)}</div>'
+        f'<div style="display: flex; align-items: center; gap: 8px">{icon("key", 13, MUTED)}<span style="font-size: 12px; color: {MUTED}">{how}</span></div>'
+        f'<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 7px; border-top: 1px solid #EDEDE8">'
+        f'<span style="font-size: 11.5px; color: {tone}">{detail}</span><span style="font-size: 11.5px; color: {MUTED}; flex: none">{accounts}</span></div>',
+        extra=extra)
+
+
+def connectors():
+    body = dialog_page(
+        page_head("Connections", "Connectors are the systems this workspace can reach. An admin sets each one up once: its app credentials, "
+                  "what builders may ask it for, and who may connect accounts. Builders then connect their own accounts under Accounts.",
+                  action="Add connector")
+        + conn_tabs("Connectors")
+        + '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start">'
+        + "".join(connector_card(*c) for c in CONNECTORS) + "</div>"
+        + card('<span style="font-size: 13px; font-weight: 700">Add a connector</span>'
+               + muted("Built-in types come with their actions and limits defined. Any other system can be added as an MCP server: "
+                       "you mark each of its tools as read, act or not offered.")
+               + chips(["Google Workspace", "GitHub", "Microsoft 365 (soon)", "Slack (soon)"], "MCP server…")))
+    products = "".join(
+        f'<div style="display: flex; flex-direction: column; gap: 5px; padding: 8px 0; border-top: 1px solid #EDEDE8">'
+        f'<span style="display: flex; align-items: center; gap: 7px">{icon(ico, 14, MUTED)}<span style="font-size: 12.5px; font-weight: 600">{name}</span></span>'
+        + "".join(checkbox(f"g-{name[:3].lower()}-{i}", label, scope, checked) for i, (label, scope, checked) in enumerate(perms)) + "</div>"
+        for ico, name, perms in [
+            ("mail", "Gmail", [("Read email", "gmail.readonly", True)]),
+            ("group", "Google Sheets", [("Read sheets", "spreadsheets.readonly", True), ("Add rows", "spreadsheets · Act steps only", True)]),
+            ("calendar", "Google Calendar", [("Create and see events", "calendar.events · Act steps only", True)]),
+        ]) + (f'<div style="display: flex; align-items: center; gap: 7px; padding-top: 7px; border-top: 1px solid #EDEDE8">{icon("lock", 13, FAINT)}'
+              + muted("Sending or deleting email, changing existing rows or events: not offered by this connector type.", 11) + "</div>")
+    right = side_panel(
+        title_input("Connector", "Google Workspace")
+        + block("OAuth client",
+                text_field("Client ID", "481220937118-4q7m…apps.googleusercontent.com", mono=True)
+                + text_field("Client secret", "", secret=True, action="Replace")
+                + text_field("Redirect URI: add it to the client in Google Cloud", "https://agents.northpeak.co/connect/google", mono=True, action="Copy")
+                + muted("Google Cloud Console → Credentials → OAuth client ID (Web application). The secret goes to the vault; nobody can read it back.", 11))
+        + block("What builders may ask for", muted("The most a connection can be granted. Builders pick from these when they connect an account.", 11)
+                + f'<div style="display: flex; flex-direction: column">{products}</div>')
+        + block("Who can connect accounts",
+                radio("who", "who-b", "Any builder", "Admins can remove a connection at any time.", True)
+                + radio("who", "who-a", "Only admins")
+                + row("Accounts in", chips(["northpeak.co"], "Add domain")))
+        + block("Test", guarantees(["Google accepted the client and its redirect URI (Sep 24, 20:41).",
+                                    "A test sign-in returned priya@northpeak.co with the scopes above."]), last=True),
+        button("Test sign-in") + button("Save connector", primary=True))
+    return page("Connectors", body, right, bar=app_bar("Connections", ADMIN))
+
+
+MCP_TOOLS = [  # (tool, what it does, treat as, arguments a step can limit)
+    ("list_issues", "List issues, filtered by team, project, state or assignee.", "Read", "team, project"),
+    ("get_issue", "One issue with its comments.", "Read", "team"),
+    ("search_issues", "Full-text search over issues.", "Read", "team"),
+    ("list_projects", "Projects and their status.", "Read", "team"),
+    ("create_issue", "Create an issue in a team.", "Act", "team, labels"),
+    ("update_issue", "Change an issue's state, assignee or fields.", "Not offered", ""),
+    ("delete_issue", "Delete an issue.", "Not offered", ""),
+]
+
+
+def mcp_setup():
+    looks = {"Read": "ask", "Act": "act"}
+    cols = "grid-template-columns: 140px 1fr 130px 120px"
+
+    def tool_row(name, what, treat, limits):
+        opts = "".join(f"<option{' selected' if o == treat else ''}>{o}</option>" for o in ["Read", "Act", "Not offered"])
+        return (f'<div style="display: grid; {cols}; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid #EDEDE8">'
+                f'<span style="font-size: 12px; font-family: {MONO}; font-weight: 600; color: {INK}">{name}</span>'
+                f'<span style="font-size: 12px; color: {MUTED}">{what}</span>'
+                f'<select aria-label="Treat {name} as" style="font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid {LINE}; border-radius: 6px; background: #FCFCFA">{opts}</select>'
+                f'<span style="font-size: 11.5px; font-family: {MONO}; color: {MUTED if limits else FAINT}">{limits or "—"}</span></div>')
+
+    heads = "".join(f'<span style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: {FAINT}">{h}</span>'
+                    for h in ["Tool", "What it does", "Treat as", "Steps can limit"])
+    body = dialog_page(
+        page_head("Add an MCP server", "Any system with an MCP server can become a connector. Its tools reach agents only through the gateway, "
+                  "and only the ones you mark here: read tools in Ask steps, act tools in Act steps.", back=("Connectors", "Connectors.dc.html"))
+        + card(row(numbered(1), '<strong style="font-size: 13px">Where it runs</strong>')
+               + segmented(["Remote: a URL", "Local: a command the service starts"], "Remote: a URL")
+               + text_field("Server URL", "https://mcp.linear.app/mcp", mono=True, action="Connect"))
+        + card(row(numbered(2), '<strong style="font-size: 13px">How it signs in</strong>')
+               + '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px">'
+               + radio("auth", "a-oauth", "OAuth: each builder signs in", "Found in the server's metadata; the client registers itself.", True)
+               + radio("auth", "a-bearer", "One shared token for the workspace", "Kept in the vault; every connection uses it.")
+               + radio("auth", "a-header", "A custom header, such as an API key")
+               + radio("auth", "a-none", "None", "Only for servers on a private network.") + "</div>")
+        + card(row(numbered(3), '<strong style="font-size: 13px">Tools</strong>', "7 found · listed Sep 25, 09:12")
+               + muted("New tools start as Not offered until an admin reviews them. Descriptions are pinned: if the server changes one, "
+                       "the connector pauses until an admin approves the change.", 11.5)
+               + f'<div style="display: grid; {cols}; gap: 10px; padding-top: 4px">{heads}</div>'
+               + "".join(tool_row(*t) for t in MCP_TOOLS), gap=6))
+    offered = "".join(pill(looks[t], f"{n} · {t.lower()}") for n, _, t, _ in MCP_TOOLS if t in looks)
+    right = side_panel(
+        title_input("Connector", "Linear")
+        + block("What steps will get", f'<div style="display: flex; flex-wrap: wrap; gap: 5px">{offered}</div>'
+                + muted("update_issue and delete_issue are not offered: no step can call them, whatever a builder ticks.", 11))
+        + block("How a step sees it",
+                action_row("list_issues", "Read")
+                + limit_box(row("team is one of", chips(["ENG", "OPS"], "Add")))
+                + action_row("get_issue", "Read")
+                + muted("A limit is an argument value the gateway checks on every call, set per step. Here the step sees only the ENG and OPS teams.", 11))
+        + block("Content from this connector", guarantees([
+            "Treated as untrusted: issue text is written by other people.",
+            "Every call goes through the gateway, within the step's limits, and is logged."]))
+        + block("Test", guarantees(["Connected over Streamable HTTP; OAuth metadata found.", "Listed 7 tools, signed in as priya@northpeak.co."]), last=True),
+        button("Test again") + button("Save connector", primary=True))
+    return page("Add an MCP server", body, right, bar=app_bar("Connections", ADMIN))
+
+
+def connect_account():
+    accounts = [  # (icon, name, connector, account, permissions)
+        ("mail", "Alex's Gmail", "Google Workspace", "alex.rivera@northpeak.co", "Read email"),
+        ("calendar", "Alex's calendar", "Google Workspace", "alex.rivera@northpeak.co", "Create and see events"),
+        ("group", "Finance sheets", "Google Workspace", "finance@northpeak.co", "Read sheets, add rows"),
+        ("code", "Northpeak GitHub", "GitHub", "northpeak-bot", "Read issues and files"),
+    ]
+    cards = "".join(
+        card(f'<div style="display: flex; align-items: center; gap: 10px">{icon(ico, 18, MUTED)}'
+             f'<span style="flex: 1; display: flex; flex-direction: column"><span style="font-size: 13.5px; font-weight: 700">{n}</span>'
+             f'<span style="font-size: 11.5px; color: {FAINT}">{c} · {a}</span></span>{pill("published", p)}</div>')
+        for ico, n, c, a, p in accounts)
+    body = dialog_page(page_head("Connections", "", action="Connect an account") + conn_tabs("Accounts")
+                       + f'<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px">{cards}</div>')
+
+    def tile(ico, name, state, selected=False):
+        look = f"border: 2px solid {ACC}; background: #EEF3F9" if selected else f"border: 1px solid {LINE}; background: #FFFFFF"
+        return (f'<button type="button"{" disabled" if state != "ready" else ""} style="flex: 1; display: flex; flex-direction: column; align-items: flex-start; '
+                f'gap: 6px; font: inherit; padding: 10px 12px; border-radius: 10px; {look}; cursor: pointer; opacity: {0.5 if state != "ready" else 1}">'
+                f'{icon(ico, 18, ACC if selected else MUTED)}<strong style="font-size: 12.5px; color: {INK}">{name}</strong>{status_dot(state)}</button>')
+
+    signed_in = (f'<div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; background: #F3F8F4; '
+                 f'border: 1px solid #D5E7DA; border-radius: 8px"><span style="display: flex; flex-direction: column">'
+                 f'<strong style="font-size: 12.5px; color: #1F4D33">Signed in to Linear as alex.rivera@northpeak.co</strong>'
+                 f'<span style="font-size: 11px; color: {FAINT}">Reported by Linear, not typed, so the account name is always right.</span></span>'
+                 f'<button type="button" style="font: inherit; font-size: 11.5px; font-weight: 600; color: {ACC}; background: none; border: none; cursor: pointer">Use another</button></div>')
+    name_box = (f'<input aria-label="Name" type="text" value="Alex&#39;s Linear" style="font: inherit; font-size: 12.5px; padding: 6px 9px; '
+                f'border: 1px solid {LINE}; border-radius: 6px; background: #FCFCFA">')
+    overlay = f'''
+  <div style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: rgba(31,36,48,0.38); display: flex; align-items: center; justify-content: center">
+    <div role="dialog" aria-label="Connect an account" style="width: 620px; box-sizing: border-box; background: #FFFFFF; border-radius: 14px; box-shadow: 0 20px 50px rgba(31,36,48,0.25); display: flex; flex-direction: column">
+      <div style="padding: 20px 24px 6px 24px; display: flex; flex-direction: column; gap: 4px">
+        <h2 style="margin: 0; font-size: 18px; font-weight: 700">Connect an account</h2>
+        {muted("Pick a connector your admin has set up, sign in, and choose what agents may do with the account.", 12.5)}
+      </div>
+      <div style="padding: 10px 24px 18px 24px; display: flex; flex-direction: column; gap: 12px">
+        {block("1. Connector", '<div style="display: flex; gap: 8px">' + tile("mail", "Google Workspace", "ready") + tile("code", "GitHub", "ready")
+               + tile("plug", "Linear", "ready", True) + tile("plug", "Tickets API", "attention") + "</div>"
+               + muted("Tickets API is paused until an admin fixes it. Missing a system? Ask an admin to add a connector.", 11))}
+        {block("2. Sign in", signed_in)}
+        {block("3. What agents may do with it",
+               checkbox("p-read", "Read issues and projects", "list_issues, get_issue, search_issues, list_projects · Ask steps", True)
+               + checkbox("p-create", "Create issues", "create_issue · Act steps only", False)
+               + muted("Only what the admin offered for Linear. Updating and deleting issues aren&#39;t offered.", 11))}
+        {block("4. Name", name_box, last=True)}
+      </div>
+      <div style="display: flex; gap: 10px; padding: 12px 24px 16px 24px; border-top: 1px solid #EDEDE8">{button("Cancel")}{button("Connect account", primary=True)}</div>
+    </div>
+  </div>'''
+    return page("Connect an account", body, "", overlay=overlay, bar=app_bar("Connections"))
+
+
 SCREENS = [  # (file stem, builder, canvas title), in the order a builder would work
     ("Home", home, "Home: agents in the workspace"),
     ("RunNow", run_now, "Run an agent now"),
@@ -1631,6 +1859,9 @@ SCREENS = [  # (file stem, builder, canvas title), in the order a builder would 
     ("FreeForm", free_form, "Variant: Find and check bookings: Free-form block"),
     ("InvoiceBlock", invoice_block, "invoice-check: Match invoice: Free-form block"),
     ("InvoiceTest", invoice_test, "invoice-check: Test run on three sample invoices"),
+    ("Connectors", connectors, "Connectors: an admin sets up Google Workspace"),
+    ("McpSetup", mcp_setup, "Connectors: an admin adds an MCP server"),
+    ("ConnectAccount", connect_account, "Accounts: a builder connects an account"),
 ]
 
 

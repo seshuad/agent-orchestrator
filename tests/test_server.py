@@ -172,7 +172,7 @@ def test_a_bad_google_return_is_reported(api):
     if not WEB_DIST.exists():
         pytest.skip("the web app isn't built")
     r = api.get("/?state=nope&code=abc", follow_redirects=False)
-    assert r.status_code == 307 and "google_error=" in r.headers["location"]
+    assert r.status_code == 307 and "sign_in_error=" in r.headers["location"]
 
 
 @needs_conductor
@@ -250,7 +250,7 @@ def test_a_github_connection_takes_a_checked_token(api, tmp_path, monkeypatch):
     assert conn["can_sign_in"] and conn["sign_in"] == "token" and not conn["signed_in"]
     assert conn["allowed"] == ["open", "read", "search"]
 
-    def whoami(token):
+    def whoami(token, api=None):
         if token != "github_pat_good":
             raise github_api.GitHubError("GitHub said 401: Bad credentials")
         return "seshuad"
@@ -306,3 +306,254 @@ def test_a_group_shows_in_the_run_log(api, tmp_path):
     assert len(readers) == 4 and all("booking" in e["detail"] for e in readers[:3]), readers   # three together, then airline again
     assert [e["why"] for e in readers] == ["In a group"] * 3 + [None]
     api.post(f"/api/runs/{run['id']}/stop")
+
+
+# ------------------------------------------------------------------ connectors
+
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+ISSUES_SERVER = {"transport": "command", "command": sys.executable, "args": [str(Path(__file__).parent / "fixtures/issues_server.py")]}
+
+
+def add_issues_connector(api):
+    c = api.post("/api/connectors", json={"type": "mcp", "name": "Issues", "settings": {"server": ISSUES_SERVER, "auth": {"kind": "none"}}}).json()
+    tested = api.post(f"/api/connectors/{c['id']}/test").json()
+    assert tested["status"]["state"] == "ready" and [t["treat"] for t in tested["tools"]] == ["off"] * 4     # new tools aren't offered
+    return api.put(f"/api/connectors/{c['id']}", json={"tools": [
+        {"name": "list_issues", "treat": "read", "limits": ["team"]}, {"name": "get_issue", "treat": "read", "limits": ["team"]},
+        {"name": "create_issue", "treat": "act", "limits": ["team"]}, {"name": "delete_issue", "treat": "off"}]}).json()
+
+
+def test_new_workspaces_have_google_and_github_connectors(api):
+    cs = {c["id"]: c for c in api.get("/api/connectors").json()}
+    assert set(cs) == {"google", "github"} and cs["google"]["status"]["state"] == "setup" and not cs["google"]["secret_set"]
+    assert all(c["connector"] in cs for c in api.get("/api/connections").json())
+
+
+def test_only_admins_change_connectors(api, tmp_path):
+    import json as _json
+    ws = _json.loads((tmp_path / "workspace.json").read_text())
+    ws["user"]["role"] = "Builder"
+    (tmp_path / "workspace.json").write_text(_json.dumps(ws))
+    assert api.post("/api/connectors", json={"type": "mcp", "name": "X"}).status_code == 403
+    assert api.put("/api/connectors/google", json={"settings": {"client_id": "x"}}).status_code == 403
+
+
+def test_google_client_is_entered_and_never_sent_back(api):
+    out = api.put("/api/connectors/google", json={"settings": {"client_id": "123.apps.googleusercontent.com"}, "secret": "GOCSPX-shh",
+                                                  "offered": {"gmail": ["read"], "google-sheets": ["read"]}}).json()
+    assert out["secret_set"] and "GOCSPX-shh" not in str(out) and "GOCSPX-shh" not in str(api.get("/api/connectors").json())
+    assert list(out["services"]["google-sheets"]["permissions"]) == ["read"]            # "add rows" is no longer offered
+    sheets = next(c for c in api.get("/api/connections").json() if c["service"] == "google-sheets")
+    assert sheets["permissions"] == ["read"]                                            # so accounts lose it too
+
+
+def test_an_mcp_connector_from_tools_to_a_checked_step(api):
+    c = add_issues_connector(api)
+    assert {n for n, p in c["permissions"].items()} == {"read", "create_issue"}
+    acct = api.post("/api/connections", json={"connector": c["id"], "service": "mcp", "label": "Team issues", "permissions": ["read"]}).json()
+    assert acct["signed_in"] and acct["allowed"] == ["get_issue", "list_issues"]      # auth "none": nothing to sign in to
+    api.post("/api/agents", json={"name": "issue-reader", "sample_set": "GitHub issues"})
+    draft = api.get("/api/agents/issue-reader").json()["draft"]
+    draft["connections"] = {"issues": {"service": "mcp", "permission": "read", "account": acct["id"]}}
+    draft["records"] = {"Issue": {"fields": {"id": {"type": "text"}, "title": {"type": "text"}}}}
+    step = {"id": "find", "kind": "ask", "name": "Find open issues", "model": "claude-sonnet-5", "instructions": "You read issues.",
+            "task": "List ENG's open issues.", "uses": {"connection": "issues", "actions": ["list_issues", "get_issue"], "arg_limits": {"team": ["ENG"]}},
+            "returns": {"issues": {"type": "list of Issue"}}}
+    draft["steps"] = [step]
+    fb = api.put("/api/agents/issue-reader", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert "mcp-find__list_issues" in fb["compiled"] and "--connection" in fb["compiled"]
+    assert api.post("/api/agents/issue-reader/publish", json={}).status_code == 200   # publishing checks against the connectors too
+    step["uses"]["actions"] = ["list_issues", "create_issue"]                          # an act tool in an Ask step
+    fb = api.put("/api/agents/issue-reader", json={"draft": draft}).json()["feedback"]
+    assert any("only Act steps can use it" in e["message"] for e in fb["errors"])
+    step["uses"]["actions"] = ["list_issues", "delete_issue"]
+    fb = api.put("/api/agents/issue-reader", json={"draft": draft}).json()["feedback"]
+    assert any("doesn't offer delete_issue" in e["message"] for e in fb["errors"])
+
+
+def test_a_changed_tool_pauses_the_connector_until_reviewed(api, tmp_path):
+    import json as _json
+    c = add_issues_connector(api)
+    items = _json.loads((tmp_path / "connectors.json").read_text())
+    for item in items:
+        if item["id"] == c["id"]:
+            next(t for t in item["tools"] if t["name"] == "list_issues")["approved_pin"] = "an-older-pin"
+    (tmp_path / "connectors.json").write_text(_json.dumps(items))
+    tested = api.post(f"/api/connectors/{c['id']}/test").json()
+    assert tested["status"]["state"] == "attention" and "list_issues changed" in tested["status"]["message"]
+    r = api.post("/api/connections", json={"connector": c["id"], "service": "mcp", "permissions": ["read"]})
+    assert r.status_code == 422 and "needs an admin" in r.json()["detail"]
+    ok = api.put(f"/api/connectors/{c['id']}", json={"tools": [{"name": t["name"], "treat": t["treat"], "limits": t["limits"]} for t in tested["tools"]]}).json()
+    assert ok["status"]["state"] == "ready"                                           # saving approves the tools as listed now
+
+
+@needs_conductor
+def test_a_run_calls_an_mcp_act_tool_through_the_gateway(api, tmp_path):
+    import json as _json
+    from agent_service.server.store import Store
+    created = tmp_path / "created.jsonl"
+    c = api.post("/api/connectors", json={"type": "mcp", "name": "Issues", "settings": {
+        "server": {**ISSUES_SERVER, "env": {"ISSUES_LOG": str(created)}}, "auth": {"kind": "none"}}}).json()
+    api.post(f"/api/connectors/{c['id']}/test")
+    api.put(f"/api/connectors/{c['id']}", json={"tools": [{"name": "list_issues", "treat": "read", "limits": ["team"]},
+                                                          {"name": "create_issue", "treat": "act", "limits": ["team"]}]})
+    acct = api.post("/api/connections", json={"connector": c["id"], "service": "mcp", "label": "Team issues", "permissions": ["read", "create_issue"]}).json()
+    api.post("/api/agents", json={"name": "file-issues", "sample_set": "Water alerts"})
+    draft = api.get("/api/agents/file-issues").json()["draft"]
+    draft["connections"] = {"issues": {"service": "mcp", "permission": "read", "account": acct["id"]}}
+    draft["records"] = {"Finding": {"fields": {"title": {"type": "text"}}}}
+    draft["steps"] = [
+        {"id": "find", "kind": "ask", "name": "Find", "model": "claude-sonnet-5", "instructions": "x", "task": "x",
+         "uses": {"connection": "issues", "actions": ["list_issues"], "arg_limits": {"team": ["ENG"]}}, "returns": {"findings": {"type": "list of Finding"}}},
+        {"id": "file", "kind": "act", "name": "File follow-ups", "uses": {"connection": "issues", "actions": ["create_issue"], "arg_limits": {"team": ["ENG"]}},
+         "call_tool": {"tool": "create_issue", "for_each": "find.findings", "arguments": {"team": "ENG", "title": "Follow up: {title}"}},
+         "follows_dry_run": "run.dry_run"}]
+    fb = api.put("/api/agents/file-issues", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    replay = tmp_path / "replay.yaml"
+    replay.write_text("find:\n  - findings: [{title: Leak at 418 Alder Lane}, {title: Leak at 12 Birch Road}]\n")
+    store = Store(tmp_path)
+    store.set_test_data("file-issues", store.meta("file-issues")["sample_data"], str(replay))
+    run = api.post("/api/agents/file-issues/runs", json={"scripted": True, "inputs": {"dry_run": "false"}}).json()
+    for _ in range(120):
+        d = api.get(f"/api/runs/{run['id']}").json()
+        if d["status"] not in ("running", "waiting"):
+            break
+        time.sleep(0.5)
+    assert d["status"] == "succeeded", d.get("error")
+    assert [_json.loads(l)["title"] for l in created.read_text().splitlines()] == ["Follow up: Leak at 418 Alder Lane", "Follow up: Leak at 12 Birch Road"]
+    calls = [_json.loads(l) for l in (tmp_path / "runs" / run["id"] / "gateway.jsonl").read_text().splitlines()]
+    assert [(x["action"], x["outcome"]) for x in calls] == [("create_issue", "allowed")] * 2
+
+
+# ------------------------------------------------------------------ drafting agents with Claude (a scripted stand-in)
+
+class FakeClaude:
+    """Answers like Claude would, from a list of texts; records what it was asked."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = list(answers), []
+        self.messages = self
+
+    def stream(self, **kw):
+        from types import SimpleNamespace as NS
+        self.asked.append({**kw, "messages": list(kw["messages"])})      # as sent: the conversation grows afterwards
+        text = self.answers.pop(0)
+        msg = NS(content=[NS(type="text", text=text)], stop_reason="end_turn",
+                 usage=NS(input_tokens=1000, output_tokens=500, cache_creation_input_tokens=0, cache_read_input_tokens=0))
+
+        class S:
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def get_final_message(s): return msg
+        return S()
+
+
+def draft_answer(steps_yaml, sample="Water alerts"):
+    return f"""<summary>Reads each leak email and adds a row per leak.</summary>
+<assumptions>
+- The Leaks sheet already exists.
+</assumptions>
+<questions>
+- none
+</questions>
+<sample_set>{sample}</sample_set>
+<agent>
+```yaml
+format: agent-service/v1
+name: leak-log
+description: Log water leak alerts.
+trigger: {{kind: manual}}
+run_options:
+  dry_run: {{type: yes/no, default: true}}
+limits: {{budget_usd: 1.0}}
+connections:
+  gmail: {{service: gmail, permission: read, account: seshu-gmail}}
+records:
+  Leak:
+    fields:
+      property: {{type: text}}
+      severity: {{type: choice, of: [low, high]}}
+steps:
+{steps_yaml}
+```
+</agent>"""
+
+
+def wait_job(api, job):
+    for _ in range(100):
+        d = api.get(f"/api/drafts/{job}").json()
+        if d["status"] != "running":
+            return d
+        time.sleep(0.05)
+    raise AssertionError("the drafting job didn't finish")
+
+
+def test_describe_it_drafts_checks_and_fixes_an_agent(api, monkeypatch):
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    broken = """  - id: read
+    kind: ask
+    name: Read leak emails
+    model: claude-sonnet-5
+    uses: {connection: gmail, actions: [search, open, send]}
+    instructions: Extract leaks.
+    task: Find leak alerts.
+    returns: {leaks: {type: list of Leak}}"""
+    fixed = broken.replace("[search, open, send]}", "[search, open], senders: [northpeakwater.com]}")
+    fake = FakeClaude([draft_answer(broken), draft_answer(fixed)])
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: fake)
+    job = api.post("/api/agents/describe", json={"description": "Log every water leak alert email."}).json()["job"]
+    d = wait_job(api, job)
+    assert d["status"] == "done", d["error"]
+    assert d["attempts"] == 2 and d["result"]["errors"] == [] and d["result"]["agent"] == "leak-log"
+    assert "can only read" in fake.asked[1]["messages"][-1]["content"]          # the check's error went back to Claude
+    assert "seshu-gmail" in fake.asked[0]["messages"][0]["content"]            # it was told the workspace's accounts
+    agent = api.get("/api/agents/leak-log").json()
+    assert agent["feedback"]["ok"] and agent["meta"]["sample_set"] == "Water alerts" and not agent["meta"]["published"]
+    assert agent["meta"]["ai"]["assumptions"] == ["The Leaks sheet already exists."] and agent["meta"]["ai"]["questions"] == []
+
+
+def test_refine_with_ai_changes_the_draft_and_can_be_undone(api, monkeypatch):
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    before = api.get("/api/agents/travel-sync").json()["draft"]
+    changed = {**before, "description": "Changed by Claude."}
+    import yaml as _yaml
+    answer = f"<summary>Changed the description.</summary><assumptions></assumptions><questions></questions><agent>\n```yaml\n{_yaml.safe_dump(changed, sort_keys=False)}```\n</agent>"
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: FakeClaude([answer]))
+    d = wait_job(api, api.post("/api/agents/travel-sync/refine", json={"instruction": "Shorter description"}).json()["job"])
+    assert d["status"] == "done" and d["result"]["summary"] == "Changed the description."
+    after = api.get("/api/agents/travel-sync").json()
+    assert after["draft"]["description"] == "Changed by Claude." and after["meta"]["can_undo_ai"]
+    undone = api.post("/api/agents/travel-sync/refine/undo").json()
+    assert undone["draft"]["description"] == before["description"] and not undone["meta"]["can_undo_ai"] and undone["meta"]["ai"] is None
+
+
+def test_drafting_needs_a_claude_key(api, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = api.post("/api/agents/describe", json={"description": "anything"})
+    assert r.status_code == 422 and "ANTHROPIC_API_KEY" in r.json()["detail"]
+
+
+def test_write_with_ai_fills_one_box_from_the_steps_context(api, monkeypatch):
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    fake = FakeClaude(["<text>You read airline emails and extract each booking exactly as written.</text>"])
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: fake)
+    draft = api.get("/api/agents/travel-sync").json()["draft"]
+    out = api.post("/api/agents/travel-sync/suggest", json={"draft": draft, "path": ["steps", 0, "steps", 0], "field": "instructions"}).json()
+    assert out["text"] == "You read airline emails and extract each booking exactly as written." and out["model"] == "claude-sonnet-5"
+    sent = fake.asked[0]["messages"][0]["content"]
+    assert "read_airline" in sent and "Booking:" in sent and "united.com" in sent        # the step, its record type, its limits
+    assert api.post("/api/agents/travel-sync/suggest", json={"draft": draft, "path": ["steps", 1], "field": "task"}).status_code == 422   # not an Ask step
+
+
+def test_a_step_with_a_connection_but_no_actions_is_an_error(api):
+    draft = api.get("/api/agents/invoice-check").json()["draft"]
+    draft["steps"][0]["steps"][0]["uses"]["actions"] = []
+    fb = api.put("/api/agents/invoice-check", json={"draft": draft}).json()["feedback"]
+    assert not fb["ok"] and any("tick what it can do with 'gmail'" in e["message"] for e in fb["errors"])

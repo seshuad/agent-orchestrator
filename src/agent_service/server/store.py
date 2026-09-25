@@ -1,6 +1,8 @@
 """The workspace store: agents with a draft and published versions, as files on disk.
 
     <home>/workspace.json                   the workspace, its members, the signed-in user
+    <home>/connectors.json                  backend systems an admin has set up (see connectors.py)
+    <home>/connections.json                 accounts builders have connected under those connectors
     <home>/agents/<name>/draft.agent.yaml   what the designer is editing
     <home>/agents/<name>/v<N>.agent.yaml    published versions, never changed after publishing
     <home>/agents/<name>/meta.json          owner, published version, sample data, replay script
@@ -23,6 +25,7 @@ import yaml
 
 from .. import definition
 from .connections import SEED, SEED_LINKS, permission_text
+from . import connectors as conn_types
 
 ROOT = Path(__file__).resolve().parents[3]          # the repository, for the seeded examples
 EXAMPLES = ROOT / "examples"
@@ -30,8 +33,8 @@ EXAMPLES = ROOT / "examples"
 WORKSPACE = {
     "name": "Northpeak Operations",
     "kind": "team",
-    "user": {"name": "Seshu Adunuthula", "initials": "SA", "email": "seshu.adunuthula@gmail.com", "role": "Builder"},
-    "members": [{"name": "Seshu Adunuthula", "initials": "SA", "role": "Builder"},
+    "user": {"name": "Seshu Adunuthula", "initials": "SA", "email": "seshu.adunuthula@gmail.com", "role": "Admin"},
+    "members": [{"name": "Seshu Adunuthula", "initials": "SA", "role": "Admin"},
                 {"name": "Priya Shah", "initials": "PS", "role": "Admin"}],
     "spend_limit_usd": 50.0,
 }
@@ -71,6 +74,7 @@ class Store:
         (self.home / "runs").mkdir(exist_ok=True)
         if not (self.home / "workspace.json").exists():
             (self.home / "workspace.json").write_text(json.dumps(WORKSPACE, indent=1))
+            self._seed_connectors()
             self._seed_connections()
             self._seed()
         elif not (self.home / "connections.json").exists():
@@ -79,6 +83,49 @@ class Store:
                 raw = self.draft(name)
                 if self._link(raw):
                     self.save_draft(name, raw)
+        if not (self.home / "connectors.json").exists():
+            self._seed_connectors()              # a workspace from before connectors: its admin sets them up from now on
+
+    # -------------------------------------------------------------- connectors
+
+    def _seed_connectors(self) -> None:
+        from .google import legacy_client_file
+        ws = self.workspace()
+        if ws["user"].get("role") != "Admin" and ws["user"]["name"] == WORKSPACE["user"]["name"]:
+            ws["user"]["role"] = "Admin"          # the workspace's creator sets up its connectors
+            for m in ws.get("members", []):
+                if m["name"] == ws["user"]["name"]:
+                    m["role"] = "Admin"
+            (self.home / "workspace.json").write_text(json.dumps(ws, indent=1))
+        self._write_connectors(conn_types.seed(self.home / "vault", ws["user"]["name"], legacy_client_file()))
+        conns = self.connections()
+        for c in conns:
+            c.setdefault("connector", conn_types.CONNECTOR_OF.get(c["service"]))
+        self._write_connections(conns)
+
+    def connectors(self) -> list[dict[str, Any]]:
+        path = self.home / "connectors.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def connector(self, cid: str | None) -> dict[str, Any] | None:
+        return next((c for c in self.connectors() if c["id"] == cid), None)
+
+    def _write_connectors(self, items: list[dict[str, Any]]) -> None:
+        (self.home / "connectors.json").write_text(json.dumps(items, indent=1))
+
+    def save_connector(self, item: dict[str, Any]) -> dict[str, Any]:
+        items = self.connectors()
+        existing = next((c for c in items if c["id"] == item["id"]), None)
+        item = {**(existing or {"created_at": time.time(), "created_by": self.workspace()["user"]["name"]}), **item}
+        self._write_connectors([item if c["id"] == item["id"] else c for c in items] if existing else items + [item])
+        return item
+
+    def delete_connector(self, cid: str) -> None:
+        if self.connector(cid) is None:
+            raise NotFound(f"No connector {cid!r}.")
+        if any(c.get("connector") == cid for c in self.connections()):
+            raise Conflict("Accounts are still connected through it. Remove them first.")
+        self._write_connectors([c for c in self.connectors() if c["id"] != cid])
 
     # -------------------------------------------------------------- workspace
 
@@ -90,7 +137,8 @@ class Store:
 
     def _seed_connections(self) -> None:
         now = time.time()
-        self._write_connections([{**c, "connected_at": now, "connected_by": WORKSPACE["user"]["name"]} for c in SEED])
+        self._write_connections([{**c, "connector": conn_types.CONNECTOR_OF.get(c["service"]), "connected_at": now,
+                                  "connected_by": WORKSPACE["user"]["name"]} for c in SEED])
 
     def _link(self, raw: dict[str, Any]) -> bool:
         """Point an example agent's connections at the seeded accounts. True if anything changed."""
@@ -132,7 +180,7 @@ class Store:
             touched = False
             for c in (raw.get("connections") or {}).values():
                 if c.get("account") == conn["id"]:
-                    c["permission"] = permission_text(conn)
+                    c["permission"] = permission_text(conn, {x["id"]: x for x in self.connectors()})
                     touched = True
             if touched:
                 self.save_draft(name, raw)
@@ -184,6 +232,29 @@ class Store:
         meta = self.meta(name)
         meta["updated"] = time.time()
         self._write_meta(name, meta)
+
+    def set_ai_note(self, name: str, note: dict[str, Any] | None) -> None:
+        """What Claude said about its last draft or change: summary, assumptions, questions. None clears it."""
+        meta = self.meta(name)
+        meta["ai"] = note
+        self._write_meta(name, meta)
+
+    def save_draft_with_undo(self, name: str, raw: dict[str, Any]) -> None:
+        """An AI change to the draft; the draft before it is kept so the builder can undo the change."""
+        before = self._dir(name) / "draft.before-ai.agent.yaml"
+        before.write_text((self._dir(name) / "draft.agent.yaml").read_text())
+        self.save_draft(name, raw)
+
+    def undo_ai(self, name: str) -> None:
+        before = self._dir(name) / "draft.before-ai.agent.yaml"
+        if not before.exists():
+            raise NotFound("There's no AI change to undo.")
+        self.save_draft(name, yaml.safe_load(before.read_text()))
+        before.unlink()
+        self.set_ai_note(name, None)
+
+    def can_undo_ai(self, name: str) -> bool:
+        return (self._dir(name) / "draft.before-ai.agent.yaml").exists()
 
     def set_test_data(self, name: str, sample_data: str | None, replay: str | None) -> None:
         meta = self.meta(name)

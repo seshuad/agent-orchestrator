@@ -196,7 +196,107 @@ class GitHub:
         return text
 
 
-CONNECTIONS = {"gmail": Gmail, "google-sheets": Sheets, "google-calendar": Calendar, "github": GitHub}
+class Mcp:
+    """An MCP connector: the upstream server's tools, within what its admin approved and this step's limits.
+
+    The limits token names the server, how it signs in, and each approved tool with its pin. A tool is usable only if
+    the step's actions include it, its admin marked it read or act, and the server still describes it exactly as it
+    did when the admin approved it. Argument limits restrict what a call may pass: a limited argument must be given,
+    with an allowed value."""
+
+    def __init__(self, limits: dict[str, Any]):
+        self.limits = limits
+        self.up = limits.get("upstream") or {}
+
+    def credentials(self) -> dict[str, Any]:
+        from . import vault
+        auth = self.up.get("auth") or {}
+        if auth.get("kind") in ("bearer", "header"):
+            return {"secret": (vault.load(f"connector-{self.up.get('connector')}") or {}).get("token")}
+        if auth.get("kind") == "oauth":
+            return {"oauth_key": self.limits.get("account")}
+        return {}
+
+    def session(self):
+        from . import upstream
+        return upstream.session(self.up.get("server") or {}, self.up.get("auth") or {}, **self.credentials())
+
+    def usable(self, listed: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """The tools this step may call now, by name: approved, still pinned, and among the step's actions."""
+        from . import upstream
+        out = {}
+        for name in self.limits.get("actions", []):
+            approved = (self.up.get("tools") or {}).get(name)
+            tool = listed.get(name)
+            if approved and tool and upstream.pin(tool) == approved.get("pin"):
+                out[name] = tool
+            else:
+                why = ("isn't offered by the admin" if not approved else "isn't on the server any more" if not tool
+                       else "changed on the server since an admin approved it")
+                log_call("mcp", name, {}, "refused", f"{name} {why}")
+        return out
+
+    def check(self, name: str, args: dict[str, Any], usable: dict[str, dict[str, Any]]) -> None:
+        if name not in usable:
+            raise Refused(f"This step may not call {name}.")
+        schema_args = set(((usable[name].get("input_schema") or {}).get("properties") or {}))
+        for arg, allowed in (self.limits.get("arg_limits") or {}).items():
+            if arg not in schema_args or not allowed:
+                continue
+            value = args.get(arg)
+            values = value if isinstance(value, list) else [value]
+            if value in (None, "", []) or any(str(v) not in [str(a) for a in allowed] for v in values):
+                raise Refused(f"{arg} must be one of {', '.join(map(str, allowed))} for this step (got {value!r}).")
+
+
+async def mcp_call(conn: Mcp, session: Any, usable: dict[str, dict[str, Any]], name: str, args: dict[str, Any]) -> tuple[str, bool]:
+    """One tool call through the checks, logged whatever happens. Returns (text, is_error)."""
+    from . import upstream
+    try:
+        conn.check(name, args, usable)
+    except Refused as exc:
+        log_call("mcp", name, args, "refused", str(exc))
+        raise
+    result = await session.call_tool(name, args)
+    text = upstream.result_text(result)
+    log_call("mcp", name, args, "error" if result.is_error else "allowed", text[:120])
+    return text, bool(result.is_error)
+
+
+async def serve_mcp(conn: Mcp) -> None:
+    """The step's view of the connector, over stdio: only its usable tools, each call checked first."""
+    import mcp.types as types
+    from mcp.server.lowlevel import Server
+    from mcp.server.stdio import stdio_server
+    from . import upstream
+
+    async with conn.session() as up:
+        listed = {t.name: upstream.tool_dict(t) for t in (await up.list_tools()).tools}
+        usable = conn.usable(listed)
+        name = conn.up.get("name", "the connector")
+
+        async def list_tools(ctx, params):
+            return types.ListToolsResult(tools=[types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+                                                for t in usable.values()])
+
+        async def call_tool(ctx, params):
+            args = params.arguments or {}
+            try:
+                text, error = await mcp_call(conn, up, usable, params.name, args)
+            except Refused as exc:
+                return types.CallToolResult(content=[types.TextContent(type="text", text=f"Refused: {exc}")], is_error=True)
+            except Exception as exc:
+                log_call("mcp", params.name, args, "error", str(exc)[:200])
+                return types.CallToolResult(content=[types.TextContent(type="text", text=f"{name} failed: {exc}")], is_error=True)
+            wrapped = f'<result tool="{params.name}" from="{name}">\n{text}\n</result>'
+            return types.CallToolResult(content=[types.TextContent(type="text", text=wrapped)], is_error=error)
+
+        server = Server("gateway-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
+        async with stdio_server() as (r, w):
+            await server.run(r, w, server.create_initialization_options())
+
+
+CONNECTIONS = {"gmail": Gmail, "google-sheets": Sheets, "google-calendar": Calendar, "github": GitHub, "mcp": Mcp}
 
 
 def connect(connection: str, token: str | None = None, narrow: dict[str, Any] | None = None) -> Any:
@@ -250,6 +350,10 @@ def main() -> None:
     narrow = {"actions": a.actions.split(",") if a.actions else None, "only_message": a.only_message,
               "from_domain": a.from_domain, "only_cited_by": a.only_cited_by}
     conn = connect(a.connection, narrow=narrow)
+    if a.connection == "mcp":
+        import asyncio
+        asyncio.run(serve_mcp(conn))
+        return
     server = MCPServer(f"gateway-{a.connection}")
     actions = conn.limits.get("actions", [])
 

@@ -26,8 +26,8 @@ class GitHubError(Exception):
     """GitHub refused or failed the request; the message says why."""
 
 
-def _get(token: str, path: str, params: dict[str, Any] | None = None) -> Any:
-    url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+def _get(token: str, path: str, params: dict[str, Any] | None = None, api: str = API) -> Any:
+    url = api.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                                                "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "agent-orchestrator"})
     try:
@@ -44,9 +44,9 @@ def _get(token: str, path: str, params: dict[str, Any] | None = None) -> Any:
         raise GitHubError(f"Couldn't reach GitHub: {exc.reason}") from None
 
 
-def whoami(token: str) -> str:
+def whoami(token: str, api: str = API) -> str:
     """The login the token belongs to. Used to check a token when it's added."""
-    return _get(token, "/user")["login"]
+    return _get(token, "/user", api=api)["login"]
 
 
 def _cut(text: str | None) -> str:
@@ -64,10 +64,10 @@ class LiveGitHub:
     """The same three reads the sample data offers, against the real account."""
 
     def __init__(self, connection: str):
-        token = (vault.load(connection) or {}).get("token")
-        if not token:
+        saved = vault.load(connection) or {}
+        if not saved.get("token"):
             raise PermissionError(f"The connection {connection!r} has no GitHub token. Add one on Connections.")
-        self.token = token
+        self.token, self.api = saved["token"], saved.get("api_url") or API
 
     def search(self, repos: list[str], keywords: list[str], newer_than_days: int | None, state: str | None = None,
                label: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -80,7 +80,7 @@ class LiveGitHub:
             q.append(f"state:{state}")
         if label:
             q.append(f'label:"{label}"')
-        found = _get(self.token, "/search/issues", {"q": " ".join(q), "sort": "updated", "order": "desc", "per_page": min(limit, 100)})
+        found = _get(self.token, "/search/issues", {"q": " ".join(q), "sort": "updated", "order": "desc", "per_page": min(limit, 100)}, api=self.api)
         out = []
         for it in found.get("items", []):
             repo = it["repository_url"].split("/repos/", 1)[1]
@@ -89,8 +89,8 @@ class LiveGitHub:
 
     def issue(self, repo: str, number: int) -> dict[str, Any] | None:
         try:
-            it = _get(self.token, f"/repos/{repo}/issues/{number}")
-            comments = _get(self.token, f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}) if it.get("comments") else []
+            it = _get(self.token, f"/repos/{repo}/issues/{number}", api=self.api)
+            comments = _get(self.token, f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}, api=self.api) if it.get("comments") else []
         except GitHubError:
             return None
         return {**_item(repo, it), "body": _cut(it.get("body")),
@@ -98,7 +98,7 @@ class LiveGitHub:
 
     def file(self, repo: str, path: str) -> str | None:
         try:
-            f = _get(self.token, f"/repos/{repo}/contents/{urllib.parse.quote(path)}")
+            f = _get(self.token, f"/repos/{repo}/contents/{urllib.parse.quote(path)}", api=self.api)
         except GitHubError:
             return None
         if not isinstance(f, dict) or f.get("type") != "file":

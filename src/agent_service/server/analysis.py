@@ -21,7 +21,7 @@ from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
 
-UNTRUSTED = {"gmail", "github"}    # services whose content other people wrote
+UNTRUSTED = {"gmail", "github", "mcp"}    # services whose content other people wrote
 RUN_BUILT_INS = {"started"}        # run.* values every run has, besides its run options
 
 
@@ -100,11 +100,12 @@ def _policy(agent: definition.Agent) -> list[dict[str, str]]:
             approved = True
         if isinstance(s, ActStep) and reads_untrusted and not approved:
             warnings.append({"path": f"steps.{i}", "message": f"{s.name} changes something outside the agent with no approval "
-                             "first, using values from content other people wrote (email, GitHub). Add an Approve step if a person should check them."})
+                             "first, using values from content other people wrote (email, GitHub, MCP tools). Add an Approve step if a person should check them."})
     return warnings
 
 
-def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None,
+          connectors: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """With `accounts` (the workspace's connections), also checks each connection and each step's actions against them."""
     errors: list[dict[str, str]] = []
     for path, expr in _cel_sites(raw):
@@ -123,7 +124,7 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
     policy_warnings = _policy(agent)
     errors += _run_option_refs(raw)
     if accounts is not None:
-        errors += check_accounts(raw, accounts)
+        errors += check_accounts(raw, accounts, connectors)
     compiled = None
     try:
         compiled = compile_agent(agent).yaml()

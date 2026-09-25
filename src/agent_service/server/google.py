@@ -1,12 +1,9 @@
 """Signing a workspace connection in to Google (OAuth), for runs on real accounts.
 
-The OAuth client is a Google Cloud "Desktop app" client, read from the first of:
-    $AGENT_SERVICE_GOOGLE_CLIENT
-    ~/.config/agent-service/client_secret.json
-    ~/.config/travel-sync/client_secret.json     (travel-sync's, if you already set it up)
-
-Desktop clients may redirect to the loopback address on any port, so Google sends the browser back
-to the designer's own root URL with ?code=…&state=…. Only Gmail read-only is requested for now.
+The OAuth client belongs to the Google Workspace connector: its admin enters the client ID and secret
+under Connections → Connectors (a client file from before connectors is imported once). Google sends
+the browser back to the designer's own root URL with ?code=…&state=…. Only Gmail read-only is
+requested for now.
 """
 
 from __future__ import annotations
@@ -26,7 +23,11 @@ SCOPES = {"gmail": GMAIL_SCOPES}          # services that can be signed in for r
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")     # Google may return the scopes in a different order
 
 
-def client_secret() -> Path | None:
+def legacy_client_file() -> Path | None:
+    """Where the OAuth client used to live, before the Google Workspace connector held it: imported once.
+    AGENT_SERVICE_GOOGLE_CLIENT=none turns the import off (tests)."""
+    if os.environ.get("AGENT_SERVICE_GOOGLE_CLIENT") == "none":
+        return None
     for p in [os.environ.get("AGENT_SERVICE_GOOGLE_CLIENT"), Path.home() / ".config/agent-service/client_secret.json",
               Path.home() / ".config/travel-sync/client_secret.json"]:
         if p and Path(p).exists():
@@ -34,11 +35,23 @@ def client_secret() -> Path | None:
     return None
 
 
-def status() -> dict[str, Any]:
-    path = client_secret()
-    kind = next(iter(json.loads(path.read_text())), None) if path else None
-    return {"configured": path is not None and kind == "installed", "client_file": str(path) if path else None,
-            "client_type": kind, "live_services": list(SCOPES)}
+def client_config(connector: dict[str, Any] | None, vault_dir: Path) -> dict[str, Any] | None:
+    """The Google Workspace connector's OAuth client, as google-auth-oauthlib expects it."""
+    if not connector:
+        return None
+    settings = connector.get("settings") or {}
+    secret = (vault.load(f"connector-{connector['id']}", vault_dir) or {}).get("client_secret")
+    if not settings.get("client_id") or not secret:
+        return None
+    kind = settings.get("client_kind") or "web"
+    return {kind: {"client_id": settings["client_id"], "client_secret": secret,
+                   "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}
+
+
+def status(connector: dict[str, Any] | None = None, vault_dir: Path | None = None) -> dict[str, Any]:
+    configured = vault_dir is not None and client_config(connector, vault_dir) is not None
+    return {"configured": configured, "client_file": None, "client_type": ((connector or {}).get("settings") or {}).get("client_kind"),
+            "live_services": list(SCOPES)}
 
 
 class Pending:
@@ -47,14 +60,13 @@ class Pending:
     def __init__(self) -> None:
         self.items: dict[str, tuple[str, Any, float]] = {}
 
-    def start(self, connection: dict[str, Any], origin: str) -> str:
+    def start(self, connection: dict[str, Any], origin: str, config: dict[str, Any] | None) -> str:
         from google_auth_oauthlib.flow import Flow
         if connection["service"] not in SCOPES:
             raise ValueError(f"{connection['service']} can't be signed in for real yet; only Gmail can.")
-        path = client_secret()
-        if path is None:
-            raise ValueError("No Google OAuth client is set up. See the steps on the Connections page.")
-        flow = Flow.from_client_secrets_file(str(path), scopes=SCOPES[connection["service"]], redirect_uri=origin.rstrip("/") + "/")
+        if config is None:
+            raise ValueError("The Google Workspace connector has no OAuth client yet. An admin sets it up under Connections → Connectors.")
+        flow = Flow.from_client_config(config, scopes=SCOPES[connection["service"]], redirect_uri=origin.rstrip("/") + "/")
         state = secrets.token_urlsafe(24)
         url, _ = flow.authorization_url(access_type="offline", prompt="consent", state=state, login_hint=connection.get("account"),
                                         include_granted_scopes="false")

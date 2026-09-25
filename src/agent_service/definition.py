@@ -66,7 +66,7 @@ class Limits(Strict):
 
 
 class Connection(Strict):
-    service: Literal["gmail", "google-sheets", "google-calendar", "github"]
+    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp"]
     permission: str
     account: str | None = None               # the workspace connection (account) it uses
 
@@ -83,6 +83,7 @@ class Uses(Strict):
     sheets: list[str] | None = None
     calendar: str | None = None
     repos: list[str] | None = None           # GitHub: the repositories (owner/name) it may read
+    arg_limits: dict[str, list[str]] | None = None   # MCP: argument -> the only values a call may pass
 
 
 class Repeat(Strict):
@@ -121,11 +122,6 @@ class AskStep(Step):
     task: str
     returns: dict[str, FieldDef]
 
-    @model_validator(mode="after")
-    def _read_only(self) -> AskStep:
-        if self.uses and set(self.uses.actions) - {"search", "open", "read"}:
-            raise ValueError(f"{self.name}: Ask steps can only read; move {self.uses.actions} to an Act step")
-        return self
 
 
 class BuiltInStep(Step):
@@ -219,12 +215,13 @@ class ActStep(Step):
     takes: Takes = Field(default_factory=dict)
     create_events: dict[str, Any] | None = None
     add_row: dict[str, Any] | None = None
+    call_tool: dict[str, Any] | None = None      # MCP: {tool, arguments: {arg: "{field}" or text}, for_each}
     follows_dry_run: str | None = None          # a yes/no run option; none: it always makes its changes
 
     @model_validator(mode="after")
     def _one_action(self) -> ActStep:
-        if (self.create_events is None) == (self.add_row is None):
-            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events or add_row")
+        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool)) != 1:
+            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row or call_tool")
         return self
 
 
@@ -249,6 +246,11 @@ class Agent(Strict):
             uses = getattr(s, "uses", None)
             if uses and uses.connection not in self.connections:
                 raise ValueError(f"{s.name}: uses connection {uses.connection!r}, which this agent hasn't connected")
+            # Built-in services: Ask steps only read. An MCP connector's tools are read or act by its admin's choice,
+            # checked against the workspace's connectors when the agent is saved.
+            if (isinstance(s, AskStep) and uses and self.connections[uses.connection].service != "mcp"
+                    and set(uses.actions) - {"search", "open", "read"}):
+                raise ValueError(f"{s.name}: Ask steps can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")
         if sum(isinstance(s, FreeFormBlock) for s in self.steps) > 1:

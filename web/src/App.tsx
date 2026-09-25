@@ -8,6 +8,8 @@ import RunsPage from './pages/Runs'
 import Approvals from './pages/Approvals'
 import Connections from './pages/Connections'
 import ConnectionForm from './pages/ConnectionForm'
+import Connectors from './pages/Connectors'
+import McpConnector from './pages/McpConnector'
 import Editor from './editor/Editor'
 
 export default function App() {
@@ -37,6 +39,8 @@ export default function App() {
             <Route path="/runs/:runId" element={<RunsPage />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/connections" element={<Connections />} />
+            <Route path="/connections/connectors" element={<Connectors />} />
+            <Route path="/connections/connectors/:id" element={<McpConnector />} />
             <Route path="/connections/:id" element={<ConnectionForm />} />
           </Routes>
         </div>

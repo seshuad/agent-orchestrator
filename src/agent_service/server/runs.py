@@ -132,8 +132,9 @@ class Runs:
         run_id = secrets.token_hex(4)
         prepared = runner.prepare(agent, sample_data=Path(meta["sample_data"]), runs_root=self.store.runs_root(),
                                   inputs=inputs, email_id=email_id, replay=Path(meta["replay"]) if scripted else None,
-                                  replay_gates=False, run_id=run_id, vault=self.store.home / "vault" if live else None,
-                                  trigger_email=trigger_email)
+                                  replay_gates=False, run_id=run_id, vault=self.store.home / "vault", live=live,
+                                  trigger_email=trigger_email, accounts=self.store.accounts(),
+                                  connectors={c["id"]: c for c in self.store.connectors()})
         (prepared.run_dir / "agent.yaml").write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
         port = _free_port()
         rec = {"id": run_id, "agent": agent_name, "version": version, "started_by": started_by, "trigger": "manual",

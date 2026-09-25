@@ -280,3 +280,88 @@ def test_live_github_keeps_the_same_limits(run, monkeypatch):
     monkeypatch.setattr(github_api, "LiveGitHub", FakeGitHub)
     gh = github(repos=["seshuad/agent-orchestrator"], source="live", account="seshu-github")
     assert [it["repo"] for it in gateway.call(gh, "github", "search", {"keywords": []})] == ["seshuad/agent-orchestrator"]
+
+
+# ------------------------------------------------------------------ MCP connectors
+
+import sys  # noqa: E402
+
+ISSUES = {"transport": "command", "command": sys.executable, "args": [str(Path(__file__).parent / "fixtures/issues_server.py")]}
+
+
+def issues_limits(actions, arg_limits=None, pins=None, treat=None):
+    from agent_service.runtime import upstream
+    listed = {t["name"]: t for t in upstream.list_tools(ISSUES, {"kind": "none"})}
+    tools = {n: {"treat": (treat or {}).get(n, "read"), "pin": (pins or {}).get(n, upstream.pin(listed[n])), "limits": ["team"]}
+             for n in ("list_issues", "get_issue", "create_issue")}
+    return {"connection": "mcp", "actions": actions, "account": "alex-issues", "arg_limits": arg_limits or {},
+            "upstream": {"connector": "issues", "name": "Issues", "server": ISSUES, "auth": {"kind": "none"}, "tools": tools}}
+
+
+def test_mcp_tools_need_approval_and_an_unchanged_pin(run):
+    import asyncio
+    from agent_service.runtime import upstream
+    conn = gateway.connect("mcp", limits.mint(issues_limits(["list_issues", "get_issue", "delete_issue"], pins={"get_issue": "old-pin"})))
+
+    async def go():
+        async with conn.session() as s:
+            listed = {t.name: upstream.tool_dict(t) for t in (await s.list_tools()).tools}
+            return conn.usable(listed)
+    assert list(asyncio.run(go())) == ["list_issues"]           # get_issue changed since approval; delete_issue never offered
+    refused = [json.loads(l)["detail"] for l in (run / "gateway.jsonl").read_text().splitlines()]
+    assert "get_issue changed on the server since an admin approved it" in refused and "delete_issue isn't offered by the admin" in refused
+
+
+def test_mcp_argument_limits(run):
+    import asyncio
+    from agent_service.runtime import upstream
+    conn = gateway.connect("mcp", limits.mint(issues_limits(["list_issues"], {"team": ["ENG", "OPS"]})))
+
+    async def go(args):
+        async with conn.session() as s:
+            listed = {t.name: upstream.tool_dict(t) for t in (await s.list_tools()).tools}
+            return await gateway.mcp_call(conn, s, conn.usable(listed), "list_issues", args)
+    text, _ = asyncio.run(go({"team": "ENG"}))
+    assert "ENG-12" in text and "HR-8" not in text
+    for args in ({"team": "HR"}, {}):                             # another team, or no team at all (which would list every team)
+        with pytest.raises(gateway.Refused, match="team must be one of ENG, OPS"):
+            asyncio.run(go(args))
+
+
+def test_mcp_act_tool_per_record_and_dry_run(run, tmp_path, monkeypatch):
+    log = tmp_path / "created.jsonl"
+    monkeypatch.setenv("ISSUES_LOG", str(log))
+    ISSUES["env"] = {"ISSUES_LOG": str(log)}
+    try:
+        monkeypatch.setenv("AGENT_SERVICE_LIMITS_TOKEN", limits.mint(issues_limits(["create_issue"], {"team": ["ENG"]}, treat={"create_issue": "act"})))
+        records = {"records": [{"title": "Leak at 418 Alder Lane"}, {"title": "Leak at 12 Birch Road"}]}
+        dry = steps.call_tools("create_issue", {"team": "ENG", "title": "{title}"}, True, records)
+        assert [c["arguments"]["title"] for c in dry["would_call"]] == ["Leak at 418 Alder Lane", "Leak at 12 Birch Road"] and not log.exists()
+        done = steps.call_tools("create_issue", {"team": "ENG", "title": "{title}"}, False, records)
+        assert len(done["called"]) == 2 and [json.loads(l)["title"] for l in log.read_text().splitlines()] == ["Leak at 418 Alder Lane", "Leak at 12 Birch Road"]
+        with pytest.raises(gateway.Refused):
+            steps.call_tools("create_issue", {"team": "HR", "title": "{title}"}, False, records)
+    finally:
+        ISSUES.pop("env", None)
+
+
+def test_the_gateway_serves_only_usable_tools_over_mcp(run, monkeypatch):
+    import asyncio
+    import os
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    token = limits.mint(issues_limits(["list_issues", "get_issue"], {"team": ["ENG"]}))
+    env = {**os.environ, "AGENT_SERVICE_LIMITS_TOKEN": token}
+
+    async def go():
+        params = StdioServerParameters(command="agent-service-gateway", args=["--connection", "mcp"], env=env)
+        async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
+            await s.initialize()
+            names = [t.name for t in (await s.list_tools()).tools]
+            ok = await s.call_tool("list_issues", {"team": "ENG"})
+            no = await s.call_tool("list_issues", {"team": "HR"})
+            return names, ok.content[0].text, no.content[0].text, no.is_error
+    names, ok, no, err = asyncio.run(go())
+    assert names == ["list_issues", "get_issue"]
+    assert ok.startswith('<result tool="list_issues" from="Issues">') and "ENG-15" in ok
+    assert no.startswith("Refused: team must be one of ENG") and err

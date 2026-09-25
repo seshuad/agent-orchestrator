@@ -198,18 +198,43 @@ service on 8700).
 | Runs | Every run, live while it runs: outcome, what an Act step did or would do, the service's checks, and a readable log with the planner's reasons, tool calls, costs, and plain-language failures |
 | Approvals | Runs waiting for a person; the choices are on the run's page and go to Conductor's gate |
 
-### Real Gmail
+### Drafting agents with Claude
 
-Gmail connections can sign in to Google, read only (`gmail.readonly`), and a run can then use **Real accounts**: its Gmail
-steps read your inbox through the gateway, within each step's sender, date and message limits. Sheets and Calendar stay
-on sample data for now, so nothing is written to your real accounts.
+**Describe it** (New agent) drafts a whole agent from a description, and **Refine with AI** (in the editor) changes a
+draft as asked. Claude (`claude-opus-5`, via the service's `ANTHROPIC_API_KEY`) gets the format reference, the two
+example agents, and the workspace as it is: its accounts with their permissions, each MCP connector's approved tools,
+and the sample sets. Every draft goes through the same checks as a saved agent; if any fail, the errors go back to
+Claude to fix, up to three rounds (`server/author.py`). The result is only ever a draft: the editor shows Claude's
+summary, the assumptions to check and its questions, a refine can be undone, and nothing runs or publishes until you do.
 
-1. A Google OAuth client of type **Desktop app**, with the Gmail API enabled in its project. The service looks for
-   `$AGENT_SERVICE_GOOGLE_CLIENT`, then `~/.config/agent-service/client_secret.json`, then travel-sync's
-   `~/.config/travel-sync/client_secret.json`. If the app is in "Testing", add your account as a test user; its sign-ins
-   expire after 7 days.
-2. Connections → **Sign in with Google** on a Gmail connection. The token goes to `.workspace/vault/` (mode 0600).
-3. Run now → Data: **Real accounts**.
+### Connectors and accounts
+
+Connections have three layers, each set up in the designer (Connections):
+
+| Layer | Who | What |
+|---|---|---|
+| Connector | A workspace admin, once | The system's app settings (an OAuth client, an API URL, a shared token), the most any account may be granted, who may connect accounts, and a **Test** |
+| Account | Any builder (or only admins) | Connected through a connector and signed in, so the account name comes from the system; permissions within what the connector offers |
+| Step | The builder, in the editor | Actions and limits within the account's permissions, checked by the gateway on every call |
+
+Secrets (OAuth client secrets, shared tokens, each account's tokens) go to `.workspace/vault/` (mode 0600) and are
+never sent back to the browser. A new workspace has two connectors: **Google Workspace** and **GitHub**. An older
+workspace's Google client file (`~/.config/agent-service/client_secret.json`) is imported into the Google Workspace
+connector once.
+
+**Real Gmail.** An admin enters the Google OAuth client (Web application, Gmail API enabled) on the Google Workspace
+connector, adds the redirect URI it shows to the client in Google Cloud, and tests it. A builder then connects a Gmail
+account, signs in with Google (only in the admin's domains, if set), and runs with Data: **Real accounts**. Sheets and
+Calendar stay on sample data for now.
+
+**MCP servers.** Any system with an MCP server can be a connector: a remote URL (Streamable HTTP) or a local command,
+signing in with OAuth (each builder signs in; the admin signs in once to list the tools), a shared bearer token, a
+custom header, or nothing. The admin lists the server's tools and marks each **read** (Ask steps), **act** (Act steps)
+or **not offered**, and which arguments steps may limit (`uses.arg_limits`: `team is one of ENG, OPS`). New tools start
+as not offered, and each approved tool is pinned: if the server changes its description or arguments, the gateway
+refuses it and the connector pauses until an admin reviews it. MCP connectors have no sample data, so their steps
+always reach the real system; act tools (an Act step's `call_tool`, once per item) follow the dry run.
+`tests/fixtures/issues_server.py` is a small issue tracker to try it with.
 
 ### GitHub
 
@@ -227,8 +252,7 @@ The service keeps its workspace in `.workspace/` (agents, versions, runs). Each 
 its own port; the service follows its event log, answers approvals with `conductor gate respond`, and stops it when
 it ends.
 
-Not built yet: sign-in and more than one user, schedules and email triggers firing on their own, "Describe it"
-(a model drafting the agent), notifications for approvals, the Parallel block, real connections (sample data only),
+Not built yet: sign-in and more than one user, schedules and email triggers firing on their own, notifications for approvals, the Parallel block, real connections (sample data only),
 and more than one Free-form block per agent.
 
 ## Working on the screens

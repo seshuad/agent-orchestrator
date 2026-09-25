@@ -48,14 +48,35 @@ def _resolve(spec: dict[str, Any], inputs: dict[str, str]) -> dict[str, Any]:
     return {k: inputs[v.split(".", 1)[1]] if isinstance(v, str) and v.startswith("$input.") else v for k, v in spec.items()}
 
 
+def _upstream(account_id: str, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """What the gateway needs to reach an MCP connector for this account: signed into the limits token, never from the model."""
+    account = accounts.get(account_id)
+    connector = connectors.get((account or {}).get("connector") or "")
+    if account is None or connector is None:
+        raise RunError(f"The MCP account {account_id!r} or its connector is gone. Pick another account in the agent's Connections.")
+    if (connector.get("status") or {}).get("state") == "attention":
+        raise RunError(f"{connector['name']} needs an admin's attention (Connections → Connectors): {connector['status'].get('message', '')}")
+    settings = connector.get("settings") or {}
+    return {"connector": connector["id"], "name": connector["name"], "server": settings.get("server") or {},
+            "auth": settings.get("auth") or {"kind": "none"},
+            "tools": {t["name"]: {"treat": t.get("treat"), "pin": t.get("approved_pin"), "limits": t.get("limits", [])}
+                      for t in connector.get("tools") or [] if t.get("treat") in ("read", "act")}}
+
+
 LIVE_SERVICES = {"gmail", "github"}    # services a run can use for real so far; the rest stay on sample data
+ALWAYS_LIVE = {"mcp"}                  # an MCP connector has no sample data: its steps always reach the real system
 
 
 def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[str, str] | None = None,
             email_id: str | None = None, replay: Path | None = None, replay_gates: bool = True,
-            run_id: str | None = None, vault: Path | None = None, trigger_email: dict[str, Any] | None = None) -> Prepared:
-    """With `vault`, Gmail steps read the real accounts their connections name (the rest stay on sample data).
+            run_id: str | None = None, vault: Path | None = None, trigger_email: dict[str, Any] | None = None,
+            live: bool | None = None, accounts: dict[str, dict[str, Any]] | None = None,
+            connectors: dict[str, dict[str, Any]] | None = None) -> Prepared:
+    """With `live` (default: when there's a `vault`), Gmail and GitHub steps use the real accounts their connections
+    name; the rest stay on sample data. MCP steps always use the real system: `accounts` and `connectors` say which
+    server, how it signs in and which tools its admin approved, and all of that goes into the signed limits token.
     `trigger_email` is the email that started the run ({id, from}), for email triggers on real accounts."""
+    live = vault is not None if live is None else live
     compiled = compile_agent(agent, replay=replay is not None, replay_gates=replay_gates)
     run_dir = (runs_root / (run_id or f"{agent.name}-{time.strftime('%Y%m%d-%H%M%S')}")).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -80,9 +101,14 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
     if vault is not None:
         env["AGENT_SERVICE_VAULT"] = str(vault.resolve())
     for var, spec in compiled.limits.items():
-        spec = {**spec, "source": "live" if vault is not None and spec["connection"] in LIVE_SERVICES else "sample"}
+        real = spec["connection"] in ALWAYS_LIVE or (live and spec["connection"] in LIVE_SERVICES)
+        spec = {**spec, "source": "live" if real else "sample"}
         if spec["source"] == "live" and not spec.get("account"):
             raise RunError(f"A {spec['connection']} connection in this agent isn't linked to a workspace account; pick one in its Connections.")
+        if spec["connection"] == "mcp":
+            spec["upstream"] = _upstream(spec["account"], accounts or {}, connectors or {})
+            if vault is None:
+                raise RunError("MCP connectors need the workspace vault.")
         compiled.limits[var] = spec
         env[var] = limits.mint(_resolve(spec, inputs), key.encode())
     (run_dir / "limits.json").write_text(json.dumps({k: _resolve(v, inputs) for k, v in compiled.limits.items()}, indent=1))

@@ -28,7 +28,7 @@ export interface Graph {
 export interface Feedback { ok: boolean; errors: Problem[]; warnings: Problem[]; compiled: string | null; graphs: Record<string, Graph> }
 
 export interface AgentDetail {
-  meta: Json & { owner: string; published: number | null; versions: { version: number; published_at: number; note: string }[]; sample_set: string | null; replay: string | null }
+  meta: Json & { owner: string; published: number | null; versions: { version: number; published_at: number; note: string }[]; sample_set: string | null; replay: string | null; ai?: AiNote | null; can_undo_ai?: boolean }
   draft: Json
   has_changes: boolean
   feedback: Feedback
@@ -41,14 +41,36 @@ export interface ServiceInfo {
   name: string; icon: string; never: string; sign_in?: 'google' | 'token'
   permissions: Record<string, { label: string; actions: string[]; scope: string; detail: string }>
 }
+export interface AiNote {
+  kind: 'created' | 'changed'; request: string; at: number; summary: string; assumptions: string[]; questions: string[]
+  errors: Problem[]; model: string; cost_usd: number
+}
+export interface DraftJob {
+  id: string; kind: 'create' | 'refine'; status: 'running' | 'done' | 'failed'; stage: string; started_at: number; ended_at?: number
+  attempts: number; cost_usd: number; error: string | null; result: (Omit<AiNote, 'kind' | 'request' | 'at'> & { agent: string }) | null
+}
+export interface Catalog { name: string; icon: string; never: string; permissions: Record<string, { label: string; actions: string[]; scope: string; detail: string }> }
+export interface McpTool {
+  name: string; description: string; input_schema: Json; treat: 'read' | 'act' | 'off'; limits: string[]; limitable: string[]
+  pin?: string; approved_pin?: string | null; new?: boolean; changed?: boolean
+}
+export interface Connector {
+  id: string; type: 'google' | 'github' | 'mcp'; type_name: string; name: string; icon: string; reach: string
+  settings: Json; offered?: Record<string, string[]>; tools?: McpTool[]; who: 'builders' | 'admins'; domains: string[]
+  status: { state: 'ready' | 'attention' | 'setup'; message?: string; tested_at?: number | null; tested_by?: string; reason?: string }
+  secret_set: boolean; secret_set_at?: number | null; accounts: number; created_by?: string
+  services: Record<string, Catalog>; sign_in: 'google' | 'token' | 'oauth' | 'shared' | 'none'; admin_signed_in?: boolean
+}
+export type ConnectorIn = { type?: string; name?: string; settings?: Json; secret?: string | null; offered?: Record<string, string[]>; who?: string; domains?: string[]; tools?: { name: string; treat: string; limits: string[] }[] }
 export interface Connection {
   id: string; service: string; service_name: string; account: string; label: string; permissions: string[]
+  connector?: string | null; connector_name?: string | null; catalog: Catalog
   allowed: string[]; connected_at: number; connected_by: string
   used_by: { agent: string; in: string; steps: string[]; actions: string[] }[]
-  can_sign_in: boolean; sign_in: 'google' | 'token'; signed_in: boolean; signed_in_as?: string | null; signed_in_at?: number | null
+  can_sign_in: boolean; sign_in: 'google' | 'token' | 'oauth' | 'shared' | 'none'; signed_in: boolean; signed_in_as?: string | null; signed_in_at?: number | null
 }
 export interface GoogleStatus { configured: boolean; client_file: string | null; client_type: string | null; live_services: string[] }
-export type ConnectionIn = { service: string; account: string; label: string; permissions: string[]; force?: boolean }
+export type ConnectionIn = { connector?: string | null; service: string; account?: string; label: string; permissions: string[]; force?: boolean }
 
 export interface LogEntry {
   at: number; step: string; id: string; kind: string; took: number; cost: number | null; detail: string
@@ -94,6 +116,13 @@ export const api = {
     call<AgentDetail>('POST', '/api/agents', body),
   saveAgent: (name: string, draft: Json) => call<{ feedback: Feedback; has_changes: boolean }>('PUT', `/api/agents/${name}`, { draft }),
   deleteAgent: (name: string) => call<Json>('DELETE', `/api/agents/${name}`),
+  describeAgent: (body: { description: string; name: string; sample_set: string | null }) => call<{ job: string }>('POST', '/api/agents/describe', body),
+  refineAgent: (name: string, instruction: string) => call<{ job: string }>('POST', `/api/agents/${name}/refine`, { instruction }),
+  suggest: (name: string, draft: Json, path: (string | number)[], field: string) =>
+    call<{ text: string; model: string; cost_usd: number }>('POST', `/api/agents/${name}/suggest`, { draft, path, field }),
+  clearAiNote: (name: string) => call<Json>('POST', `/api/agents/${name}/ai-note/clear`),
+  undoRefine: (name: string) => call<AgentDetail>('POST', `/api/agents/${name}/refine/undo`),
+  draftJob: (job: string) => call<DraftJob>('GET', `/api/drafts/${job}`),
   publish: (name: string, note: string) => call<AgentDetail & { version: number }>('POST', `/api/agents/${name}/publish`, { note }),
   references: (name: string, step: string | null) =>
     call<Reference[]>('GET', `/api/agents/${name}/references${step ? `?step=${encodeURIComponent(step)}` : ''}`),
@@ -112,6 +141,15 @@ export const api = {
   addConnection: (body: ConnectionIn) => call<Connection>('POST', '/api/connections', body),
   editConnection: (id: string, body: ConnectionIn) => call<Connection>('PUT', `/api/connections/${id}`, body),
   removeConnection: (id: string) => call<Json>('DELETE', `/api/connections/${id}`),
+  mcpStart: (id: string) => call<{ url: string }>('POST', `/api/connections/${id}/mcp/start`),
+  connectors: () => call<Connector[]>('GET', '/api/connectors'),
+  connectorTypes: () => call<Record<string, { name: string; icon: string; services: Record<string, ServiceInfo> }>>('GET', '/api/connector-types'),
+  connector: (id: string) => call<Connector>('GET', `/api/connectors/${id}`),
+  addConnector: (body: ConnectorIn) => call<Connector>('POST', '/api/connectors', body),
+  editConnector: (id: string, body: ConnectorIn) => call<Connector>('PUT', `/api/connectors/${id}`, body),
+  removeConnector: (id: string) => call<Json>('DELETE', `/api/connectors/${id}`),
+  testConnector: (id: string) => call<Connector>('POST', `/api/connectors/${id}/test`),
+  connectorOauthStart: (id: string) => call<{ url: string }>('POST', `/api/connectors/${id}/oauth/start`),
   startRun: (name: string, body: { version: number | null; inputs: Record<string, string>; email_id: string | null; scripted: boolean; source: string }) =>
     call<Run>('POST', `/api/agents/${name}/runs`, body),
   runs: (agent?: string) => call<Run[]>('GET', `/api/runs${agent ? `?agent=${agent}` : ''}`),

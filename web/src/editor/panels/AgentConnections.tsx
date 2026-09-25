@@ -24,9 +24,18 @@ export default function AgentConnections() {
     }))
     update([], { ...draft, connections: Object.fromEntries(Object.entries(conns).map(([k, v]) => [k === from ? to : k, v])), steps: relink(draft.steps) })
   }
+  // Switching to an account of another kind (e.g. built-in GitHub to an MCP connector) resets what the steps that use
+  // this connection may do: actions and limits mean different things there, and the builder picks them again.
   const pick = (id: string, accountId: string) => {
     const a = byId[accountId]
-    if (a) update(['connections', id], { service: a.service, permission: a.permissions.join(', '), account: a.id })
+    if (!a) return
+    const before = conns[id]
+    const kindOf = (x: Json | undefined) => `${x?.service}:${x?.account ? byId[x.account]?.connector ?? '' : ''}`
+    const changed = before?.service !== a.service || (a.service === 'mcp' && kindOf(before) !== `${a.service}:${a.connector ?? ''}`)
+    const reset = (steps: Json[] = []): Json[] => steps.map((s) => ({
+      ...s, ...(changed && s.uses?.connection === id ? { uses: { connection: id, actions: [] } } : {}), ...(s.steps ? { steps: reset(s.steps) } : {}),
+    }))
+    update([], { ...draft, connections: { ...conns, [id]: { service: a.service, permission: a.permissions.join(', '), account: a.id } }, steps: reset(draft.steps) })
   }
   const add = () => {
     let n = 1; while (conns[`connection-${n}`]) n++
@@ -40,12 +49,12 @@ export default function AgentConnections() {
       {Object.entries(conns).map(([id, c]: [string, any], i) => {
         const a = c.account ? byId[c.account] : undefined
         return (
-          <Block key={i} title={<span className="row"><Icon name={c.service === 'gmail' ? 'mail' : c.service === 'google-calendar' ? 'calendar' : c.service === 'github' ? 'code' : 'group'} size={16} color="var(--muted)" />{a?.label ?? 'Pick an account'}</span>}
+          <Block key={i} title={<span className="row"><Icon name={c.service === 'gmail' ? 'mail' : c.service === 'google-calendar' ? 'calendar' : c.service === 'github' ? 'code' : c.service === 'mcp' ? 'plug' : 'group'} size={16} color="var(--muted)" />{a?.label ?? 'Pick an account'}</span>}
             aside={<button className="link" style={{ color: 'var(--faint)' }} onClick={() => { const x = { ...conns }; delete x[id]; update(['connections'], x) }}>remove</button>}>
             <span className="row"><span className="muted" style={{ width: 70 }}>Account</span>
               <Select value={c.account ?? ''} options={accounts.map((x) => x.id)} onChange={(v) => pick(id, v)} label="Account"
                 labels={{ '': 'Pick an account', ...Object.fromEntries(accounts.map((x) => [x.id, `${x.label} · ${x.service_name} · ${x.account}`])) }} /></span>
-            {a && <span className="row" style={{ gap: 6 }}><span className="muted" style={{ width: 70 }}>May</span>{a.permissions.map((p) => <Pill key={p} kind="published">{p}</Pill>)}</span>}
+            {a && <span className="row" style={{ gap: 6 }}><span className="muted" style={{ width: 70 }}>May</span>{a.permissions.map((p) => <Pill key={p} kind="published">{a.catalog?.permissions[p]?.label ?? p}</Pill>)}</span>}
             <span className="row"><span className="muted" style={{ width: 70 }}>Steps call it</span><NameInput value={id} taken={Object.keys(conns)} onRename={(v) => rename(id, v)} normalize={(v) => v.replace(/\s+/g, '-')} width={180} label="Name used by steps" /></span>
             <span className="faint">Used by: {usedBy(id).join(', ') || 'no step yet'}</span>
             <FieldErrors path={`connections.${id}`} />
@@ -57,7 +66,7 @@ export default function AgentConnections() {
         <Link to="/connections" style={{ fontSize: 12, fontWeight: 600 }}>Manage the workspace's connections ↗</Link>
       </span>
       <Block title="Content from these connections">
-        <Guarantees items={['Email is treated as untrusted: other people wrote it.', 'Whether a person approves before the agent changes anything is your choice: add an Approve step if they should.']} />
+        <Guarantees items={['Email, GitHub and MCP results are treated as untrusted: other people wrote them.', 'Whether a person approves before the agent changes anything is your choice: add an Approve step if they should.']} />
       </Block>
     </>
   )

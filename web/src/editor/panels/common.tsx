@@ -1,6 +1,6 @@
 // Pieces every panel uses: the step being edited, its header, the fields editor, the inputs editor.
-import type { ReactNode } from 'react'
-import type { Json } from '../../api'
+import { useEffect, useState, type ReactNode } from 'react'
+import { api, type Connection, type Connector, type Json, type McpTool } from '../../api'
 import { Block, Check, Chips, FieldErrors, Icon, KIND_ICON, NameInput, Pill, RefPicker, Select, Text } from '../../ui'
 import { useEditor } from '../Editor'
 import { FLOW_KINDS, KIND_LABEL, STEP_KINDS, TYPES, getIn, pathStr, type Path } from '../model'
@@ -14,6 +14,45 @@ export function useStep() {
   const inside = path.length === 4
   const block: Json | null = inside ? getIn(ed.draft, path.slice(0, 2)) : null
   return { ...ed, path, step, set, p, inside, block }
+}
+
+let workspaceCache: Promise<[Connection[], Connector[]]> | null = null
+
+/** The MCP tools behind one of the agent's connections: its account's connector's tools, as the admin approved them. */
+export function useMcpTools(connection: string | undefined): McpTool[] {
+  const { draft } = useEditor()
+  const [tools, setTools] = useState<McpTool[]>([])
+  const account = connection ? draft.connections?.[connection]?.account : undefined
+  useEffect(() => {
+    if (!account) { setTools([]); return }
+    workspaceCache ??= Promise.all([api.connections(), api.connectors()])
+    workspaceCache.then(([accounts, connectors]) => {
+      const a = accounts.find((x) => x.id === account)
+      setTools(connectors.find((c) => c.id === a?.connector)?.tools ?? [])
+    }).catch(() => { workspaceCache = null })
+  }, [account])
+  return tools
+}
+
+/** Per argument the admin lets steps limit: the only values a call may pass. The gateway refuses anything else. */
+export function ArgLimits({ tools }: { tools: McpTool[] }) {
+  const { step, set } = useStep()
+  const limits: Record<string, string[]> = step.uses?.arg_limits ?? {}
+  const args = [...new Set(tools.filter((t) => (step.uses?.actions ?? []).includes(t.name)).flatMap((t) => t.limits))]
+  if (!args.length) return null
+  const setArg = (a: string, v: string[]) => {
+    const next = { ...limits, [a]: v }
+    if (!v.length) delete next[a]
+    set(['uses', 'arg_limits'], Object.keys(next).length ? next : undefined)
+  }
+  return (
+    <>
+      {args.map((a) => (
+        <span key={a} className="row"><span className="muted"><code className="mono">{a}</code> is one of</span>
+          <Chips values={limits[a] ?? []} onChange={(v) => setArg(a, v)} placeholder="Add a value (any if none)" /></span>
+      ))}
+    </>
+  )
 }
 
 const MEANING: Record<string, string> = Object.fromEntries([...STEP_KINDS, ...FLOW_KINDS].map((k) => [k.kind, k.text]))
@@ -127,7 +166,7 @@ export function TakesEditor({ fixed, allowAdd = true }: { fixed?: string[]; allo
 }
 
 /** Which connection a step uses, which of its actions, and the limits the gateway enforces. */
-export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos')[] }) {
+export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos')[]; mcpTools?: McpTool[] }) {
   const { step, set, draft, p, block } = useStep()
   const uses: Json | undefined = step.uses
   const conns = Object.keys(draft.connections ?? {})
@@ -142,7 +181,7 @@ export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits
   }
   const setU = (k: string, v: unknown) => set(['uses'], { ...uses, [k]: v === '' || (Array.isArray(v) && !v.length && k !== 'actions') ? undefined : v })
   const service = draft.connections?.[uses.connection]?.service
-  const actionLabel = (a: string) => service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : a.replace('_', ' ')
+  const actionLabel = (a: string) => service === 'mcp' ? `${a}${mcpTools?.find((t) => t.name === a)?.description ? ': ' + mcpTools.find((t) => t.name === a)!.description : ''}` : service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : a.replace('_', ' ')
   const stepIds = (block?.steps ?? []).map((s: Json) => s.id).filter((id: string) => id !== step.id)
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -152,7 +191,19 @@ export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits
         <button className="link" style={{ color: 'var(--faint)', marginLeft: 'auto' }} onClick={() => set(['uses'], undefined)}>Don't use a connection</button>
       </span>
       {actions.map((a) => <Check key={a} checked={uses.actions?.includes(a)} onChange={(on) => setU('actions', on ? [...(uses.actions ?? []), a] : uses.actions.filter((x: string) => x !== a))}>{actionLabel(a)}</Check>)}
+      {(uses.actions ?? []).filter((a: string) => !actions.includes(a)).map((a: string) => (
+        <Check key={a} checked onChange={() => setU('actions', uses.actions.filter((x: string) => x !== a))}
+          detail="Not offered by this connection: untick it.">{a.replace('_', ' ')}</Check>
+      ))}
       <FieldErrors path={p('uses')} />
+      {mcpTools && actions.length === 0 && <span className="faint">This connector offers no tools for this kind of step.</span>}
+      {mcpTools && (
+        <div className="stack" style={{ gap: 7, marginLeft: 22, padding: '8px 10px', background: 'var(--soft)', border: '1px solid var(--line)', borderRadius: 8 }}>
+          <span className="faint">Limits, enforced by the service on every call:</span>
+          <ArgLimits tools={mcpTools} />
+          {!mcpTools.some((t) => (uses.actions ?? []).includes(t.name) && t.limits.length) && <span className="faint">The admin lets steps limit no argument of these tools.</span>}
+        </div>
+      )}
       {limits.length > 0 && (
         <div className="stack" style={{ gap: 7, marginLeft: 22, padding: '8px 10px', background: 'var(--soft)', border: '1px solid var(--line)', borderRadius: 8 }}>
           <span className="faint">Limits, enforced by the service, not by the instructions:</span>

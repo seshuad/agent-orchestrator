@@ -168,3 +168,12 @@ h2 { margin: 0; font-size: 18px; font-weight: 700; }
 .panel-rail:hover { background: var(--soft); color: var(--ink); }
 
 .pill.show { background: #EEF6F3; color: #1F5A48; }
+
+.tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--line); }
+.tabs a { padding: 0 2px 8px; font-size: 13px; font-weight: 600; color: #6B6B63; border-bottom: 2px solid transparent; text-decoration: none; }
+.tabs a.on { color: var(--ink); border-bottom-color: var(--acc); }
+
+.ai-strip { display: flex; flex-direction: column; gap: 4px; padding: 8px 22px; background: #F5F8FC; border-bottom: 1px solid #D6E1EE; font-size: 12.5px; }
+
+.help-pop { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: #F5F8FC; border: 1px solid #D6E1EE; border-radius: 8px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.help-template { padding: 8px 10px; background: #fff; border: 1px dashed #C9D6E6; border-radius: 6px; color: var(--ink); font-size: 12.5px; line-height: 1.5; }

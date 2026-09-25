@@ -1,22 +1,37 @@
 // Act: changes something outside the agent, using only checked fields. No model involved.
 import type { Json } from '../../api'
 import { Block, Chips, FieldErrors, Guarantees, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
-import { StepHeader, UsesEditor, useStep } from './common'
+import { ArgLimits, StepHeader, UsesEditor, useMcpTools, useStep } from './common'
 
 export default function Act() {
   const { step, set, p, refs, draft } = useStep()
-  const action = step.create_events ? 'create_events' : 'add_row'
+  const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : 'add_row'
+  const mcpConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'mcp')?.[0]
+  const tools = useMcpTools(action === 'call_tool' ? step.uses?.connection : undefined)
   const ce: Json = step.create_events ?? {}
   const row: Json = step.add_row?.row ?? {}
   const yesNo = Object.entries(draft.run_options ?? {}).filter(([, o]: [string, any]) => o.type === 'yes/no').map(([k]) => `run.${k}`)
   const switchTo = (a: string) => {
-    const service = a === 'create_events' ? 'google-calendar' : 'google-sheets'
+    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : 'google-sheets'
     const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === service)?.[0] ?? ''
     set(['create_events'], a === 'create_events' ? { calendar: 'Personal', templates: { default: { title: '', starts: '{start}', ends: '{end}' } }, never_twice: { match_fields: [] } } : undefined)
     set(['add_row'], a === 'add_row' ? { sheet: '', row: {} } : undefined)
-    set(['uses'], a === 'create_events' ? { connection: conn, actions: ['create_event'], calendar: 'Personal' } : { connection: conn, actions: ['append_row'], sheets: [] })
+    set(['call_tool'], a === 'call_tool' ? { tool: '', arguments: {} } : undefined)
+    set(['uses'], a === 'create_events' ? { connection: conn, actions: ['create_event'], calendar: 'Personal' }
+      : a === 'call_tool' ? { connection: conn, actions: [] } : { connection: conn, actions: ['append_row'], sheets: [] })
     set(['takes'], a === 'create_events' ? { records: '' } : undefined)
   }
+  const ct: Json = step.call_tool ?? {}
+  const actTools = tools.filter((t) => t.treat === 'act')
+  const tool = tools.find((t) => t.name === ct.tool)
+  const toolArgs: [string, any][] = Object.entries(tool?.input_schema?.properties ?? {})
+  const required: string[] = tool?.input_schema?.required ?? []
+  const pickTool = (name: string) => {
+    set(['call_tool'], { ...ct, tool: name, arguments: {} })
+    set(['uses'], { ...(step.uses ?? {}), actions: name ? [name] : [], arg_limits: undefined })
+  }
+  const ctType = refs.find((r) => r.ref === ct.for_each)?.type.replace(/^list of /, '') ?? ''
+  const ctFields = Object.keys(draft.records?.[ctType]?.fields ?? {})
   const templates: Json = ce.templates ?? {}
   const forEach: string | undefined = step.add_row?.for_each
   const listType = refs.find((r) => r.ref === forEach)?.type ?? ''
@@ -26,10 +41,42 @@ export default function Act() {
     <>
       <StepHeader note="The only kind of step that changes the outside world, and it takes no text a model wrote: only checked fields." />
       <Block title="Does">
-        <Segmented options={['create_events', 'add_row']} value={action} onChange={switchTo} labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet' }} />
+        <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : [])]} value={action} onChange={switchTo}
+          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool' }} />
       </Block>
-      <Block title="Uses"><UsesEditor actions={action === 'create_events' ? ['create_event'] : ['append_row']} limits={action === 'create_events' ? ['calendar'] : ['sheets']} /></Block>
-      {action === 'create_events' ? (
+      {action === 'call_tool' ? (
+        <>
+          <Block title="Uses">
+            <span className="row"><Select value={step.uses?.connection ?? ''} options={Object.entries(draft.connections ?? {}).filter(([, c]: [string, any]) => c.service === 'mcp').map(([k]) => k)}
+              onChange={(v) => set(['uses'], { connection: v, actions: [] })} label="Connection" />
+              <Select value={ct.tool ?? ''} options={['', ...actTools.map((t) => t.name)]} onChange={pickTool} label="Tool" labels={{ '': 'Pick a tool' }} /></span>
+            {tool && <span className="faint">{tool.description}</span>}
+            {!actTools.length && <span className="faint">This connector's admin offers no act tools.</span>}
+            {tool && tool.limits.length > 0 && (
+              <div className="stack" style={{ gap: 7, padding: '8px 10px', background: 'var(--soft)', border: '1px solid var(--line)', borderRadius: 8 }}>
+                <span className="faint">Limits, enforced by the service on every call:</span><ArgLimits tools={tools} />
+              </div>
+            )}
+            <FieldErrors path={p('uses')} />
+          </Block>
+          <Block title="Call it">
+            <span className="row"><span className="muted">For each</span>
+              <RefPicker value={ct.for_each ?? ''} refs={refs.filter((r) => r.type.startsWith('list'))} onChange={(v) => set(['call_tool', 'for_each'], v || undefined)} path={p('call_tool', 'for_each')} /></span>
+            <span className="faint">{ct.for_each ? 'One call per item. Arguments fill in from each item’s checked fields.' : 'Leave empty to call it once; pick a list to call it once per item.'}</span>
+            {ctFields.length > 0 && <span className="row" style={{ gap: 4 }}><span className="faint">Fields of {ctType}:</span>{ctFields.map((f) => <code key={f} className="ref">{`{${f}}`}</code>)}</span>}
+            {toolArgs.map(([arg, schema]) => (
+              <span key={arg} className="row" style={{ flexWrap: 'nowrap' }}>
+                <code className="mono" style={{ width: 130, flex: 'none' }}>{arg}{required.includes(arg) ? ' *' : ''}</code>
+                <input className="input cel grow" value={ct.arguments?.[arg] ?? ''} aria-label={arg} placeholder={schema.description ?? (ct.for_each ? '{field} or text' : 'text')}
+                  onChange={(e) => { const next = { ...(ct.arguments ?? {}), [arg]: e.target.value }; if (!e.target.value) delete next[arg]; set(['call_tool', 'arguments'], next) }} />
+              </span>
+            ))}
+            {tool && !toolArgs.length && <span className="faint">It takes no arguments.</span>}
+            <FieldErrors path={p('call_tool')} />
+          </Block>
+        </>
+      ) : <Block title="Uses"><UsesEditor actions={action === 'create_events' ? ['create_event'] : ['append_row']} limits={action === 'create_events' ? ['calendar'] : ['sheets']} /></Block>}
+      {action === 'call_tool' ? null : action === 'create_events' ? (
         <>
           <Block title="For each"><RefPicker value={step.takes?.records ?? ''} refs={refs} onChange={(v) => set(['takes', 'records'], v)} path={p('takes', 'records')} />
             <span className="faint">e.g. <code className="mono">approve_trips.approved[*].bookings</code>: every booking in the approved trips.</span></Block>

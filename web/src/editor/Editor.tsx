@@ -3,7 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, type AgentDetail, type Feedback, type Json, type Reference } from '../api'
-import { Dialog, Icon, Pill, ProblemsContext, Toast } from '../ui'
+import { Dialog, Icon, Pill, ProblemsContext, SessionContext, Toast } from '../ui'
+import { AiStrip, RefineDialog } from './AiNote'
 import DeleteAgent from '../pages/DeleteAgent'
 import RunNow from '../pages/RunNow'
 import { getIn, pathStr, setIn, type Path, type Selection } from './model'
@@ -39,7 +40,8 @@ export default function Editor() {
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
   const [hasChanges, setHasChanges] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
-  const [dialog, setDialog] = useState<'yaml' | 'publish' | 'run' | 'delete' | null>(null)
+  const [dialog, setDialog] = useState<'yaml' | 'publish' | 'run' | 'delete' | 'refine' | null>(null)
+  const session = useContext(SessionContext)
   // The details panel can be hidden to give the graph the full width; the choice is remembered.
   const [panelOpen, setPanelOpen] = useState(() => { try { return localStorage.getItem('editor.details') !== 'hidden' } catch { return true } })
   const showPanel = useCallback((open: boolean) => {
@@ -57,12 +59,15 @@ export default function Editor() {
   const [note, setNote] = useState('')
   const dirty = useRef(false)
 
-  useEffect(() => {
+  const load = useCallback((first: boolean) => {
     api.agent(name).then((d) => {
+      dirty.current = false
       setDetail(d); setDraft(d.draft); setFeedback(d.feedback); setHasChanges(d.has_changes)
-      if (d.draft.steps?.length) setSelection({ type: 'step', path: ['steps', 0] })
+      if (first && d.draft.steps?.length) setSelection({ type: 'step', path: ['steps', 0] })
+      if (!first) setSelection(d.draft.steps?.length ? { type: 'step', path: ['steps', 0] } : { type: 'settings' })
     }).catch(() => navigate('/'))
   }, [name, navigate])
+  useEffect(() => { load(true) }, [load])
 
   // Autosave: a short pause after the last edit, then the service checks and compiles the draft.
   useEffect(() => {
@@ -130,12 +135,15 @@ export default function Editor() {
               {feedback.errors.length > 0
                 ? <span className="pill failed" title={feedback.errors.map((e) => e.message).join('\n')}>{feedback.errors.length} to fix</span>
                 : <span className="pill succeeded">Ready</span>}
+              {session?.claude_api && <button className="btn" onClick={() => setDialog('refine')}><Icon name="spark" size={13} color="var(--acc)" />Refine with AI</button>}
               <button className="btn" onClick={() => setDialog('yaml')}><Icon name="code" size={14} />Compiled YAML</button>
               <button className="btn" onClick={() => setDialog('run')} disabled={!feedback.ok}><Icon name="play" size={12} width={2} />Test run</button>
               <button className="btn primary" disabled={!feedback.ok || !hasChanges} onClick={() => setDialog('publish')}>Publish</button>
               <button className="btn" onClick={() => setDialog('delete')} aria-label="Delete agent" title="Delete agent"><Icon name="trash" size={15} color="var(--muted)" /></button>
             </div>
           </div>
+          <AiStrip key={String(detail.meta.ai?.at ?? '')} name={name} meta={detail.meta} onUndo={() => { load(false); setToast('Undid Claude\'s change.') }}
+            onDismiss={() => api.clearAiNote(name).then(() => setDetail({ ...detail, meta: { ...detail.meta, ai: null } }))} />
           {feedback.errors.some((e) => !e.path) && (
             <div className="notice bad" style={{ borderRadius: 0, borderLeft: 'none', borderRight: 'none' }}>
               <Icon name="alert" size={14} />{feedback.errors.filter((e) => !e.path).map((e) => e.message).join(' ')}
@@ -172,6 +180,7 @@ export default function Editor() {
               <input className="input full" value={note} onChange={(e) => setNote(e.target.value)} aria-label="What changed" /></label>
           </Dialog>
         )}
+        {dialog === 'refine' && <RefineDialog name={name} onClose={() => setDialog(null)} onDone={() => { setDialog(null); load(false); setToast('Claude changed the draft. Check it, or undo the change.') }} />}
         {dialog === 'delete' && <DeleteAgent agent={name} onClose={() => setDialog(null)} onDeleted={() => navigate('/')} />}
         {dialog === 'run' && <RunNow agent={name} draftOnly onClose={() => setDialog(null)} onStarted={(r) => navigate(`/agents/${name}/runs/${r.id}`)} />}
         <Toast message={toast} onDone={() => setToast(null)} />
