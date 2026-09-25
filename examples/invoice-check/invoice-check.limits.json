@@ -1,0 +1,53 @@
+{
+ "LIMITS_GMAIL_READ_INVOICE": {
+  "connection": "gmail",
+  "actions": [
+   "open"
+  ],
+  "only_message": "$input.email_id"
+ },
+ "LIMITS_GMAIL_SEARCH_VENDOR_EMAILS": {
+  "connection": "gmail",
+  "actions": [
+   "search",
+   "open"
+  ],
+  "from_domain": "$input.sender_domain"
+ },
+ "LIMITS_SHEETS_LOOK_UP_VENDOR": {
+  "connection": "google-sheets",
+  "actions": [
+   "read"
+  ],
+  "sheets": [
+   "Vendors"
+  ]
+ },
+ "LIMITS_SHEETS_FIND_PURCHASE_ORDER": {
+  "connection": "google-sheets",
+  "actions": [
+   "read"
+  ],
+  "sheets": [
+   "Purchase orders"
+  ]
+ },
+ "LIMITS_SHEETS_FIND_RECEIPTS": {
+  "connection": "google-sheets",
+  "actions": [
+   "read"
+  ],
+  "sheets": [
+   "Receiving log"
+  ]
+ },
+ "LIMITS_SHEETS_ADD_TO_PAYMENT_QUEUE": {
+  "connection": "google-sheets",
+  "actions": [
+   "append_row"
+  ],
+  "sheets": [
+   "Payment queue"
+  ]
+ }
+}

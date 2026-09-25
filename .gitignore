@@ -1,3 +1,7 @@
 __pycache__/
 .DS_Store
+.runs/
 .venv/
+.workspace/
+web/dist/
+web/node_modules/

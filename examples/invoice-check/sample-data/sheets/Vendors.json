@@ -1,0 +1,5 @@
+[
+  {"name": "Acme Paper", "email_domain": "acmepaper.com", "bank_account": "US44 ACME 0001 2233", "since": "2023-02-10"},
+  {"name": "Northwind Supply", "email_domain": "northwindsupply.com", "bank_account": "US17 NWND 4400 1180", "since": "2024-06-01"},
+  {"name": "Contoso Supplies", "email_domain": "contososupplies.com", "bank_account": "US61 CNTS 2090 3310", "since": "2022-11-15"}
+]

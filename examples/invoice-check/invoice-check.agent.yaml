@@ -1,0 +1,160 @@
+# invoice-check, as the designer saves it: the agent definition (format agent-service/v1).
+# Built from InvoiceBlock.dc.html and InvoiceTest.dc.html. `agent-service compile` turns it into
+# Conductor YAML; nobody edits that YAML.
+format: agent-service/v1
+name: invoice-check
+description: Match an emailed invoice to its purchase order and receipts, then queue it for payment after finance approves.
+
+trigger:
+  kind: email
+  to: invoices@northpeak.co
+
+run_options:
+  dry_run: {type: yes/no, default: true, description: "Run every step, but add nothing to the Payment queue."}
+
+limits:
+  budget_usd: 0.50
+  timeout_minutes: 15
+
+connections:
+  gmail: {service: gmail, permission: read}
+  sheets: {service: google-sheets, permission: read and add rows}
+
+records:
+  Invoice:
+    fields:
+      vendor: {type: text}
+      invoice_number: {type: text}
+      po_number: {type: text, optional: true, hint: "As written on the invoice; empty if there is none."}
+      lines: {type: list of Invoice line}
+      total: {type: number}
+      bank_account: {type: text, optional: true, hint: "The account the invoice asks to be paid into."}
+  Invoice line:
+    fields:
+      description: {type: text}
+      quantity: {type: number}
+      unit_price: {type: number}
+
+steps:
+  - id: match_invoice
+    kind: free-form
+    name: Match invoice
+    goal: >-
+      Match this invoice to its purchase order and delivery receipts. If the PO number is missing or
+      wrong, look for it in earlier emails from the vendor. Finish with one outcome and say what you checked.
+    planning_model: claude-sonnet-5
+    limits: {ask_runs: 6, turns: 12}
+    outcomes: [matched, amounts differ, no PO found, new vendor, bank details changed, not an invoice]
+
+    steps:
+      - id: read_invoice
+        kind: ask
+        name: Read invoice
+        model: claude-sonnet-5
+        takes: {email: trigger.email_id}
+        uses: {connection: gmail, actions: [open], only_message: trigger.email_id}
+        instructions: >-
+          You read one email and extract the invoice in it. Copy values exactly as written. If the
+          email is not an invoice, say so and leave the invoice empty.
+        task: Open the email and its attachments, and extract the invoice.
+        returns:
+          is_invoice: {type: yes/no}
+          invoice: {type: Invoice, optional: true}
+
+      - id: search_vendor_emails
+        kind: ask
+        name: Search vendor emails
+        model: claude-sonnet-5
+        takes: {invoice: read_invoice.invoice, focus: "planner.focus?"}
+        uses: {connection: gmail, actions: [search, open], from_domain: trigger.sender_domain}
+        repeat: {planner_sets: focus, usually_after: find_purchase_order, when: no match}
+        instructions: >-
+          You search earlier emails from this vendor for purchase order numbers that match an invoice.
+          Return only PO numbers you saw written in an email.
+        task: Find the purchase order number for this invoice.
+        returns:
+          po_numbers: {type: list of text}
+          notes: {type: list of text, hint: "Where each PO number was found, e.g. \"order confirmation, Mar 4\"."}
+
+      - id: look_up_vendor
+        kind: built-in
+        name: Look up vendor
+        operation: {lookup: {sheet: Vendors, column: name, as: vendor}}
+        takes: {any_of: [read_invoice.invoice.vendor]}
+        uses: {connection: sheets, actions: [read], sheets: [Vendors]}
+
+      - id: find_purchase_order
+        kind: built-in
+        name: Find purchase order
+        operation: {lookup: {sheet: Purchase orders, column: po_number, as: purchase_order}}
+        takes: {any_of: [read_invoice.invoice.po_number, search_vendor_emails.po_numbers]}
+        uses: {connection: sheets, actions: [read], sheets: [Purchase orders]}
+        reruns_by_itself: true
+
+      - id: check_bank_details
+        kind: built-in
+        name: Check bank details
+        operation: {compare: {}}
+        takes: {value: read_invoice.invoice.bank_account, on_file: "look_up_vendor.vendor.bank_account?"}
+
+      - id: find_receipts
+        kind: built-in
+        name: Find receipts
+        operation: {filter-rows: {sheet: Receiving log, column: po_number, as: receipts}}
+        takes: {equals: find_purchase_order.purchase_order.po_number}
+        uses: {connection: sheets, actions: [read], sheets: [Receiving log]}
+        reruns_by_itself: true
+
+      - id: three_way_match
+        kind: built-in
+        name: Three-way match
+        operation: {three-way-match: {}}
+        takes: {invoice: read_invoice.invoice, purchase_order: find_purchase_order.purchase_order, receipts: "find_receipts.receipts?"}
+
+    before_finishing:
+      - rule: 'has(steps.check_bank_details) || planner.outcome == "not an invoice"'
+        message: Run check_bank_details before finishing.
+      - rule: '!(planner.outcome in ["matched", "amounts differ"]) || (has(steps.three_way_match) && steps.three_way_match.passed == (planner.outcome == "matched"))'
+        message: To finish as matched or amounts differ, three_way_match must have run and agree with the outcome.
+
+    returns:
+      outcome: 'planner.outcome'
+      invoice: 'has(steps.read_invoice) ? steps.read_invoice.invoice : null'
+      bank_check: 'has(steps.check_bank_details) ? steps.check_bank_details.status : "not checked"'
+      match: 'has(steps.three_way_match) ? steps.three_way_match : null'
+      po_number: 'has(steps.find_purchase_order) && steps.find_purchase_order.found ? steps.find_purchase_order.purchase_order.po_number : ""'
+      notes: 'planner.notes'
+
+  - id: approve_payment
+    kind: approve
+    name: Approve payment
+    approver: finance lead
+    notify: [slack]
+    timeout_hours: 24
+    review: |
+      ## Queue this invoice for payment?
+
+      **Outcome: {match_invoice.outcome}**
+
+      {match_invoice.invoice.vendor} · {match_invoice.invoice.invoice_number} · {match_invoice.invoice.total}
+      Bank details: {match_invoice.bank_check}
+
+      What the planner checked:
+      {match_invoice.notes}
+    choices:
+      - {label: "Don't queue", passes: none}
+      - {label: Queue for payment, passes: all}
+
+  - id: add_to_payment_queue
+    kind: act
+    name: Add to payment queue
+    uses: {connection: sheets, actions: [append_row], sheets: [Payment queue]}
+    add_row:
+      sheet: Payment queue
+      row:
+        vendor: match_invoice.invoice.vendor
+        invoice_number: match_invoice.invoice.invoice_number
+        amount: match_invoice.invoice.total
+        po_number: match_invoice.po_number
+        outcome: match_invoice.outcome
+    follows_dry_run: run.dry_run

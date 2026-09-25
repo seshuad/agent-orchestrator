@@ -1,0 +1,34 @@
+# Scripted planner and model answers for the Northwind invoice (no PO number, 32 of 40 received),
+# so the whole workflow runs in Conductor without a model. It includes two planner mistakes the
+# service must catch: asking for a step before its inputs exist, and finishing before the rules hold.
+#
+#   uv run agent-service run examples/invoice-check/invoice-check.agent.yaml \
+#     --sample-data examples/invoice-check/sample-data --email-id inv-northwind-2208 \
+#     --replay examples/invoice-check/replay-northwind.yaml
+plan:
+  - {next: read_invoice, focus: "", outcome: no PO found, reason: Start with the invoice., notes: []}
+  - {next: three_way_match, focus: "", outcome: no PO found, reason: Mistake on purpose, before any purchase order exists., notes: []}
+  - {next: look_up_vendor, focus: "", outcome: no PO found, reason: The bank check needs the vendor on file., notes: []}
+  - {next: finish, focus: "", outcome: matched, reason: Mistake on purpose, finishing before the rules hold., notes: []}
+  - {next: check_bank_details, focus: "", outcome: no PO found, reason: Always required., notes: []}
+  - {next: search_vendor_emails, focus: "toner order, February to March", outcome: no PO found,
+     reason: The invoice has no PO number; Northwind quotes one in its order confirmations., notes: []}
+  - {next: three_way_match, focus: "", outcome: no PO found, reason: A purchase order and receipts exist now., notes: []}
+  - {next: finish, focus: "", outcome: amounts differ, reason: No other step could change the outcome.,
+     notes: ["Found PO-5531 in the order confirmation from Mar 4.", "Invoice bills 8 cartridges not yet received: pay for 32 ($1,472.00) now, or wait for the rest."]}
+
+read_invoice:
+  - is_invoice: true
+    invoice:
+      vendor: Northwind Supply
+      invoice_number: INV-2208
+      po_number: null
+      lines: [{description: "Toner cartridge, black", quantity: 40, unit_price: 46.0}]
+      total: 1840.0
+      bank_account: US17 NWND 4400 1180
+
+search_vendor_emails:
+  - {po_numbers: [PO-5531], notes: ["PO-5531 in the order confirmation from Mar 4"]}
+
+approve_payment:
+  - {selected: all}

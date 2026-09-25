@@ -1,0 +1,8 @@
+[
+  {"po_number": "PO-5102", "vendor": "Acme Paper", "services": false,
+   "lines": [{"description": "Copy paper, 10 reams per case", "quantity": 20, "unit_price": 42.50}]},
+  {"po_number": "PO-5531", "vendor": "Northwind Supply", "services": false,
+   "lines": [{"description": "Toner cartridge, black", "quantity": 40, "unit_price": 46.00}]},
+  {"po_number": "PO-5207", "vendor": "Contoso Supplies", "services": false,
+   "lines": [{"description": "Office chair, mesh", "quantity": 10, "unit_price": 120.00}]}
+]

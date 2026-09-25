@@ -1,0 +1,199 @@
+# travel-sync, free-form variant, as the designer saves it: the agent definition (format
+# agent-service/v1). Built from FreeForm.dc.html plus the screens it shares with the fixed flow
+# (Trigger, Connections, Booking, Read airline emails, Tidy up, Double-check, Branch, Approve,
+# Add to calendar). `agent-service compile` turns it into Conductor YAML.
+format: agent-service/v1
+name: travel-sync
+description: Find travel bookings in email, double-check them, and add the trips you approve to your calendar.
+
+trigger:
+  kind: schedule
+  every: weekday
+  at: "07:00"
+  time_zone: Pacific time
+
+run_options:
+  dry_run: {type: yes/no, default: true, description: "Yes until published. Add to calendar lists the events it would create, and creates none."}
+  my_name: {type: text, default: Alex Rivera, description: "Used by Tidy up's flag rules."}
+
+limits:
+  budget_usd: 2.00
+  timeout_minutes: 30
+
+connections:
+  gmail: {service: gmail, permission: read}
+  calendar: {service: google-calendar, permission: create and see events}
+
+records:
+  Booking:
+    fields:
+      type: {type: choice, of: [flight, hotel, car], hint: What was booked}
+      provider: {type: text, hint: "Airline, hotel brand or rental company"}
+      confirmation: {type: text, hint: Exactly as written in the email}
+      travelers: {type: list of text, hint: Names as written in the email}
+      start: {type: date & time with time zone, hint: "Departure, check-in or pick-up, in that place's time zone"}
+      end: {type: date & time with time zone, hint: "Arrival, check-out or drop-off"}
+      destination: {type: text, hint: "Arrival airport for flights, city otherwise"}
+      address: {type: text, optional: true, hint: "Street address, if the email gives one"}
+      source_email: {type: text, hint: "The id of the email this was found in"}
+      confidence: {type: choice, of: [high, medium, low], hint: High only if every field is stated}
+      flight_number: {type: text, optional: true, when_type: flight}
+      from_airport: {type: text, optional: true, when_type: flight}
+      hotel_name: {type: text, optional: true, when_type: hotel}
+      pick_up_location: {type: text, optional: true, when_type: car}
+    # Same booking when these match; spaces, dashes and capitals ignored.
+    identity: "b.type + ':' + norm(b.confirmation) + ':' + (b.flight_number != null ? norm(b.flight_number) : date_of(b.start))"
+  Skipped email:
+    fields:
+      email: {type: text}
+      reason: {type: text}
+  Check:
+    fields:
+      booking: {type: text, hint: The booking's key}
+      status: {type: choice, of: [confirmed, mismatch, not found]}
+      issues: {type: list of text, hint: Each field that differs}
+
+shared_instructions:
+  Reader instructions: >-
+    You read travel emails and return each booking you find as a Booking. Copy values exactly as
+    written; every date and time needs its time zone. List every email you found but didn't use in
+    `skipped`, with the reason.
+
+steps:
+  - id: find_and_check
+    kind: free-form
+    name: Find and check bookings
+    goal: >-
+      Find every upcoming trip in my email and double-check each booking. If a trip looks incomplete,
+      such as a hotel with no flight, search again, focused on that city and dates.
+    planning_model: claude-opus-5
+    limits: {ask_runs: 8, turns: 20}
+    # What the planner decides besides the next step, and hands to steps or rules.
+    planner_returns:
+      verify_keys: {type: list of text, hint: "For double_check: booking keys from the trips. Batch them."}
+      propose_trip_ids: {type: list of text, hint: "The trips to show the approver. Keep it up to date."}
+    # Results kept across every run of their steps, not just the latest.
+    collect:
+      bookings: [read_airline.bookings, read_hotel.bookings, read_portal.bookings]
+      skipped: [read_airline.skipped, read_hotel.skipped, read_portal.skipped]
+      checks: [double_check.checks]
+
+    steps:
+      - id: read_airline
+        kind: ask
+        name: Read airline emails
+        model: claude-haiku-4-5
+        takes: {focus: "planner.focus?"}
+        uses: {connection: gmail, actions: [search, open], lookback_days: 180,
+               senders: [united.com, delta.com, aa.com, southwest.com, alaskaair.com, jetblue.com,
+                         cathaypacific.com, britishairways.com, lufthansa.com, emirates.com]}
+        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        instructions: {shared: Reader instructions}
+        task: "Your scope: flight bookings and e-tickets. Return each flight leg as its own booking."
+        returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
+
+      - id: read_hotel
+        kind: ask
+        name: Read hotel emails
+        model: claude-haiku-4-5
+        takes: {focus: "planner.focus?"}
+        uses: {connection: gmail, actions: [search, open], lookback_days: 180,
+               senders: [marriott.com, email-marriott.com, res-marriott.com, hilton.com, hyatt.com, ihg.com, airbnb.com]}
+        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        instructions: {shared: Reader instructions}
+        task: "Your scope: hotel reservations."
+        returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
+
+      - id: read_portal
+        kind: ask
+        name: Read portal & car emails
+        model: claude-haiku-4-5
+        takes: {focus: "planner.focus?"}
+        uses: {connection: gmail, actions: [search, open], lookback_days: 180,
+               senders: [chasetravel.com, expedia.com, booking.com, amextravel.com, hertz.com, avis.com, nationalcar.com, enterprise.com]}
+        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        instructions: {shared: Reader instructions}
+        task: "Your scope: bookings made through travel portals and car rentals."
+        returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
+
+      - id: tidy_up
+        kind: built-in
+        name: Tidy up
+        takes: {records: collected.bookings}
+        reruns_by_itself: true
+        operation:
+          tidy:
+            - {check: Booking}
+            - {remove_duplicates: {same: Booking identity, keep_highest: "b.confidence == 'high' ? 3 : (b.confidence == 'medium' ? 2 : 1)"}}
+            - {filter: {keep: "b.end > run.started"}}
+            - {group: {into: Trip, together: "a.confirmation == b.confirmation || b.start - a.end <= duration('24h')"}}
+            - flag:
+                - {when: "size(trip.bookings.filter(b, b.type == 'flight')) == 1", note: "Only one flight found; no return flight in email."}
+                - {when: "trip.bookings.exists(b, !b.travelers.exists(t, is_me(t, run.my_name)))", note: "Someone else's trip?"}
+
+      - id: double_check
+        kind: ask
+        name: Double-check bookings
+        model: claude-opus-5
+        takes: {bookings: "tidy_up.trips[*].bookings", keys: planner.verify_keys}
+        uses: {connection: gmail, actions: [open], only_cited_by: tidy_up}
+        instructions: >-
+          For each booking whose key is listed, open its source email and compare every field: dates,
+          times and time zones, flight number, confirmation and travelers. Don't trust the extracted values.
+        task: Check the bookings whose keys are listed.
+        returns: {checks: {type: list of Check}}
+
+    before_finishing:
+      - rule: "!has(steps.tidy_up) || steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids).all(t, t.bookings.all(b, collected.checks.exists(c, c.booking == b.key)))"
+        message: Double-check every booking in the trips you propose before finishing.
+
+    returns:
+      trips: "!has(steps.tidy_up) ? [] : steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids)"
+      checks: collected.checks
+      notes: "(!has(steps.tidy_up) ? [] : steps.tidy_up.notes) + planner.notes"
+
+  - id: any_trips_found
+    kind: branch
+    name: Any trips found?
+    paths:
+      - {name: No trips, when: "size(steps.find_and_check.trips) == 0", then: end}
+      - {name: Otherwise, then: next}
+
+  - id: approve_trips
+    kind: approve
+    name: Approve trips
+    approver: you
+    notify: [email, web]
+    timeout_hours: 24
+    items: find_and_check.trips
+    item_id: trip_id
+    pre_select: "size(item.flags) == 0 && item.bookings.all(b, steps.find_and_check.checks.exists(c, c.booking == b.key && c.status == 'confirmed'))"
+    review: |
+      ## Add these trips to your calendar?
+
+      {items: - **{destination}**, {start} to {end} ({trip_id}) · {bookings} bookings · flags: {flags}}
+
+      Checks: {find_and_check.checks}
+
+      Notes:
+      {find_and_check.notes}
+    choices:
+      - {label: Add nothing, passes: none}
+      - {label: Add pre-selected trips, passes: pre-selected}
+      - {label: Add every trip, passes: all}
+      - {label: Let me pick, passes: picked}
+
+  - id: add_to_calendar
+    kind: act
+    name: Add to calendar
+    uses: {connection: calendar, actions: [create_event], calendar: Personal}
+    takes: {records: "approve_trips.approved[*].bookings"}
+    create_events:
+      calendar: Personal
+      templates:
+        flight: {title: "Flight {flight_number} {from_airport} → {destination}", starts: "{start}", ends: "{end}", details: "{provider} confirmation {confirmation}"}
+        # The mock shows only the flight tab; hotel and car are filled in the same way.
+        hotel: {title: "Hotel: {hotel_name}", starts: "{start}", ends: "{end}", details: "{provider} confirmation {confirmation}"}
+        car: {title: "Car: {provider}", starts: "{start}", ends: "{end}", details: "Pick up at {pick_up_location}, confirmation {confirmation}"}
+      never_twice: {match_fields: [flight_number, hotel_name]}
+    follows_dry_run: run.dry_run

@@ -1,0 +1,71 @@
+{
+ "LIMITS_GMAIL_READ_AIRLINE": {
+  "connection": "gmail",
+  "actions": [
+   "search",
+   "open"
+  ],
+  "senders": [
+   "united.com",
+   "delta.com",
+   "aa.com",
+   "southwest.com",
+   "alaskaair.com",
+   "jetblue.com",
+   "cathaypacific.com",
+   "britishairways.com",
+   "lufthansa.com",
+   "emirates.com"
+  ],
+  "lookback_days": 180
+ },
+ "LIMITS_GMAIL_READ_HOTEL": {
+  "connection": "gmail",
+  "actions": [
+   "search",
+   "open"
+  ],
+  "senders": [
+   "marriott.com",
+   "email-marriott.com",
+   "res-marriott.com",
+   "hilton.com",
+   "hyatt.com",
+   "ihg.com",
+   "airbnb.com"
+  ],
+  "lookback_days": 180
+ },
+ "LIMITS_GMAIL_READ_PORTAL": {
+  "connection": "gmail",
+  "actions": [
+   "search",
+   "open"
+  ],
+  "senders": [
+   "chasetravel.com",
+   "expedia.com",
+   "booking.com",
+   "amextravel.com",
+   "hertz.com",
+   "avis.com",
+   "nationalcar.com",
+   "enterprise.com"
+  ],
+  "lookback_days": 180
+ },
+ "LIMITS_GMAIL_DOUBLE_CHECK": {
+  "connection": "gmail",
+  "actions": [
+   "open"
+  ],
+  "only_cited_by": "tidy_up"
+ },
+ "LIMITS_CALENDAR_ADD_TO_CALENDAR": {
+  "connection": "google-calendar",
+  "actions": [
+   "create_event"
+  ],
+  "calendar": "Personal"
+ }
+}

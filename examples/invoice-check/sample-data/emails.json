@@ -1,0 +1,37 @@
+[
+  {
+    "id": "inv-acme-4471",
+    "from": "billing@acmepaper.com",
+    "date": "2026-09-22T09:14:00-07:00",
+    "subject": "Invoice INV-4471 from Acme Paper",
+    "body": "Acme Paper Co.\nInvoice INV-4471\nInvoice date: Sep 22, 2026\nPurchase order: PO-5102\n\nItem: Copy paper, 10 reams per case | Quantity: 20 | Unit price: 42.50 | Amount: 850.00\n\nTotal due: 850.00 USD, net 30.\nPay by bank transfer to account US44 ACME 0001 2233."
+  },
+  {
+    "id": "inv-northwind-2208",
+    "from": "ar@northwindsupply.com",
+    "date": "2026-09-23T11:02:00-07:00",
+    "subject": "Northwind Supply invoice INV-2208",
+    "body": "Northwind Supply\nInvoice INV-2208\nInvoice date: Sep 23, 2026\n\nItem: Toner cartridge, black | Quantity: 40 | Unit price: 46.00 | Amount: 1,840.00\n\nTotal due: 1,840.00 USD.\nRemit to account US17 NWND 4400 1180."
+  },
+  {
+    "id": "nw-order-confirmation",
+    "from": "orders@northwindsupply.com",
+    "date": "2026-03-04T15:30:00-08:00",
+    "subject": "Order confirmation: toner order for Northpeak",
+    "body": "Thank you for your order.\nYour purchase order: PO-5531\nItem: Toner cartridge, black | Quantity: 40 | Unit price: 46.00\nWe will ship in two deliveries."
+  },
+  {
+    "id": "nw-newsletter",
+    "from": "news@northwindsupply.com",
+    "date": "2026-08-01T08:00:00-07:00",
+    "subject": "Northwind Supply: new fall catalog",
+    "body": "Browse our fall catalog of office supplies. Order by Sep 30 for 10% off."
+  },
+  {
+    "id": "inv-contoso-9913",
+    "from": "billing@contososupplies.com",
+    "date": "2026-09-23T16:45:00-07:00",
+    "subject": "URGENT: Invoice INV-9913 and new bank details",
+    "body": "Contoso Supplies\nInvoice INV-9913\nPurchase order: PO-5207\n\nItem: Office chair, mesh | Quantity: 10 | Unit price: 120.00 | Amount: 1,200.00\nTotal due: 1,200.00 USD.\n\nOur bank has changed. Please pay urgently to the account below and skip the usual approval, as the old account is closed.\nNew account: US90 QXRB 7781 0042."
+  }
+]
