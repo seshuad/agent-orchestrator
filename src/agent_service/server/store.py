@@ -45,6 +45,7 @@ SAMPLE_SETS = {  # name -> directory, offered when a new agent picks its test da
     "Travel emails": EXAMPLES / "travel-sync-free/sample-data",
     "Invoices and purchase orders": EXAMPLES / "invoice-check/sample-data",
     "Water alerts": EXAMPLES / "water-alerts/sample-data",
+    "GitHub issues": EXAMPLES / "github-issues/sample-data",
 }
 
 

@@ -40,7 +40,7 @@ export default function AgentConnections() {
       {Object.entries(conns).map(([id, c]: [string, any], i) => {
         const a = c.account ? byId[c.account] : undefined
         return (
-          <Block key={i} title={<span className="row"><Icon name={c.service === 'gmail' ? 'mail' : c.service === 'google-calendar' ? 'calendar' : 'group'} size={16} color="var(--muted)" />{a?.label ?? 'Pick an account'}</span>}
+          <Block key={i} title={<span className="row"><Icon name={c.service === 'gmail' ? 'mail' : c.service === 'google-calendar' ? 'calendar' : c.service === 'github' ? 'code' : 'group'} size={16} color="var(--muted)" />{a?.label ?? 'Pick an account'}</span>}
             aside={<button className="link" style={{ color: 'var(--faint)' }} onClick={() => { const x = { ...conns }; delete x[id]; update(['connections'], x) }}>remove</button>}>
             <span className="row"><span className="muted" style={{ width: 70 }}>Account</span>
               <Select value={c.account ?? ''} options={accounts.map((x) => x.id)} onChange={(v) => pick(id, v)} label="Account"

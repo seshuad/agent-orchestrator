@@ -1,6 +1,7 @@
 """The CEL evaluator, as an MCP server Conductor calls from `type: mcp` steps.
 
     evaluate(expressions, data) -> {passed, failed, results}
+    record(outputs) -> {recorded}      after a parallel group: each member's answer, for the run log
 
     expressions  [{name, cel, require?}]: `require` marks a rule that must hold, and is the
                  message shown to the planner (and in the run log) when it doesn't
@@ -60,6 +61,13 @@ def main() -> None:
         if step and os.environ.get(RUN_DIR_ENV):
             record_step(step, out)      # what the rules decided, for the run viewer
         return out
+
+    @server.tool(name="record", description="Keeps each step's answer from a parallel group for the run log.")
+    def record_tool(outputs: dict[str, Any]) -> dict[str, Any]:
+        if os.environ.get(RUN_DIR_ENV):
+            for step, output in (outputs or {}).items():
+                record_step(step, output)
+        return {"recorded": sorted(outputs or {})}
 
     server.run("stdio")
 

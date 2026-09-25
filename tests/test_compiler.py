@@ -92,8 +92,13 @@ def run_agent(name: str, tmp_path: Path, *args: str) -> tuple[Path, list[str]]:
     run = Path(re.search(r"Run directory: (\S+)", out.stdout).group(1))
     events = sorted(Path(os.environ.get("TMPDIR", "/tmp"), "conductor").glob(f"conductor-{name}-*.events.jsonl"),
                     key=lambda p: p.stat().st_mtime)[-1]
-    path = [json.loads(l)["data"].get("agent_name") for l in events.read_text().splitlines()
-            if json.loads(l)["type"].endswith("_completed") and json.loads(l)["data"].get("agent_name")]
+    path = []
+    for line in events.read_text().splitlines():
+        e = json.loads(line)
+        if e["type"] == "parallel_completed":               # a parallel group, once, after its steps
+            path.append(e["data"]["group_name"])
+        elif e["type"].endswith("_completed") and e["data"].get("agent_name") and not e["data"].get("group_name"):
+            path.append(e["data"]["agent_name"])
     return run, path
 
 
@@ -133,3 +138,17 @@ def test_an_empty_look_up_is_an_error_when_saved():
     data["steps"][0]["steps"][2]["operation"]["lookup"]["sheet"] = ""
     with pytest.raises(CompileError, match="pick the sheet"):
         compile_agent(definition.Agent.model_validate(data))
+
+
+@needs_conductor
+def test_travel_sync_reads_every_source_at_the_same_time(tmp_path):
+    run, path = run_agent("travel-sync", tmp_path, "--sample-data", str(ROOT / "examples/travel-sync-free/sample-data"),
+                          "--replay", str(ROOT / "examples/travel-sync-free/replay-together.yaml"))
+    assert path[:5] == ["plan", "find_and_check_together", "find_and_check_together_record", "collect", "tidy_up"]
+    recorded = [json.loads(l)["step"] for l in (run / "history.jsonl").read_text().splitlines()]
+    assert {"read_airline", "read_hotel", "read_portal"} <= set(recorded)       # each reader's answer, for the run log
+    assert path.count("plan") == 5                         # two fewer planner turns than reading one by one
+    assert path.count("tidy_up") == 2                      # once after the group, once after the focused re-read
+    assert json.loads((run / "steps/approve_trips_preselect.json").read_text())["results"]["preselected"] == ["b0bde9c185"]
+    events = json.loads((run / "steps/add_to_calendar.json").read_text())
+    assert events["would_create"] == ["Hotel: Courtyard Chicago Downtown/River North (2026-10-20T16:00:00-05:00 to 2026-10-22T12:00:00-05:00)"]

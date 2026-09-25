@@ -23,6 +23,7 @@ export interface Graph {
   nodes: GraphNode[]
   edges: { from: string; to: string; label: string; optional: boolean; either: boolean }[]
   loops: { from: string; to: string; label: string }[]
+  groups?: { name: string; members: string[] }[]     // rows the planner can run at the same time
 }
 export interface Feedback { ok: boolean; errors: Problem[]; warnings: Problem[]; compiled: string | null; graphs: Record<string, Graph> }
 
@@ -37,14 +38,14 @@ export interface AgentDetail {
 export interface Reference { ref: string; label: string; type: string }
 
 export interface ServiceInfo {
-  name: string; icon: string; never: string
+  name: string; icon: string; never: string; sign_in?: 'google' | 'token'
   permissions: Record<string, { label: string; actions: string[]; scope: string; detail: string }>
 }
 export interface Connection {
   id: string; service: string; service_name: string; account: string; label: string; permissions: string[]
   allowed: string[]; connected_at: number; connected_by: string
   used_by: { agent: string; in: string; steps: string[]; actions: string[] }[]
-  can_sign_in: boolean; signed_in: boolean; signed_in_as?: string | null; signed_in_at?: number | null
+  can_sign_in: boolean; sign_in: 'google' | 'token'; signed_in: boolean; signed_in_as?: string | null; signed_in_at?: number | null
 }
 export interface GoogleStatus { configured: boolean; client_file: string | null; client_type: string | null; live_services: string[] }
 export type ConnectionIn = { service: string; account: string; label: string; permissions: string[]; force?: boolean }
@@ -101,6 +102,8 @@ export const api = {
   googleStatus: () => call<GoogleStatus>('GET', '/api/google/status'),
   googleStart: (id: string) => call<{ url: string }>('POST', `/api/connections/${id}/google/start`),
   googleSignOut: (id: string) => call<Connection>('POST', `/api/connections/${id}/google/sign-out`),
+  githubToken: (id: string, token: string) => call<Connection>('POST', `/api/connections/${id}/github/token`, { token }),
+  signOut: (id: string) => call<Connection>('POST', `/api/connections/${id}/sign-out`),
   templates: () => call<{ key: string; name: string; description: string }[]>('GET', '/api/templates'),
   sampleSets: () => call<string[]>('GET', '/api/sample-sets'),
   services: () => call<Record<string, ServiceInfo>>('GET', '/api/services'),

@@ -48,7 +48,7 @@ def _resolve(spec: dict[str, Any], inputs: dict[str, str]) -> dict[str, Any]:
     return {k: inputs[v.split(".", 1)[1]] if isinstance(v, str) and v.startswith("$input.") else v for k, v in spec.items()}
 
 
-LIVE_SERVICES = {"gmail"}          # services a run can use for real so far; the rest stay on sample data
+LIVE_SERVICES = {"gmail", "github"}    # services a run can use for real so far; the rest stay on sample data
 
 
 def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[str, str] | None = None,
@@ -82,7 +82,7 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
     for var, spec in compiled.limits.items():
         spec = {**spec, "source": "live" if vault is not None and spec["connection"] in LIVE_SERVICES else "sample"}
         if spec["source"] == "live" and not spec.get("account"):
-            raise RunError("A Gmail connection in this agent isn't linked to a workspace account; pick one in its Connections.")
+            raise RunError(f"A {spec['connection']} connection in this agent isn't linked to a workspace account; pick one in its Connections.")
         compiled.limits[var] = spec
         env[var] = limits.mint(_resolve(spec, inputs), key.encode())
     (run_dir / "limits.json").write_text(json.dumps({k: _resolve(v, inputs) for k, v in compiled.limits.items()}, indent=1))

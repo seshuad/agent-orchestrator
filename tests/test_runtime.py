@@ -232,3 +232,51 @@ def test_live_gmail_needs_an_account(run):
 
 def test_show_passes_its_value_through():
     assert steps.show({"value": [{"property": "418 Alder Lane"}]}) == {"value": [{"property": "418 Alder Lane"}]}
+
+
+# ------------------------------------------------------------------ GitHub
+
+def github(**kw):
+    return gateway.connect("github", limits.mint({"connection": "github", "actions": ["search", "open", "read"], **kw}))
+
+
+def test_github_reads_only_its_repositories(run, monkeypatch):
+    use_sample(monkeypatch, "github-issues")
+    gh = github(repos=["northpeak/billing-api"])
+    found = gateway.call(gh, "github", "search", {"keywords": []})
+    assert {it["repo"] for it in found} == {"northpeak/billing-api"} and "body" not in found[0]
+    assert [it["number"] for it in gateway.call(gh, "github", "search", {"keywords": ["10,000"], "state": "open"})] == [415, 412]
+    assert [it["number"] for it in gateway.call(gh, "github", "search", {"keywords": [], "state": "open", "label": "BUG"})] == [415, 412, 409]
+    issue = gateway.call(gh, "github", "open", {"repo": "northpeak/billing-api", "number": 412})
+    assert issue["title"].startswith("Invoices over") and len(issue["comments"]) == 2
+    assert "CODEOWNERS" not in gateway.call(gh, "github", "read", {"repo": "northpeak/billing-api", "path": "CODEOWNERS"})
+    with pytest.raises(gateway.Refused, match="may not read the repository"):
+        gateway.call(gh, "github", "open", {"repo": "northpeak/website", "number": 77})
+    with pytest.raises(gateway.Refused):
+        gateway.call(gh, "github", "read", {"repo": "northpeak/website", "path": "README.md"})
+
+
+def test_github_actions_and_repositories_come_from_the_token(run, monkeypatch):
+    use_sample(monkeypatch, "github-issues")
+    gh = gateway.connect("github", limits.mint({"connection": "github", "actions": ["search"], "repos": ["northpeak/billing-api"]}))
+    with pytest.raises(gateway.Refused, match="may not open"):
+        gateway.call(gh, "github", "open", {"repo": "northpeak/billing-api", "number": 412})
+    assert gateway.call(github(), "github", "search", {"keywords": []}) == []      # no repositories named: nothing in scope
+
+
+class FakeGitHub:
+    def __init__(self, connection):
+        assert connection == "seshu-github"
+
+    def search(self, repos, keywords, days, state=None, label=None):
+        return [{"repo": "seshuad/agent-orchestrator", "number": 1, "kind": "issue", "title": "t", "state": "open", "author": "a",
+                 "labels": [], "created_at": "2026-09-24T00:00:00Z", "updated_at": "2026-09-24T00:00:00Z"},
+                {"repo": "someone/else", "number": 2, "kind": "issue", "title": "x", "state": "open", "author": "a",
+                 "labels": [], "created_at": "2026-09-24T00:00:00Z", "updated_at": "2026-09-24T00:00:00Z"}]
+
+
+def test_live_github_keeps_the_same_limits(run, monkeypatch):
+    from agent_service.runtime import github_api
+    monkeypatch.setattr(github_api, "LiveGitHub", FakeGitHub)
+    gh = github(repos=["seshuad/agent-orchestrator"], source="live", account="seshu-github")
+    assert [it["repo"] for it in gateway.call(gh, "github", "search", {"keywords": []})] == ["seshuad/agent-orchestrator"]

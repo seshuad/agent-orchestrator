@@ -41,6 +41,15 @@ SERVICES: dict[str, dict[str, Any]] = {
         },
         "never": "Change or delete existing events: not offered.",
     },
+    "github": {
+        "name": "GitHub", "icon": "code", "sign_in": "token",
+        "permissions": {
+            "read": {"label": "Read issues, pull requests and files", "actions": ["search", "open", "read"],
+                     "scope": "read-only token: Issues, Pull requests, Contents",
+                     "detail": "Search issues and pull requests, open one with its comments, and read files. Steps name the repositories they may read."},
+        },
+        "never": "Open, comment on, label, close or merge anything, or push code: not offered.",
+    },
 }
 
 SEED: list[dict[str, Any]] = [

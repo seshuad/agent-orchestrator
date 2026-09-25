@@ -66,7 +66,7 @@ class Limits(Strict):
 
 
 class Connection(Strict):
-    service: Literal["gmail", "google-sheets", "google-calendar"]
+    service: Literal["gmail", "google-sheets", "google-calendar", "github"]
     permission: str
     account: str | None = None               # the workspace connection (account) it uses
 
@@ -82,6 +82,7 @@ class Uses(Strict):
     only_cited_by: str | None = None         # a step id: only emails its output names
     sheets: list[str] | None = None
     calendar: str | None = None
+    repos: list[str] | None = None           # GitHub: the repositories (owner/name) it may read
 
 
 class Repeat(Strict):

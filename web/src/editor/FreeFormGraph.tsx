@@ -1,9 +1,10 @@
 // A Free-form block drawn in the order its data sets: rows by what each step needs, solid lines for
-// "needs", dotted lines for where the planner can loop back. Laid out from the service's graph.
+// "needs", dotted lines for where the planner can loop back, and a frame round steps that can run
+// at the same time. Laid out from the service's graph.
 import type { Graph } from '../api'
 import { Icon, KIND_ICON, Pill } from '../ui'
 
-const W = 184, H = 62, PITCH = 100, GAP = 16, LOOP = '#C0527D', LEFT = 96   // room on the left for loop lines and labels
+const W = 184, H = 62, PITCH = 100, GAP = 16, LOOP = '#C0527D', LEFT = 96, TOGETHER = '#3D6FB3'   // room on the left for loop lines and labels
 const MARK: Record<string, [string, string]> = {
   required: ['required to finish', 'waiting'], auto: ['re-runs by itself', 'stopped'], focus: ['planner sets focus', 'free-form'],
 }
@@ -50,14 +51,25 @@ export default function FreeFormGraph({ graph, selected, onSelect }: { graph: Gr
       </g>
     )
   })
+  const together = (graph.groups ?? []).map((g) => {
+    const xs = g.members.filter((m) => pos[m]).map((m) => pos[m])
+    if (xs.length < 2) return null
+    const x = Math.min(...xs.map((p) => p.x)) - 8, y = xs[0].y - 20, w = Math.max(...xs.map((p) => p.x)) + W + 8 - x
+    return (
+      <g key={g.name}>
+        <rect x={x} y={y} width={w} height={H + 28} rx={10} fill="#3D6FB30A" stroke={TOGETHER} strokeWidth={1.2} strokeDasharray="5 3" />
+        <text x={x + 10} y={y + 12} fontSize={10} fill={TOGETHER} fontWeight={600}>Can run together: the planner may start all {xs.length} at once</text>
+      </g>
+    )
+  })
   return (
-    <div style={{ position: 'relative', width, height: height + 4, margin: '6px 0' }}>
+    <div style={{ position: 'relative', width, height: height + 4, margin: (graph.groups ?? []).length ? '26px 0 6px' : '6px 0' }}>
       <svg width={width} height={height} style={{ position: 'absolute', inset: 0, overflow: 'visible' }} aria-hidden="true">
         <defs>
           <marker id="ff-need" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" fill="#B7B7AC" /></marker>
           <marker id="ff-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" fill={LOOP} /></marker>
         </defs>
-        {needs}{loops}
+        {together}{needs}{loops}
       </svg>
       {graph.nodes.map((n) => (
         <button key={n.id} type="button" onClick={(e) => { e.stopPropagation(); onSelect(n.id) }} className={`node${selected === n.id ? ' sel' : ''}`}

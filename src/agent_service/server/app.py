@@ -103,6 +103,10 @@ class Publish(BaseModel):
     note: str = ""
 
 
+class GitHubToken(BaseModel):
+    token: str
+
+
 class ConnectionIn(BaseModel):
     service: str
     account: str
@@ -130,6 +134,10 @@ def create_app(home: Path | None = None) -> FastAPI:
     def gmail_accounts(raw: dict[str, Any]) -> list[str]:
         """The workspace accounts an agent's Gmail connections use."""
         return [c.get("account") for c in (raw.get("connections") or {}).values() if c.get("service") == "gmail"]
+
+    def live_accounts(raw: dict[str, Any]) -> list[tuple[str, str | None]]:
+        """(service, workspace account) for each of an agent's connections that runs on real accounts can use."""
+        return [(c.get("service"), c.get("account")) for c in (raw.get("connections") or {}).values() if c.get("service") in runner.LIVE_SERVICES]
     app = FastAPI(title="Agent Orchestrator")
 
     def fail(exc: Exception, status: int = 400) -> HTTPException:
@@ -140,7 +148,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         graphs = {}
         try:
             agent = definition.Agent.model_validate(raw)
-            graphs = {s.id: analysis.graph(s) for s in agent.steps if isinstance(s, definition.FreeFormBlock)}
+            graphs = {s.id: analysis.graph(s, agent) for s in agent.steps if isinstance(s, definition.FreeFormBlock)}
         except ValidationError:
             pass
         return {**out, "graphs": graphs}
@@ -185,7 +193,8 @@ def create_app(home: Path | None = None) -> FastAPI:
         return out
 
     def connection_out(c: dict[str, Any]) -> dict[str, Any]:
-        return {**c, "can_sign_in": c["service"] in google.SCOPES, "signed_in": signed_in(c["id"]), "service_name": SERVICES[c["service"]]["name"], "allowed": sorted(allowed_actions(c)), "used_by": used_by(c["id"])}
+        return {**c, "can_sign_in": c["service"] in google.SCOPES or c["service"] == "github",
+                "sign_in": SERVICES[c["service"]].get("sign_in", "google"), "signed_in": signed_in(c["id"]), "service_name": SERVICES[c["service"]]["name"], "allowed": sorted(allowed_actions(c)), "used_by": used_by(c["id"])}
 
     @app.get("/api/services")
     def services() -> dict[str, Any]:
@@ -237,6 +246,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             store.delete_connection(cid)
         except NotFound as exc:
             raise fail(exc, 404)
+        vault.delete(cid, vault_dir)              # its token goes with it
         return {"deleted": cid}
 
     @app.get("/api/templates")
@@ -350,9 +360,9 @@ def create_app(home: Path | None = None) -> FastAPI:
         trigger_email = None
         if live:
             raw = store.version(name, body.version)
-            missing = [a or "(no account picked)" for a in gmail_accounts(raw) if not signed_in(a)]
+            missing = [a or f"(no {svc} account picked)" for svc, a in live_accounts(raw) if not signed_in(a)]
             if missing:
-                raise fail(ValueError("Sign these Gmail connections in to Google first (Connections): " + ", ".join(missing)), 422)
+                raise fail(ValueError("Sign these connections in first (Connections): " + ", ".join(missing)), 422)
             from ..runtime.gmail_api import credentials
             for account in gmail_accounts(raw):
                 try:
@@ -450,6 +460,32 @@ def create_app(home: Path | None = None) -> FastAPI:
         if conn:
             store.save_connection({**conn, "signed_in_as": None, "signed_in_at": None})
         return connection_out(store.accounts()[cid])
+
+    # -------------------------------------------------------------- GitHub token
+
+    @app.post("/api/connections/{cid}/github/token")
+    def github_token(cid: str, body: GitHubToken) -> dict[str, Any]:
+        """Checks a personal access token with GitHub, then keeps it in the vault. It is never sent back."""
+        from ..runtime.github_api import GitHubError, whoami
+        conn = store.accounts().get(cid)
+        if conn is None:
+            raise fail(NotFound(f"No connection {cid!r}."), 404)
+        if conn["service"] != "github":
+            raise fail(ValueError(f"{conn['label']} isn't a GitHub connection."), 422)
+        token = body.token.strip()
+        if not token:
+            raise fail(ValueError("Paste a token first."), 422)
+        try:
+            login = whoami(token)
+        except GitHubError as exc:
+            raise fail(ValueError(f"GitHub didn't accept that token ({exc})."), 422)
+        vault.save(cid, {"token": token}, vault_dir)
+        store.save_connection({**conn, "signed_in_as": login, "signed_in_at": time.time()})
+        return connection_out(store.accounts()[cid])
+
+    @app.post("/api/connections/{cid}/sign-out")
+    def sign_out(cid: str) -> dict[str, Any]:
+        return google_sign_out(cid)
 
     def google_return(request: Request) -> RedirectResponse | None:
         """Google sends the browser back to the root URL with ?code=…&state=… (or ?error=…)."""

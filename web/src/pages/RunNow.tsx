@@ -73,13 +73,14 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
         <Segmented options={['sample', 'live']} value={source} onChange={(v) => { setError(null); setSource(v) }}
           labels={{ sample: `Sample data${detail.meta.sample_set ? ` (${detail.meta.sample_set})` : ''}`, live: 'Real accounts' }} />
         {source === 'live' && (() => {
-          const gmail = Object.values(d.connections ?? {}).filter((c: any) => c.service === 'gmail') as any[]
-          const notSignedIn = gmail.filter((c) => !accounts.find((a) => a.id === c.account)?.signed_in)
+          const live = Object.values(d.connections ?? {}).filter((c: any) => c.service === 'gmail' || c.service === 'github') as any[]
+          const acct = (c: any) => accounts.find((a) => a.id === c.account)
+          const notSignedIn = live.filter((c) => !acct(c)?.signed_in)
           return (
             <>
               {notSignedIn.length > 0
-                ? <span className="field-error">Sign in to Google first, on Connections: {notSignedIn.map((c) => accounts.find((a) => a.id === c.account)?.label ?? c.account ?? 'a Gmail connection').join(', ')}.</span>
-                : <span className="muted">Gmail steps read {gmail.map((c) => accounts.find((a) => a.id === c.account)?.signed_in_as).filter(Boolean).join(', ')}, read only, within each step's limits.</span>}
+                ? <span className="field-error">Sign in first, on Connections: {notSignedIn.map((c) => acct(c)?.label ?? c.account ?? `a ${c.service} connection`).join(', ')}.</span>
+                : <span className="muted">{live.map((c) => `${c.service === 'github' ? 'GitHub steps read as' : 'Gmail steps read'} ${acct(c)?.signed_in_as}`).join('; ')}, read only, within each step's limits.</span>}
               <span className="faint">Sheets and Calendar steps still use sample data, so nothing is written to your real accounts.</span>
             </>
           )
@@ -97,7 +98,7 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
         <Guarantees items={[
           ...(approves ? ['You’ll be asked to approve before anything outside the agent changes.'] : []),
           `Stops at $${Number(d.limits?.budget_usd ?? 0).toFixed(2)}${d.limits?.timeout_minutes ? ` or ${d.limits.timeout_minutes} minutes` : ''}, whichever comes first.`,
-          source === 'live' ? 'Reads your real Gmail (read only). Sheets and Calendar stay on sample data.' : `Runs on ${detail.meta.sample_set ?? 'sample data'}: nothing touches a real account.`,
+          source === 'live' ? 'Reads your real Gmail and GitHub (read only). Sheets and Calendar stay on sample data.' : `Runs on ${detail.meta.sample_set ?? 'sample data'}: nothing touches a real account.`,
           'Every step and connection call is recorded in the run’s log.',
         ]} />
       </Block>

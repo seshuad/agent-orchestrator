@@ -17,7 +17,14 @@ export default function Connections() {
   const signIn = async (c: Connection) => {
     try { window.location.href = (await api.googleStart(c.id)).url } catch (e: any) { setError(e.message) }
   }
-  const signOut = async (c: Connection) => { await api.googleSignOut(c.id); load() }
+  const signOut = async (c: Connection) => { await api.signOut(c.id); load() }
+  const [tokens, setTokens] = useState<Record<string, string>>({})
+  const [tokenError, setTokenError] = useState<Record<string, string>>({})
+  const saveToken = async (c: Connection) => {
+    setTokenError({ ...tokenError, [c.id]: '' })
+    try { await api.githubToken(c.id, tokens[c.id] ?? ''); setTokens({ ...tokens, [c.id]: '' }); load() }
+    catch (e: any) { setTokenError({ ...tokenError, [c.id]: e.message }) }
+  }
   const back = params.get('signed_in'), failed = params.get('google_error')
 
   const remove = async () => {
@@ -51,9 +58,9 @@ export default function Connections() {
           {google.client_file && google.client_type !== 'installed' && <span>The file at {google.client_file} is a “{google.client_type}” client; it must be a Desktop app client.</span>}
         </div>
       )}
-      <div className="notice info"><Icon name="lock" size={15} /><span>Gmail connections can sign in to Google (read only) for runs on <strong>Real accounts</strong>. Sheets and Calendar stay on sample data for now. Tokens are kept in the workspace's vault; only the service reads them.</span></div>
+      <div className="notice info"><Icon name="lock" size={15} /><span>Gmail connections can sign in to Google, and GitHub connections take a read-only token, for runs on <strong>Real accounts</strong>. Sheets and Calendar stay on sample data for now. Tokens are kept in the workspace's vault; only the service reads them, never a model.</span></div>
       {conns === null && <span className="spinner" />}
-      {conns?.length === 0 && <div className="card pad muted">No connections yet. Add one to let agents read email, sheets or calendars.</div>}
+      {conns?.length === 0 && <div className="card pad muted">No connections yet. Add one to let agents read email, sheets, calendars or GitHub.</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))', gap: 14 }}>
         {conns?.map((c) => {
           const svc = services[c.service]
@@ -79,7 +86,7 @@ export default function Connections() {
                   </span>
                 ))}
               </div>
-              {c.can_sign_in && (
+              {c.can_sign_in && c.sign_in === 'google' && (
                 <span className="spread" style={{ padding: '8px 10px', background: c.signed_in ? '#F3F8F4' : 'var(--soft)', border: `1px solid ${c.signed_in ? '#D5E7DA' : 'var(--line)'}`, borderRadius: 8 }}>
                   {c.signed_in
                     ? <span className="stack" style={{ gap: 1 }}><strong style={{ fontSize: 12.5, color: '#1F4D33' }}>Signed in to Google as {c.signed_in_as}</strong>
@@ -91,9 +98,29 @@ export default function Connections() {
                     : <button className="btn small primary" disabled={!google?.configured} onClick={() => signIn(c)}>Sign in with Google</button>}
                 </span>
               )}
+              {c.can_sign_in && c.sign_in === 'token' && (
+                <div className="stack" style={{ gap: 6, padding: '8px 10px', background: c.signed_in ? '#F3F8F4' : 'var(--soft)', border: `1px solid ${c.signed_in ? '#D5E7DA' : 'var(--line)'}`, borderRadius: 8 }}>
+                  {c.signed_in
+                    ? <span className="spread"><span className="stack" style={{ gap: 1 }}><strong style={{ fontSize: 12.5, color: '#1F4D33' }}>Token for GitHub user {c.signed_in_as}</strong>
+                        {c.signed_in_as && c.signed_in_as.toLowerCase() !== c.account.toLowerCase() && <span className="field-error">That's not {c.account}: runs will read as {c.signed_in_as}.</span>}
+                        <span className="faint">Real runs read the repositories each step names, read only</span></span>
+                        <button className="btn small" onClick={() => signOut(c)}>Remove token</button></span>
+                    : <>
+                        <span className="stack" style={{ gap: 1 }}><strong style={{ fontSize: 12.5 }}>Sample data only</strong>
+                          <span className="faint">Add a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">fine-grained token</a> with read-only access to Issues, Pull requests and Contents, for the repositories agents should read.</span></span>
+                        <span className="row" style={{ flexWrap: 'nowrap' }}>
+                          <input className="input grow" type="password" autoComplete="off" placeholder="github_pat_…" aria-label={`GitHub token for ${c.label}`}
+                            value={tokens[c.id] ?? ''} onChange={(e) => setTokens({ ...tokens, [c.id]: e.target.value })}
+                            onKeyDown={(e) => { if (e.key === 'Enter') saveToken(c) }} />
+                          <button className="btn small primary" disabled={!(tokens[c.id] ?? '').trim()} onClick={() => saveToken(c)}>Save token</button>
+                        </span>
+                        {tokenError[c.id] && <span className="field-error">{tokenError[c.id]}</span>}
+                      </>}
+                </div>
+              )}
               <span className="spread" style={{ borderTop: '1px solid var(--line-2)', paddingTop: 9 }}>
                 <span className="faint">Connected {when(c.connected_at)} by {c.connected_by}</span>
-                <span className="row" style={{ gap: 8 }}>
+                <span className="row" style={{ gap: 8, flexWrap: 'nowrap', flexShrink: 0 }}>
                   <button className="btn small" onClick={() => navigate(`/connections/${c.id}`)}><Icon name="edit" size={12} />Edit</button>
                   <button className="btn small danger" onClick={() => { setError(null); setRemoving(c) }}><Icon name="trash" size={12} />Remove</button>
                 </span>

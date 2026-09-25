@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 
 from .. import definition, runner
+from ..compiler import IN_GROUP
 from .store import Conflict, NotFound, Store
 
 EVENTS_DIR = Path(tempfile.gettempdir()) / "conductor"
@@ -319,6 +320,10 @@ def _names(raw: dict[str, Any]) -> dict[str, tuple[str, str]]:
             out[s["id"]] = (s.get("name", s["id"]), "show" if shows else s.get("kind", ""))
             if s.get("kind") == "approve":
                 out[f"{s['id']}_preselect"] = (f"{s.get('name')}: pre-select", "rules")
+            if s.get("kind") == "free-form":
+                out[f"{s['id']}_together_record"] = ("Record answers", "plumbing")
+                for i in range(2, 10):
+                    out[f"{s['id']}_together_{i}_record"] = ("Record answers", "plumbing")
             walk(s.get("steps", []))
     walk(raw.get("steps", []))
     return out
@@ -344,6 +349,9 @@ def _brief(output: Any) -> str:
 def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     names = _names(raw)
     t0 = evs[0]["timestamp"] if evs else time.time()
+    wf_path = run_dir / "workflow.yaml"
+    wf = yaml.safe_load(wf_path.read_text()) if wf_path.exists() else {}
+    groups = {g["name"]: [a.removesuffix(IN_GROUP) for a in g["agents"]] for g in (wf or {}).get("parallel", [])}
     history = [json.loads(l) for l in (run_dir / "history.jsonl").read_text().splitlines()] if (run_dir / "history.jsonl").exists() else []
     seen: dict[str, int] = {}
 
@@ -359,23 +367,45 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
     cost = tokens = 0.0
     for e in evs:
         t, d = e["type"], e["data"]
-        name = d.get("agent_name", "")
+        name = d.get("agent_name", "").removesuffix(IN_GROUP)      # a group member runs as a copy of its step
         label, kind = names.get(name, (name, ""))
         at = round(e["timestamp"] - t0, 1)
         base = {"at": at, "step": label, "id": name, "kind": kind, "took": round(d.get("elapsed") or 0, 1), "cost": None,
                 "detail": "", "why": None, "tone": "", "plumbing": name in PLUMBING, "tools": []}
-        if t == "agent_tool_start":
-            tools.setdefault(name, []).append({"tool": d["tool_name"].split("__")[-1], "args": d.get("arguments", "")})
+        if t == "mcp_completed" and d.get("group_name"):
+            continue                             # a scripted step inside a group: its parallel_agent_completed follows
+        if t == "parallel_started":
+            members = ", ".join(names.get(m.removesuffix(IN_GROUP), (m, ""))[0] for m in d.get("agents", []))
+            entries.append({**base, "step": "Together", "kind": "group", "detail": f"Runs {members} at the same time", "plumbing": False})
+        elif t == "parallel_completed":
+            detail = f"All {d.get('success_count')} finished" if not d.get("failure_count") else \
+                f"{d.get('success_count')} finished, {d.get('failure_count')} failed"
+            entries.append({**base, "step": "Together", "kind": "group", "detail": f"{detail} in {round(d.get('elapsed') or 0, 1)}s",
+                            "tone": "warn" if d.get("failure_count") else "", "plumbing": False})
+        elif t in ("parallel_agent_completed", "mcp_completed") and kind == "ask":
+            out = recorded(name)
+            c = d.get("cost_usd") or 0.0
+            cost += c
+            tokens += d.get("tokens") or 0
+            entries.append({**base, "cost": round(c, 4) if c else None, "model": d.get("model") or "scripted",
+                            "tokens": d.get("tokens"), "tools": tools.pop(d.get("agent_name", ""), []), "detail": _brief(out),
+                            "why": "In a group" if d.get("group_name") else None})
+        elif t == "parallel_agent_failed":
+            entries.append({**base, "detail": friendly_error(d.get("message", ""))["title"], "tone": "bad"})
+        elif t == "agent_tool_start":
+            tools.setdefault(d.get("agent_name", ""), []).append({"tool": d["tool_name"].split("__")[-1], "args": d.get("arguments", "")})
         elif t in ("agent_completed", "script_completed") and kind in ("ask", "planner"):
             out = d.get("output") if t == "agent_completed" else _json(d.get("stdout"))
             c = d.get("cost_usd") or 0.0
             cost += c
             tokens += d.get("tokens") or 0
             entry = {**base, "cost": round(c, 4) if c else None, "model": d.get("model") or ("scripted" if t == "script_completed" else None),
-                     "tokens": d.get("tokens"), "tools": tools.pop(name, [])}
+                     "tokens": d.get("tokens"), "tools": tools.pop(d.get("agent_name", ""), [])}
             if name == "plan" and isinstance(out, dict):
                 nxt = out.get("next")
                 target = names.get(nxt, (nxt, ""))[0]
+                if nxt in groups:
+                    target = " and ".join(names.get(m, (m, ""))[0] for m in groups[nxt]) + ", at the same time"
                 entry["detail"] = ("Finish" + (f" as {out['outcome']}" if out.get("outcome") else "") if nxt == "finish"
                                    else f"Next: {target}" + (f", focused on {out['focus']}" if out.get("focus") else ""))
                 entry["why"] = out.get("reason")
@@ -392,6 +422,9 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
             entries.append({**base, "detail": _brief(out)})
         elif t == "mcp_completed":
             out = recorded(name) or {}
+            if kind == "plumbing":
+                entries.append({**base, "detail": "Kept each answer for the log", "plumbing": True})
+                continue
             if name == "finish_check":
                 detail = "Passed" if out.get("passed") else "Refused: " + " ".join(out.get("failed") or [])
                 tone = "" if out.get("passed") else "warn"

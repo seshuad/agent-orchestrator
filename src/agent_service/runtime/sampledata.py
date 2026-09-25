@@ -2,6 +2,7 @@
 
     <AGENT_SERVICE_SAMPLE_DATA>/emails.json          [{id, from, date, subject, body}]
     <AGENT_SERVICE_SAMPLE_DATA>/sheets/<Sheet>.json  [{column: value}]
+    <AGENT_SERVICE_SAMPLE_DATA>/github.json          {issues: [{repo, number, kind, title, ..., body, comments}], files: {repo: {path: text}}}
     <run dir>/calendar.json                          events created during this run
 
 Nothing here touches a real account. The calendar is written inside the run directory, so
@@ -84,3 +85,42 @@ def calendar_events() -> list[dict[str, Any]]:
 def add_calendar_event(event: dict[str, Any]) -> None:
     events = calendar_events() + [event]
     (run_dir() / "calendar.json").write_text(json.dumps(events, indent=1))
+
+
+# ------------------------------------------------------------------ GitHub
+
+def _github() -> dict[str, Any]:
+    path = _root() / "github.json"
+    return json.loads(path.read_text()) if path.exists() else {"issues": [], "files": {}}
+
+
+def _summary(it: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in it.items() if k not in ("body", "comments")}
+
+
+def github_search(repos: list[str], keywords: list[str], newer_than_days: int | None, state: str | None = None,
+                  label: str | None = None) -> list[dict[str, Any]]:
+    """Issues and pull requests in the given repositories, most recently updated first. Keywords match the
+    title, body and comments (as on GitHub); labels only through `label`."""
+    since = datetime.now(timezone.utc) - timedelta(days=newer_than_days) if newer_than_days else None
+    hits = []
+    for it in _github()["issues"]:
+        if it["repo"] not in repos or (state and it["state"] != state):
+            continue
+        if label and label.lower() not in [x.lower() for x in it.get("labels", [])]:
+            continue
+        if since and datetime.fromisoformat(it["updated_at"].replace("Z", "+00:00")) < since:
+            continue
+        text = " ".join([it["title"], it.get("body", "")] + [c["body"] for c in it.get("comments", [])]).lower()
+        if keywords and not any(k.lower() in text for k in keywords):
+            continue
+        hits.append(_summary(it))
+    return sorted(hits, key=lambda it: it["updated_at"], reverse=True)
+
+
+def github_issue(repo: str, number: int) -> dict[str, Any] | None:
+    return next((it for it in _github()["issues"] if it["repo"] == repo and it["number"] == number), None)
+
+
+def github_file(repo: str, path: str) -> str | None:
+    return _github().get("files", {}).get(repo, {}).get(path)

@@ -81,6 +81,14 @@ A Free-form block is free only within the order its data sets. Three layers deci
 Limits count only Ask steps (the ones with a model); Built-in steps are free and re-run by themselves when their
 inputs change.
 
+**Running steps at the same time.** Ask steps in the same row of the data order whose results all go into
+`collected`, and that nothing else reads directly, can run together: the compiler makes them a Conductor `parallel`
+group, and the planner can choose the group instead of one step (in travel-sync, `find_and_check_together` runs the
+three readers at once). The planner still decides: it can run a reader on its own, for example again with a focus. A
+group counts each of its steps against the Ask limit, runs with `continue_on_error` (the planner is told which step
+failed), and each answer is recorded for the run log. Conductor doesn't allow routes inside a group, so each member
+runs there as a route-less copy (`read_airline__together`) with the same tools and limits.
+
 ### Second example: invoice-check
 
 To pressure-test the block on something other than travel-sync, `InvoiceBlock.dc.html` and `InvoiceTest.dc.html`
@@ -202,6 +210,18 @@ on sample data for now, so nothing is written to your real accounts.
    expire after 7 days.
 2. Connections → **Sign in with Google** on a Gmail connection. The token goes to `.workspace/vault/` (mode 0600).
 3. Run now → Data: **Real accounts**.
+
+### GitHub
+
+GitHub connections are read only: Ask steps can search issues and pull requests (`search`), open one with its comments
+(`open`) and read files (`read`), in the repositories each step names (`uses.repos`, `owner/name`), optionally only
+those updated in the last N days. Opening, commenting, labelling, closing or merging isn't offered. Test runs use the
+**GitHub issues** sample set (`examples/github-issues/sample-data/github.json`).
+
+For runs on **Real accounts**, create a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+with read-only access to Issues, Pull requests and Contents for the repositories agents should read, and paste it on
+the connection's card in Connections. The service checks it with GitHub and keeps it in `.workspace/vault/`; it is
+never shown again, and no model sees it.
 
 The service keeps its workspace in `.workspace/` (agents, versions, runs). Each run is `conductor run` in web mode on
 its own port; the service follows its event log, answers approvals with `conductor gate respond`, and stops it when

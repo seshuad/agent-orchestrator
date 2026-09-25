@@ -65,12 +65,14 @@ export default function ConnectionForm() {
           </div>
         </Block>
         <Block title="Account">
-          <input className="input" style={{ fontSize: 14, padding: '8px 10px' }} value={account} disabled={editing} placeholder="name@company.com"
+          <input className="input" style={{ fontSize: 14, padding: '8px 10px' }} value={account} disabled={editing} placeholder={service === 'github' ? 'GitHub username or organization' : 'name@company.com'}
             onChange={(e) => setAccount(e.target.value)} aria-label="Account" />
-          {!editing && <span className="faint">In the service, a “Sign in with {svc?.name ?? 'Google'}” button goes here, and the token goes straight to the vault.</span>}
+          {!editing && <span className="faint">{svc?.sign_in === 'token'
+            ? 'After connecting, add a read-only token on the Connections page. It goes straight to the vault.'
+            : 'After connecting, sign in with Google on the Connections page. The token goes straight to the vault.'}</span>}
         </Block>
         <Block title="Name">
-          <input className="input" value={label} placeholder={account || 'e.g. Finance sheets'} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
+          <input className="input" value={label} placeholder={account || (service === 'github' ? 'e.g. Billing repos' : 'e.g. Finance sheets')} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
           <span className="faint">What builders see when they pick an account for an agent.</span>
         </Block>
         {svc && (

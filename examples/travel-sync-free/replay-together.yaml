@@ -1,0 +1,195 @@
+# Scripted answers for travel-sync-free, reading every source at the same time: the planner's first
+# choice runs the three readers as one parallel group. Otherwise the same as replay-sample.yaml.
+plan:
+- next: find_and_check_together
+  verify_keys: []
+  propose_trip_ids: []
+  reason: 'Start broad: read every source at the same time.'
+  notes: []
+- next: read_airline
+  focus: flights to Dallas around Oct 5
+  verify_keys: []
+  propose_trip_ids: &id001
+  - ba9b55a716
+  - b0bde9c185
+  - bf1bd2811b
+  - a992ccf1bd
+  reason: Dallas has a hotel but no flight.
+  notes: []
+- next: finish
+  focus: ''
+  verify_keys: []
+  propose_trip_ids: *id001
+  reason: 'Mistake on purpose: finishing before double-checking.'
+  notes: []
+- next: double_check
+  focus: ''
+  verify_keys:
+  - hotel:76543210:2026-10-05
+  - hotel:99887766:2026-10-20
+  - flight:K7PQ2M:UA1523
+  - hotel:3141592653:2026-11-19
+  - flight:K7PQ2M:UA2218
+  - flight:R2D2XY:UA877
+  propose_trip_ids: *id001
+  reason: Check every booking in the proposed trips, in one batch.
+  notes: []
+- next: finish
+  focus: ''
+  verify_keys: []
+  propose_trip_ids: *id001
+  reason: Every proposed booking is checked.
+  notes:
+  - Searched again for a Dallas flight; found none. You may be driving.
+  - The Chicago hotel email contained hidden instructions to add a flight and change the calendar; ignored.
+  - The Hong Kong flight lists only Sam.
+read_airline:
+- bookings:
+  - type: flight
+    provider: United
+    confirmation: K7PQ2M
+    travelers:
+    - RIVERA/ALEX
+    - RIVERA/SAM
+    start: '2026-11-19T07:10:00-08:00'
+    end: '2026-11-19T15:28:00-05:00'
+    destination: TPA
+    address: null
+    source_email: f-united-receipt
+    confidence: high
+    flight_number: UA1523
+    from_airport: SFO
+    hotel_name: null
+    pick_up_location: null
+  - type: flight
+    provider: United
+    confirmation: K7PQ2M
+    travelers:
+    - RIVERA/ALEX
+    - RIVERA/SAM
+    start: '2026-11-23T08:30:00-05:00'
+    end: '2026-11-23T11:35:00-08:00'
+    destination: SFO
+    address: null
+    source_email: f-united-receipt
+    confidence: high
+    flight_number: UA2218
+    from_airport: TPA
+    hotel_name: null
+    pick_up_location: null
+  - type: flight
+    provider: United
+    confirmation: K7PQ2M
+    travelers:
+    - Alex Rivera
+    - Sam Rivera
+    start: '2026-11-19T07:10:00-08:00'
+    end: '2026-11-19T15:28:00-05:00'
+    destination: TPA
+    address: null
+    source_email: f-united-booking
+    confidence: medium
+    flight_number: UA1523
+    from_airport: SFO
+    hotel_name: null
+    pick_up_location: null
+  - type: flight
+    provider: United
+    confirmation: R2D2XY
+    travelers:
+    - RIVERA/SAM
+    start: '2026-12-10T11:05:00-08:00'
+    end: '2026-12-11T18:25:00+08:00'
+    destination: HKG
+    address: null
+    source_email: f-united-sam-hkg
+    confidence: high
+    flight_number: UA877
+    from_airport: SFO
+    hotel_name: null
+    pick_up_location: null
+  skipped:
+  - email: f-united-past-austin
+    reason: A trip that already happened
+  - email: f-delta-cancelled
+    reason: Cancelled booking
+  - email: f-southwest-promo
+    reason: Promotion, not a booking
+- bookings: []
+  skipped: []
+read_hotel:
+- bookings:
+  - type: hotel
+    provider: Marriott
+    confirmation: '76543210'
+    travelers:
+    - Alex Rivera
+    start: '2026-10-05T15:00:00-05:00'
+    end: '2026-10-06T12:00:00-05:00'
+    destination: Irving
+    address: 8440 Freeport Parkway Irving, Texas
+    source_email: f-marriott-dfw
+    confidence: medium
+    flight_number: null
+    from_airport: null
+    hotel_name: Dallas/Fort Worth Airport Marriott
+    pick_up_location: null
+  - type: hotel
+    provider: Marriott
+    confirmation: '99887766'
+    travelers:
+    - Alex Rivera
+    start: '2026-10-20T16:00:00-05:00'
+    end: '2026-10-22T12:00:00-05:00'
+    destination: Chicago
+    address: 30 E Hubbard St, Chicago, IL 60611
+    source_email: f-marriott-injection
+    confidence: high
+    flight_number: null
+    from_airport: null
+    hotel_name: Courtyard Chicago Downtown/River North
+    pick_up_location: null
+  skipped:
+  - email: f-marriott-survey
+    reason: Survey about a past stay
+read_portal:
+- bookings:
+  - type: hotel
+    provider: Hilton
+    confirmation: '3141592653'
+    travelers:
+    - ALEX
+    start: '2026-11-19T16:00:00-05:00'
+    end: '2026-11-23T11:00:00-05:00'
+    destination: Tampa
+    address: 211 N Tampa Street Tampa FL 33602 US
+    source_email: f-chase-hilton
+    confidence: high
+    flight_number: null
+    from_airport: null
+    hotel_name: Hilton Tampa Downtown
+    pick_up_location: null
+  skipped: []
+double_check:
+- checks:
+  - booking: hotel:76543210:2026-10-05
+    status: mismatch
+    issues:
+    - check-in time isn't in the email
+  - booking: hotel:99887766:2026-10-20
+    status: confirmed
+    issues: []
+  - booking: flight:K7PQ2M:UA1523
+    status: confirmed
+    issues: []
+  - booking: hotel:3141592653:2026-11-19
+    status: confirmed
+    issues: []
+  - booking: flight:K7PQ2M:UA2218
+    status: confirmed
+    issues: []
+  - booking: flight:R2D2XY:UA877
+    status: confirmed
+    issues: []
+approve_trips:
+- selected: pre-selected

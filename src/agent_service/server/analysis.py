@@ -2,7 +2,7 @@
 
     check(raw)              errors pinned to fields, warnings, and the compiled YAML if it compiles
     references(raw, step)   what a step's inputs can point at, with types, for the pickers
-    graph(block)            a Free-form block's steps in the order their data sets, plus its loops
+    graph(block, agent)     a Free-form block's steps in the order their data sets, its loops, and what runs together
 
 Errors block publishing; warnings don't. Whether a person approves before an agent changes anything is
 the builder's choice: acting on other people's content with no Approve step first is a warning.
@@ -16,13 +16,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from .. import definition
-from ..compiler import CompileError, compile_agent, output_fields
+from ..compiler import CompileError, compile_agent, data_rows, output_fields, parallel_groups
 from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep, FreeFormBlock
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
 
-UNTRUSTED = {"gmail"}          # services whose content other people wrote
-RUN_BUILT_INS = {"started"}    # run.* values every run has, besides its run options
+UNTRUSTED = {"gmail", "github"}    # services whose content other people wrote
+RUN_BUILT_INS = {"started"}        # run.* values every run has, besides its run options
 
 
 def _loc(loc: tuple[Any, ...]) -> str:
@@ -100,7 +100,7 @@ def _policy(agent: definition.Agent) -> list[dict[str, str]]:
             approved = True
         if isinstance(s, ActStep) and reads_untrusted and not approved:
             warnings.append({"path": f"steps.{i}", "message": f"{s.name} changes something outside the agent with no approval "
-                             "first, using values from email other people wrote. Add an Approve step if a person should check them."})
+                             "first, using values from content other people wrote (email, GitHub). Add an Approve step if a person should check them."})
     return warnings
 
 
@@ -189,11 +189,11 @@ def _heads(value: Any) -> list[str]:
     return [v.rstrip("?").split(".")[0] for v in vals]
 
 
-def graph(block: FreeFormBlock) -> dict[str, Any]:
-    """Rows by data order (a step sits below everything it needs), solid 'needs' edges, dotted loops."""
+def graph(block: FreeFormBlock, agent: definition.Agent | None = None) -> dict[str, Any]:
+    """Rows by data order (a step sits below everything it needs), solid 'needs' edges, dotted loops,
+    and the rows the planner can run at the same time."""
     ids = [s.id for s in block.steps]
     sources = {name: [r.split(".")[0] for r in refs] for name, refs in block.collect.items()}
-    needs: dict[str, set[str]] = {s.id: set() for s in block.steps}
     edges = []
     for s in block.steps:
         for name, value in s.takes.items():
@@ -204,20 +204,8 @@ def graph(block: FreeFormBlock) -> dict[str, Any]:
                 producers = sources.get(rest[0], []) if head == "collected" and rest else ([head] if head in ids else [])
                 for p in producers:
                     if p != s.id:
-                        needs[s.id].add(p)
                         edges.append({"from": p, "to": s.id, "label": name, "optional": optional, "either": either})
-    depth: dict[str, int] = {}
-
-    def level(sid: str, seen: frozenset[str] = frozenset()) -> int:
-        if sid in depth:
-            return depth[sid]
-        if sid in seen:
-            return 0
-        depth[sid] = 0 if not needs[sid] else 1 + max(level(p, seen | {sid}) for p in needs[sid])
-        return depth[sid]
-
-    for sid in ids:
-        level(sid)
+    depth, _ = data_rows(block)
     loops = [{"from": s.repeat.usually_after, "to": s.id, "label": s.repeat.when or "run again"}
              for s in block.steps if isinstance(s, AskStep) and s.repeat and s.repeat.usually_after in ids]
     nodes = [{"id": s.id, "name": s.name, "kind": s.kind, "row": depth[s.id],
@@ -228,4 +216,5 @@ def graph(block: FreeFormBlock) -> dict[str, Any]:
         # A step a rule needs to have run: has(steps.<id>), not the guard !has(steps.<id>).
         if re.search(rf"(?<!!)has\(steps\.{n['id']}\)", rules):
             n["mark"] = "required"
-    return {"nodes": nodes, "edges": edges, "loops": loops}
+    groups = [{"name": g["name"], "members": g["members"]} for g in parallel_groups(block, agent)] if agent else []
+    return {"nodes": nodes, "edges": edges, "loops": loops, "groups": groups}

@@ -20,8 +20,9 @@ export default function Ask() {
         <TakesEditor />
       </Block>
       <Block title="Can use">
-        <UsesEditor actions={service === 'google-sheets' ? ['read'] : ['search', 'open']}
-          limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets'] : []} />
+        <UsesEditor actions={service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read'] : ['search', 'open']}
+          limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
+            : service === 'github' ? ['repos', 'lookback_days'] : []} />
         <span className="faint">Ask steps can only read: send, delete and change actions aren't offered.</span>
       </Block>
       <Block title="Instructions">

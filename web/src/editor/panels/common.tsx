@@ -127,7 +127,7 @@ export function TakesEditor({ fixed, allowAdd = true }: { fixed?: string[]; allo
 }
 
 /** Which connection a step uses, which of its actions, and the limits the gateway enforces. */
-export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar')[] }) {
+export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos')[] }) {
   const { step, set, draft, p, block } = useStep()
   const uses: Json | undefined = step.uses
   const conns = Object.keys(draft.connections ?? {})
@@ -141,6 +141,8 @@ export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits
     )
   }
   const setU = (k: string, v: unknown) => set(['uses'], { ...uses, [k]: v === '' || (Array.isArray(v) && !v.length && k !== 'actions') ? undefined : v })
+  const service = draft.connections?.[uses.connection]?.service
+  const actionLabel = (a: string) => service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : a.replace('_', ' ')
   const stepIds = (block?.steps ?? []).map((s: Json) => s.id).filter((id: string) => id !== step.id)
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -149,13 +151,14 @@ export function UsesEditor({ actions, limits = [] }: { actions: string[]; limits
         <span className="faint">{draft.connections?.[uses.connection]?.service}</span>
         <button className="link" style={{ color: 'var(--faint)', marginLeft: 'auto' }} onClick={() => set(['uses'], undefined)}>Don't use a connection</button>
       </span>
-      {actions.map((a) => <Check key={a} checked={uses.actions?.includes(a)} onChange={(on) => setU('actions', on ? [...(uses.actions ?? []), a] : uses.actions.filter((x: string) => x !== a))}>{a.replace('_', ' ')}</Check>)}
+      {actions.map((a) => <Check key={a} checked={uses.actions?.includes(a)} onChange={(on) => setU('actions', on ? [...(uses.actions ?? []), a] : uses.actions.filter((x: string) => x !== a))}>{actionLabel(a)}</Check>)}
       <FieldErrors path={p('uses')} />
       {limits.length > 0 && (
         <div className="stack" style={{ gap: 7, marginLeft: 22, padding: '8px 10px', background: 'var(--soft)', border: '1px solid var(--line)', borderRadius: 8 }}>
           <span className="faint">Limits, enforced by the service, not by the instructions:</span>
           {limits.includes('senders') && <span className="row"><span className="muted">From</span><Chips values={uses.senders ?? []} onChange={(v) => setU('senders', v)} placeholder="Add a sender domain" /></span>}
-          {limits.includes('lookback_days') && <span className="row"><span className="muted">Sent in the last</span><Text width={56} value={uses.lookback_days ?? ''} onChange={(v) => setU('lookback_days', v ? Number(v) : '')} label="Days" /><span className="muted">days</span></span>}
+          {limits.includes('repos') && <span className="row"><span className="muted">Repositories</span><Chips values={uses.repos ?? []} onChange={(v) => setU('repos', v)} placeholder="owner/name" /></span>}
+          {limits.includes('lookback_days') && <span className="row"><span className="muted">{service === 'github' ? 'Updated in the last' : 'Sent in the last'}</span><Text width={56} value={uses.lookback_days ?? ''} onChange={(v) => setU('lookback_days', v ? Number(v) : '')} label="Days" /><span className="muted">days</span></span>}
           {limits.includes('only_message') && <Check checked={!!uses.only_message} onChange={(on) => setU('only_message', on ? 'trigger.email_id' : '')}>Only the email that started the run</Check>}
           {limits.includes('from_domain') && <Check checked={!!uses.from_domain} onChange={(on) => setU('from_domain', on ? 'trigger.sender_domain' : '')}>Only emails from the same sender as that email</Check>}
           {limits.includes('only_cited_by') && (
