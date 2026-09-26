@@ -277,6 +277,58 @@ def call_tools(tool: str, arguments: dict, dry_run: bool, data: dict) -> dict:
     return {"called": asyncio.run(run()), "would_call": []}
 
 
+# ------------------------------------------------------------------ JavaScript
+
+JS_TIME_LIMIT = 2                 # seconds of JavaScript per step run
+JS_MEMORY_LIMIT = 64 * 1024 * 1024
+JS_OUTPUT_LIMIT = 2_000_000       # characters of JSON a step may return
+
+
+class ScriptError(Exception):
+    """The code threw, ran too long, or returned something the step doesn't declare. The message says which."""
+
+
+def javascript(code: str, returns: list[str], data: dict) -> dict:
+    """Runs the builder's code in QuickJS: a function body that gets `inputs` (the step's Takes) and returns an object
+    with the fields in Returns. No files, network or processes: only its inputs, JSON in and JSON out, time and
+    memory limited. Date is available; nothing else from outside."""
+    import quickjs
+    wrapper = ("function __main(json) {\n  const inputs = JSON.parse(json);\n"
+               "  const out = (function (inputs) {\n" + code + "\n  })(inputs);\n"
+               "  return JSON.stringify(out === undefined ? null : out);\n}")
+    try:
+        fn = quickjs.Function("__main", wrapper)
+    except quickjs.JSException as exc:
+        raise ScriptError(f"The JavaScript doesn't parse: {_js_message(exc)}") from None
+    fn.set_time_limit(JS_TIME_LIMIT)
+    fn.set_memory_limit(JS_MEMORY_LIMIT)
+    try:
+        text = fn(json.dumps(data, default=str))
+    except quickjs.JSException as exc:
+        msg = _js_message(exc)
+        if "interrupted" in msg:
+            raise ScriptError(f"The JavaScript ran for more than {JS_TIME_LIMIT} seconds and was stopped.") from None
+        if "out of memory" in msg.lower():
+            raise ScriptError(f"The JavaScript used more than {JS_MEMORY_LIMIT // (1024 * 1024)} MB and was stopped.") from None
+        raise ScriptError(f"The JavaScript threw an error: {msg}") from None
+    if text is None or len(text) > JS_OUTPUT_LIMIT:
+        raise ScriptError("The JavaScript returned nothing." if text is None else "The JavaScript returned more than 2 MB.")
+    out = json.loads(text)
+    if not isinstance(out, dict):
+        raise ScriptError(f"The JavaScript must return an object with {', '.join(returns) or 'its fields'}, like "
+                          f"return {{ {returns[0] if returns else 'result'}: ... }}; it returned {type(out).__name__}.")
+    missing = [r for r in returns if r not in out]
+    if missing:
+        raise ScriptError(f"The JavaScript's result has no {', '.join(missing)}. Return every field listed under Returns.")
+    return {k: out[k] for k in returns} if returns else out
+
+
+def _js_message(exc: Exception) -> str:
+    lines = [l for l in str(exc).splitlines() if l.strip()]
+    # QuickJS reports line numbers in the wrapper; the builder's code starts 4 lines in.
+    return re.sub(r"<input>:(\d+)", lambda m: f"line {max(1, int(m.group(1)) - 3)}", " ".join(lines)).replace("at __main", "").strip()
+
+
 # ------------------------------------------------------------------ debugging
 
 def show(data: dict) -> dict:
@@ -288,7 +340,7 @@ def show(data: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -300,8 +352,12 @@ def main() -> None:
     p.add_argument("--dry-run", choices=["true", "false"], default="true")
     p.add_argument("--row", help="add-rows: column -> template over each record, as JSON.")
     p.add_argument("--tool", help="call-tools: the MCP connector's act tool.")
+    p.add_argument("--code-b64", help="javascript: the function body, base64.")
+    p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
     a = p.parse_args()
+    import os
+    os.environ.setdefault("AGENT_SERVICE_STEP", a.step)      # connection calls are logged against this step
     data = json.loads(sys.stdin.read() or "{}")
 
     if a.operation == "tidy":
@@ -318,6 +374,13 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation == "javascript":
+        import base64
+        try:
+            out = javascript(base64.b64decode(a.code_b64).decode(), [r for r in a.returns.split(",") if r], data)
+        except ScriptError as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            sys.exit(str(exc))
     elif a.operation == "call-tools":
         try:
             out = call_tools(a.tool, json.loads(a.arguments or "{}"), a.dry_run == "true", data)
@@ -326,7 +389,7 @@ def main() -> None:
     else:
         out = create_events(a.calendar, json.loads(a.templates), [f for f in a.match_fields.split(",") if f],
                             a.dry_run == "true", data)
-    record_step(a.step, out)
+    record_step(a.step, out, inputs=data)
     json.dump(out, sys.stdout)
 
 

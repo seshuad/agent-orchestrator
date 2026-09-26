@@ -198,6 +198,28 @@ service on 8700).
 | Runs | Every run, live while it runs: outcome, what an Act step did or would do, the service's checks, and a readable log with the planner's reasons, tool calls, costs, and plain-language failures |
 | Approvals | Runs waiting for a person; the choices are on the run's page and go to Conductor's gate |
 
+### JavaScript steps
+
+A Built-in step can run your own JavaScript: the body of a function that gets `inputs` (the step's Takes, by name)
+and returns an object with the fields listed under Returns, which later steps pick like any output. It runs in QuickJS
+with nothing but its inputs: no files, network or other programs, 2 seconds and 64 MB per run. Use it for exact,
+repeatable work a model shouldn't do: sorting and ranking, date arithmetic, counting, reshaping. **Try it** runs the
+code on sample inputs in the editor, or on the inputs the step had in the latest run. A JavaScript error, a timeout
+or a missing return field fails the step with the reason.
+
+### Debugging and testing agents
+
+- **Step inspector.** Click a step in a run's log to see everything about that run of it: the system prompt and the
+  prompt with its inputs filled in, each tool call with its arguments, its full result and the gateway's decision,
+  schema repairs, what a Built-in or rule step was given, and what the step returned (`server/inspect.py`). Runs keep
+  their event log in their run folder (`events.jsonl`), and every gateway call is recorded against its step.
+- **Re-run one step.** From the inspector, run a model step or Built-in step again with the current draft, on exactly
+  the inputs it had: a one-step workflow whose prompt is the recorded one with the draft's task swapped in. The new
+  output shows side by side with the original.
+- **Test cases.** Save any finished run as a test (Runs → a run → Save as test): the same inputs, approvals answered
+  the same way, and expectations as CEL rules over `status`, `steps.<id>.<field>` and `calls`, suggested from the
+  run. The agent's Tests tab runs them against the draft; Publish shows whether they pass.
+
 ### Drafting agents with Claude
 
 **Describe it** (New agent) drafts a whole agent from a description, and **Refine with AI** (in the editor) changes a

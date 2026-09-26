@@ -20,6 +20,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: read_airline
       gmail-read-hotel:
         command: agent-service-gateway
         args:
@@ -31,6 +32,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: read_hotel
       gmail-read-portal:
         command: agent-service-gateway
         args:
@@ -42,6 +44,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: read_portal
       gmail-double-check:
         command: agent-service-gateway
         args:
@@ -53,6 +56,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: double_check
       cel-evaluator:
         command: agent-service-cel
         env:
@@ -70,6 +74,11 @@ workflow:
       required: false
       default: Alex Rivera
       description: Used by Tidy up's flag rules.
+    started:
+      type: string
+      required: false
+      default: ''
+      description: When the run started (UTC, ISO 8601), set by the service.
   context:
     mode: explicit
   limits:
@@ -676,6 +685,7 @@ agents:
   - tidy_up.output?
   - workflow.input.dry_run
   - workflow.input.my_name
+  - workflow.input.started
   arguments:
     expressions: |
       - name: rule_1
@@ -688,8 +698,9 @@ agents:
       - name: notes
         cel: '(!has(steps.tidy_up) ? [] : steps.tidy_up.notes) + planner.notes'
     data: '{{ {"steps": {"tidy_up": (tidy_up.output if tidy_up is defined else none)}, "run": {"dry_run": workflow.input.dry_run,
-      "my_name": workflow.input.my_name}, "planner": (plan.output if plan is defined else none), "collected": ((collect.output
-      if collect is defined else none) or {"bookings": [], "skipped": [], "checks": []})} | tojson }}'
+      "my_name": workflow.input.my_name, "started": workflow.input.started}, "planner": (plan.output if plan is
+      defined else none), "collected": ((collect.output if collect is defined else none) or {"bookings": [], "skipped":
+      [], "checks": []})} | tojson }}'
     step: finish_check
   output:
     passed:
@@ -726,12 +737,14 @@ agents:
   - finish_check.output?
   - workflow.input.dry_run
   - workflow.input.my_name
+  - workflow.input.started
   arguments:
     expressions: |
       - name: no_trips
         cel: size(steps.find_and_check.trips) == 0
     data: '{{ {"steps": {"find_and_check": (((finish_check.output if finish_check is defined else none) or {}).get(''results''))},
-      "run": {"dry_run": workflow.input.dry_run, "my_name": workflow.input.my_name}} | tojson }}'
+      "run": {"dry_run": workflow.input.dry_run, "my_name": workflow.input.my_name, "started": workflow.input.started}}
+      | tojson }}'
     step: any_trips_found
   output:
     passed:
@@ -761,13 +774,15 @@ agents:
   - finish_check.output?
   - workflow.input.dry_run
   - workflow.input.my_name
+  - workflow.input.started
   arguments:
     expressions: |
       - name: preselected
         cel: items.filter(item, size(item.flags) == 0 && item.bookings.all(b, steps.find_and_check.checks.exists(c, c.booking == b.key && c.status == 'confirmed'))).map(item, item.trip_id)
     data: '{{ {"steps": {"find_and_check": (((finish_check.output if finish_check is defined else none) or {}).get(''results''))},
-      "run": {"dry_run": workflow.input.dry_run, "my_name": workflow.input.my_name}, "items": ((((((finish_check.output
-      if finish_check is defined else none) or {}).get(''results'')) or {}).get(''trips'')) or [])} | tojson }}'
+      "run": {"dry_run": workflow.input.dry_run, "my_name": workflow.input.my_name, "started": workflow.input.started},
+      "items": ((((((finish_check.output if finish_check is defined else none) or {}).get(''results'')) or {}).get(''trips''))
+      or [])} | tojson }}'
     step: approve_trips_preselect
   output:
     passed:

@@ -15,7 +15,8 @@ from . import vault
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 MAX_BODY_CHARS = 30_000
-RETRIES = 5
+RETRIES = 2
+HTTP_TIMEOUT = 30          # seconds per request: a stuck request fails, and the step can try again or carry on
 
 
 class _Text(HTMLParser):
@@ -72,11 +73,26 @@ def credentials(connection: str):
 
 
 class LiveGmail:
-    """The same two operations the sample mailbox offers, against the real account."""
+    """The same two operations the sample mailbox offers, against the real account.
+
+    A model can ask for several emails at once, and the gateway runs those calls on separate threads. The Google
+    client's HTTP layer (httplib2) isn't safe to share between threads, and waits forever by default, so each
+    thread gets its own connection, with a timeout."""
 
     def __init__(self, connection: str):
-        from googleapiclient.discovery import build
-        self.svc = build("gmail", "v1", credentials=credentials(connection), cache_discovery=False)
+        import threading
+        self.creds = credentials(connection)
+        self.local = threading.local()
+
+    @property
+    def svc(self) -> Any:
+        if not hasattr(self.local, "svc"):
+            import httplib2
+            from google_auth_httplib2 import AuthorizedHttp
+            from googleapiclient.discovery import build
+            http = AuthorizedHttp(self.creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
+            self.local.svc = build("gmail", "v1", http=http, cache_discovery=False)
+        return self.local.svc
 
     @staticmethod
     def _summary(meta: dict[str, Any]) -> dict[str, Any]:

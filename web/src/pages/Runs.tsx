@@ -4,6 +4,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, duration, followRun, when, STATUS_LABEL, type Run, type RunDetail } from '../api'
 import { Block, Guarantees, Icon, Pill, Segmented, Check } from '../ui'
 import RunNow from './RunNow'
+import SaveAsTest from './SaveAsTest'
+import { AgentTabs } from './Tests'
+import StepInspector from './StepInspector'
 
 type Filter = 'All' | 'Succeeded' | 'Failed' | 'Stopped' | 'In progress'
 const matches = (r: Run, f: Filter) => f === 'All' || (f === 'In progress' ? ['running', 'waiting'].includes(r.status) : r.status === f.toLowerCase())
@@ -33,10 +36,7 @@ export default function RunsPage() {
           <div className="row" style={{ gap: 12 }}>
             <Link to="/" style={{ color: 'var(--soft-text)' }}>Agents</Link><span style={{ color: '#B7B7AC' }}>/</span>
             <span style={{ fontSize: 16, fontWeight: 700 }}>{name}</span>
-            <nav className="row" style={{ gap: 4, marginLeft: 12 }}>
-              <Link to={`/agents/${name}`} className="btn small" style={{ border: 'none' }}>Design</Link>
-              <span className="btn small" style={{ border: 'none', background: 'var(--acc-soft)' }}>Runs</span>
-            </nav>
+            <AgentTabs name={name} tab="Runs" />
           </div>
           <button className="btn primary" onClick={() => setShowRunNow(true)}><Icon name="play" size={12} color="#fff" width={2} />Run now</button>
         </div>
@@ -56,6 +56,7 @@ export default function RunsPage() {
                 <span className="muted">{!name && <strong style={{ color: 'var(--ink)' }}>{r.agent} · </strong>}{r.error?.title ?? (r.gate ? 'Waiting for approval' : r.status === 'running' ? 'In progress' : 'Finished')}</span>
                 <span className="row faint" style={{ gap: 12 }}>
                   <span>{r.trigger === 'manual' ? `Manual · ${r.started_by.split(' ')[0]}` : r.trigger}</span>
+                  {r.test_result && <Pill kind={r.test_result.passed ? 'succeeded' : 'failed'}>{r.test_result.passed ? 'test passed' : 'test failed'}</Pill>}
                   <span>{r.version ? `v${r.version}` : 'draft'}{r.scripted ? ' · scripted' : ''}{r.source === 'live' ? ' · real Gmail' : ''}</span>
                   <span>{duration(r.duration)}</span><span>${(r.cost_usd ?? 0).toFixed(2)}</span>
                 </span>
@@ -88,6 +89,8 @@ function RunView({ id }: { id: string }) {
   const [picked, setPicked] = useState('')
   const [busy, setBusy] = useState(false)
   const [opening, setOpening] = useState(false)
+  const [inspecting, setInspecting] = useState<{ step: string; n: number; label: string } | null>(null)
+  const [saving, setSaving] = useState(false)
   const openConductor = async () => {
     const tab = window.open('about:blank', '_blank')       // open now, so the browser doesn't block it as a pop-up
     setOpening(true)
@@ -116,6 +119,7 @@ function RunView({ id }: { id: string }) {
   const costliest = d.log.reduce((m, e) => ((e.cost ?? 0) > (m?.cost ?? 0) ? e : m), null as RunDetail['log'][number] | null)
 
   return (
+    <div className="row grow" style={{ alignItems: 'stretch', flexWrap: 'nowrap', gap: 0, minHeight: 0, minWidth: 0 }}>
     <div className="page" style={{ gap: 14 }}>
       <div className="spread">
         <div className="row" style={{ gap: 10 }}>
@@ -123,6 +127,7 @@ function RunView({ id }: { id: string }) {
           <Pill kind={d.status}>{STATUS_LABEL[d.status] ?? d.status}</Pill>{live && <span className="spinner" />}
         </div>
         <span className="row" style={{ gap: 14 }}>
+          {!live && d.events_file && <button className="btn small" onClick={() => setSaving(true)}><Icon name="check" size={12} width={2} />Save as test</button>}
           {live && <button className="btn small danger" onClick={() => api.stop(d.id).then(() => api.run(d.id).then(setD))}>Stop run</button>}
           {(live || d.events_file) && (
             <button className="link" disabled={opening} title={live ? 'Conductor\u2019s live dashboard for this run' : 'A replay of this run in Conductor\u2019s dashboard, from its event log'}
@@ -136,7 +141,8 @@ function RunView({ id }: { id: string }) {
       <div className="meta">
         {[['Agent', d.agent], ['Started', `Manually by ${d.started_by}`], ['Version', d.version ? `v${d.version}` : 'Draft (test run)'],
           ['Data', d.source === 'live' ? 'Real Gmail' : 'Sample data'], ['Model steps', d.scripted ? 'Scripted answers' : 'Claude API'], ['Dry run', d.inputs?.dry_run === 'false' ? 'No' : d.inputs?.dry_run ? 'Yes' : '—'],
-          ['Took', duration(d.duration)], ['Cost', `$${(d.cost_usd ?? 0).toFixed(2)}`], ['Tokens', d.tokens ? `${Math.round(d.tokens / 1000)}K` : '0']]
+          ['Took', duration(d.duration)], ['Cost', `$${(d.cost_usd ?? 0).toFixed(2)}`], ['Tokens', d.tokens ? `${Math.round(d.tokens / 1000)}K` : '0'],
+          ...(d.test ? [['Test', d.test.name]] : []), ...(d.rerun_of ? [['Re-run of', `${d.rerun_of.step} (run ${d.rerun_of.run})`]] : [])]
           .map(([k, v]) => <span key={k}><span>{k}</span><span>{v}</span></span>)}
       </div>
 
@@ -151,6 +157,19 @@ function RunView({ id }: { id: string }) {
           <div className="row">{d.gate.option_details.map((o, i) => (
             <button key={o.value} className={`btn${i === 0 ? '' : ' primary'}`} disabled={busy || (!!o.prompt_for && !picked)} onClick={() => decide(o.value)}>{o.label}</button>
           ))}</div>
+        </div>
+      )}
+
+      {d.test_result && (
+        <div className="card pad" style={{ borderColor: d.test_result.passed ? '#D5E7DA' : '#EEC5BA', background: d.test_result.passed ? '#F3F8F4' : '#FDF1EE' }}>
+          <strong>{d.test_result.passed ? 'Test passed' : 'Test failed'}: {d.test?.name}</strong>
+          {d.test_result.results.map((r, i) => (
+            <span key={i} className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+              <Icon name={r.passed ? 'check' : 'x'} size={13} width={2.2} color={r.passed ? '#2E6B47' : 'var(--bad)'} />
+              <span className="grow">{r.name} <code className="mono faint">{r.rule}</code></span>
+              {!r.passed && <span className="field-error">{r.error ?? `was ${JSON.stringify(r.value)}`}</span>}
+            </span>
+          ))}
         </div>
       )}
 
@@ -200,7 +219,9 @@ function RunView({ id }: { id: string }) {
         {entries.length === 0 && <div className="log-row"><span /><span className="muted">{live ? 'Starting…' : 'No steps ran.'}</span></div>}
         {entries.map((e, i) => (
           <Fragment key={i}>
-            <div className={`log-row ${e === costliest && (e.cost ?? 0) > 0.05 ? 'hot' : e.tone}`} onClick={() => setOpen(open === i ? null : i)} style={{ cursor: e.tools.length ? 'pointer' : undefined }}>
+            <div className={`log-row ${e === costliest && (e.cost ?? 0) > 0.05 ? 'hot' : e.tone}${inspecting && inspecting.step === e.id && inspecting.n === e.n ? ' inspected' : ''}`}
+              onClick={() => (e.n !== undefined && e.kind !== 'group' && e.id ? setInspecting({ step: e.id, n: e.n, label: e.step }) : setOpen(open === i ? null : i))}
+              style={{ cursor: e.n !== undefined && e.kind !== 'group' ? 'pointer' : undefined }} title={e.n !== undefined && e.kind !== 'group' ? 'Inspect this step' : undefined}>
               <span className="faint mono">{Math.floor(e.at / 60)}:{String(Math.floor(e.at % 60)).padStart(2, '0')}</span>
               <span className="stack" style={{ gap: 3, alignItems: 'flex-start' }}>
                 <span style={{ fontWeight: 600 }}>{e.step}</span>
@@ -209,14 +230,13 @@ function RunView({ id }: { id: string }) {
               <span className="muted">
                 {e.detail}
                 {e.why && <span className="why"><Icon name="spark" size={12} color="var(--flow)" /><span><strong>Why:</strong> {e.why}</span></span>}
-                {e.tools.length > 0 && <span className="faint" style={{ display: 'block' }}>{e.tools.length} connection call{e.tools.length > 1 ? 's' : ''} {open === i ? '▾' : '▸'}</span>}
+                {e.tools.length > 0 && <span className="faint" style={{ display: 'block' }}>{e.tools.length} connection call{e.tools.length > 1 ? 's' : ''} · inspect to see them</span>}
                 {e.value !== undefined && (
                   <details open onClick={(ev) => ev.stopPropagation()} style={{ marginTop: 4 }}>
                     <summary className="faint" style={{ cursor: 'pointer' }}>The value</summary>
                     <div className="pre" style={{ marginTop: 4, maxHeight: 360 }}>{e.value}</div>
                   </details>
                 )}
-                {open === i && e.tools.map((t, j) => <span key={j} className="mono faint" style={{ display: 'block' }}>{t.tool}({t.args})</span>)}
                 {e === costliest && (e.cost ?? 0) > 0.05 && <span className="faint" style={{ display: 'block' }}>The most expensive step of the run.</span>}
               </span>
               <span className="faint" style={{ textAlign: 'right' }}>{e.took ? `${e.took}s` : ''}</span>
@@ -225,6 +245,10 @@ function RunView({ id }: { id: string }) {
           </Fragment>
         ))}
       </div>
+      <span className="faint">Click a step to inspect it: what it was given, what it called, what it returned. Model and Built-in steps can be re-run with the current draft.</span>
+      {saving && <SaveAsTest run={d} onClose={() => setSaving(false)} />}
+    </div>
+    {inspecting && <StepInspector key={`${inspecting.step}-${inspecting.n}`} runId={d.id} {...inspecting} onClose={() => setInspecting(null)} />}
     </div>
   )
 }

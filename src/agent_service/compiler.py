@@ -17,6 +17,7 @@ With `replay=True`, model steps and approval gates become scripted stand-ins
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?[+-]\d{2}:\d{2}$"
 RUNTIME_ENV = ["AGENT_SERVICE_RUN_DIR", "AGENT_SERVICE_SAMPLE_DATA", "AGENT_SERVICE_SIGNING_KEY"]
 OPTIONAL_ENV = ["AGENT_SERVICE_VAULT"]      # set only for runs on real accounts; empty otherwise
 STEP_FAILED = "stop_step_failed"
+RUN_BUILT_INS = {"started"}      # run.<name> values the service sets on every run, besides its run options
 PLAN, NOT_READY, COLLECT, FINISH, STOP = "plan", "not_ready", "collect", "finish_check", "stop_rules_unmet"
 RULE_ERROR = "stop_rule_error"
 
@@ -94,7 +96,7 @@ def jref(ref: str, scope: Scope) -> str:
     head, *path = ref.split(".")
     top = {s.id: s for s in scope.agent.steps}
     if head == "run" or (head == "trigger" and path):
-        if head == "run" and path and path[0] not in scope.agent.run_options and not optional:
+        if head == "run" and path and path[0] not in scope.agent.run_options and path[0] not in RUN_BUILT_INS and not optional:
             raise CompileError(f"Unknown run option {path[0]!r}: add it in Settings, or pick another value.")
         return f"workflow.input.{path[0]}"
     if head == "planner":
@@ -335,6 +337,9 @@ class Compiler:
         kinds = {"yes/no": "boolean", "text": "string", "number": "number"}
         for name, opt in self.agent.run_options.items():
             out[name] = {"type": kinds[opt.type], "required": False, "default": opt.default, "description": opt.description}
+        if uses_started(self.agent) and "started" not in out:
+            out["started"] = {"type": "string", "required": False, "default": "",
+                              "description": "When the run started (UTC, ISO 8601), set by the service."}
         return out
 
     def _top_level(self, step: Any, after: str) -> None:
@@ -360,7 +365,8 @@ class Compiler:
         env = {"AGENT_SERVICE_LIMITS_TOKEN": "${" + env_var + "}", **{v: "${" + v + "}" for v in RUNTIME_ENV},
                **{v: "${" + v + ":-}" for v in OPTIONAL_ENV}}
         if actions_tools:
-            self.servers[name] = {"command": "agent-service-gateway", "args": ["--connection", self.limits[env_var]["connection"]], "env": env}
+            self.servers[name] = {"command": "agent-service-gateway", "args": ["--connection", self.limits[env_var]["connection"]],
+                                  "env": {**env, "AGENT_SERVICE_STEP": step_id}}     # its calls are logged against the step
         return name, env_var
 
     # -------------------------------------------------------------- Ask
@@ -429,6 +435,11 @@ class Compiler:
             missing = [k for k in ("sheet", "column", "as") if not (conf or {}).get(k)]
             if missing:
                 raise CompileError(f"{step.name}: pick the {' and '.join(missing)} to {'look up' if op == 'lookup' else 'filter'}.")
+        if op == "javascript":
+            if not str((conf or {}).get("code") or "").strip():
+                raise CompileError(f"{step.name}: write its JavaScript.")
+            if not step.returns:
+                raise CompileError(f"{step.name}: add the fields its JavaScript returns, under Returns.")
         empty = [k for k, v in step.takes.items()
                  if not (isinstance(v, str) and v.endswith("?")) and (not v or (isinstance(v, list) and not any(v)))]
         if empty:
@@ -450,6 +461,11 @@ class Compiler:
             stdin = "{{ {" + f'"records": ({takes["records"]} or []), "run": {run}' + "} | tojson }}"
         elif op in ("lookup", "filter-rows"):
             args += ["--sheet", conf["sheet"], "--column", conf["column"], "--as", conf["as"]]
+            stdin = tojson_dict(takes)
+        elif op == "javascript":
+            # Base64, so nothing in the code is read as a template by the workflow engine.
+            code = base64.b64encode(conf["code"].encode()).decode()
+            args += ["--code-b64", code, "--returns", ",".join(step.returns)]
             stdin = tojson_dict(takes)
         else:
             stdin = tojson_dict(takes)
@@ -692,7 +708,8 @@ class Compiler:
             if isinstance(s, FreeFormBlock) and re.search(rf"\bsteps\.{s.id}\b", text):
                 steps[s.id] = f"(({_guard(FINISH, scope)} or {{}}).get('results'))"
         parts = {"steps": "{" + ", ".join(f"{json.dumps(k)}: {v}" for k, v in steps.items()) + "}",
-                 "run": "{" + ", ".join(f"{json.dumps(n)}: workflow.input.{n}" for n in self.agent.run_options) + "}"}
+                 "run": "{" + ", ".join([f"{json.dumps(n)}: workflow.input.{n}" for n in self.agent.run_options]
+                                        + (['"started": workflow.input.started'] if uses_started(self.agent) else [])) + "}"}
         if block is not None:
             parts["planner"] = _guard(PLAN, scope)
             empty = "{" + ", ".join(f"{json.dumps(n)}: []" for n in block.collect) + "}"
@@ -709,7 +726,8 @@ class Compiler:
                                 "output_template": {"error": f"{{{{ {name}.output.error if {name} is defined else '' }}}}"}})
         self.agents.append({
             "name": name, "description": description, "type": "mcp", "server": "cel-evaluator", "tool": "evaluate",
-            "input": inputs_of(scope, [f"workflow.input.{n}" for n in self.agent.run_options]),
+            "input": inputs_of(scope, [f"workflow.input.{n}" for n in self.agent.run_options]
+                               + (["workflow.input.started"] if uses_started(self.agent) else [])),
             "arguments": {"expressions": yaml.safe_dump(expressions, sort_keys=False, width=1000, allow_unicode=True),
                           "data": data, "step": name},
             "output": {"passed": {"type": "boolean"}, "failed": {"type": "array", "items": {"type": "string"}},
@@ -868,11 +886,18 @@ def output_fields(step: Any) -> list[str]:
     """What a step returns, by name: an Ask step's `returns`, or a Built-in operation's fixed fields."""
     if isinstance(step, AskStep):
         return list(step.returns)
+    if step.op == "javascript":
+        return list(step.returns)
     conf = step.operation[step.op]
     grouped = step.op == "tidy" and any("group" in op for op in conf)
     return {"tidy": ["trips" if grouped else "records", "notes"], "lookup": ["found", conf.get("as", "row") if isinstance(conf, dict) else "row"],
             "filter-rows": [conf.get("as", "rows") if isinstance(conf, dict) else "rows"], "compare": ["status"],
             "three-way-match": ["passed", "differences"], "show": ["value"]}[step.op]
+
+
+def uses_started(agent: Agent) -> bool:
+    """Whether a step or rule reads run.started, so the run needs it as an input."""
+    return "run.started" in json.dumps(agent.model_dump(mode="json"))
 
 
 def ask_runs(block: FreeFormBlock, groups: list[dict[str, Any]]) -> str:

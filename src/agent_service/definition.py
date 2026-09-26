@@ -126,15 +126,16 @@ class AskStep(Step):
 
 class BuiltInStep(Step):
     kind: Literal["built-in"]
-    operation: dict[str, Any]                # exactly one of: tidy, lookup, filter-rows, compare, three-way-match, show
+    operation: dict[str, Any]                # exactly one of: tidy, lookup, filter-rows, compare, three-way-match, show, javascript
     takes: Takes = Field(default_factory=dict)
     uses: Uses | None = None
     reruns_by_itself: bool = False
+    returns: dict[str, FieldDef] = Field(default_factory=dict)   # javascript: the fields the code returns
 
     @field_validator("operation")
     @classmethod
     def _one_operation(cls, v: dict[str, Any]) -> dict[str, Any]:
-        known = {"tidy", "lookup", "filter-rows", "compare", "three-way-match", "show"}
+        known = {"tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript"}
         if len(v) != 1 or next(iter(v)) not in known:
             raise ValueError(f"operation must be exactly one of {sorted(known)}")
         return v

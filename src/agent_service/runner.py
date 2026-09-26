@@ -26,6 +26,9 @@ HEADER = ("# Compiled by agent-service. Do not edit: change the agent definition
           "# Every command below is a program the run worker ships.\n\n")
 
 
+EMPTY = Path(__file__).parent / "empty-sample-data"     # for runs whose agent has no test data picked
+
+
 class RunError(Exception):
     """The run can't start; the message says why in the builder's terms."""
 
@@ -71,13 +74,15 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             email_id: str | None = None, replay: Path | None = None, replay_gates: bool = True,
             run_id: str | None = None, vault: Path | None = None, trigger_email: dict[str, Any] | None = None,
             live: bool | None = None, accounts: dict[str, dict[str, Any]] | None = None,
-            connectors: dict[str, dict[str, Any]] | None = None) -> Prepared:
+            connectors: dict[str, dict[str, Any]] | None = None, transform: Any = None) -> Prepared:
     """With `live` (default: when there's a `vault`), Gmail and GitHub steps use the real accounts their connections
     name; the rest stay on sample data. MCP steps always use the real system: `accounts` and `connectors` say which
     server, how it signs in and which tools its admin approved, and all of that goes into the signed limits token.
     `trigger_email` is the email that started the run ({id, from}), for email triggers on real accounts."""
     live = vault is not None if live is None else live
     compiled = compile_agent(agent, replay=replay is not None, replay_gates=replay_gates)
+    if transform is not None:          # e.g. only one step, for re-running it on recorded inputs
+        compiled = transform(compiled)
     run_dir = (runs_root / (run_id or f"{agent.name}-{time.strftime('%Y%m%d-%H%M%S')}")).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     workflow = run_dir / "workflow.yaml"
@@ -112,5 +117,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
         compiled.limits[var] = spec
         env[var] = limits.mint(_resolve(spec, inputs), key.encode())
     (run_dir / "limits.json").write_text(json.dumps({k: _resolve(v, inputs) for k, v in compiled.limits.items()}, indent=1))
+    if "started" in (compiled.workflow.get("workflow") or {}).get("input", {}) and "started" not in inputs:
+        from datetime import datetime, timezone
+        inputs["started"] = datetime.now(timezone.utc).isoformat(timespec="seconds")    # run.started
     command = ["conductor", "run", str(workflow)] + [x for k, v in inputs.items() for x in ("--input", f"{k}={v}")]
     return Prepared(run_dir, workflow, env, inputs, command)

@@ -49,6 +49,22 @@ export interface DraftJob {
   id: string; kind: 'create' | 'refine'; status: 'running' | 'done' | 'failed'; stage: string; started_at: number; ended_at?: number
   attempts: number; cost_usd: number; error: string | null; result: (Omit<AiNote, 'kind' | 'request' | 'at'> & { agent: string }) | null
 }
+export interface StepDetail {
+  step: string; n: number; runs: number; type: 'agent' | 'script' | 'mcp' | 'set' | 'human_gate'; took: number; at: number; error: string | null
+  model?: string; tokens?: number; input_tokens?: number; output_tokens?: number; cost?: number; system_prompt?: string; prompt?: string
+  tools?: { tool: string; args: unknown; result: string | null; truncated: { kept: number; of: number } | null; gateway?: { outcome: string; detail: string } }[]
+  repairs?: string[]; output?: unknown; inputs?: unknown; in_group?: string | null; stderr?: string | null; scripted?: boolean
+  calls?: { action: string; outcome: string; detail: string; args: unknown; result?: string }[]
+  options?: { value: string; label: string }[]; chosen?: string; additional?: { ids?: string }
+  rerunnable: boolean; rerun_of?: { run: string; step: string; n: number } | null; reruns?: string[]
+}
+export interface Expectation { name: string; rule: string }
+export interface TestCase {
+  id: string; name: string; from_run: string; inputs: Record<string, string>; email_id: string | null; scripted: boolean; source: string
+  approvals: Record<string, { choice: string; ids: string | null }>; expect: Expectation[]
+  last: null | { run: string; status: string; at: number; stale: boolean; cost_usd: number
+    result: null | { passed: boolean; results: (Expectation & { passed: boolean; value: unknown; error: string | null })[] } }
+}
 export interface Catalog { name: string; icon: string; never: string; permissions: Record<string, { label: string; actions: string[]; scope: string; detail: string }> }
 export interface McpTool {
   name: string; description: string; input_schema: Json; treat: 'read' | 'act' | 'off'; limits: string[]; limitable: string[]
@@ -73,7 +89,7 @@ export interface GoogleStatus { configured: boolean; client_file: string | null;
 export type ConnectionIn = { connector?: string | null; service: string; account?: string; label: string; permissions: string[]; force?: boolean }
 
 export interface LogEntry {
-  at: number; step: string; id: string; kind: string; took: number; cost: number | null; detail: string
+  at: number; step: string; id: string; n?: number; kind: string; took: number; cost: number | null; detail: string
   why: string | null; tone: string; plumbing: boolean; model?: string | null; tokens?: number
   tools: { tool: string; args: string }[]; options?: { label: string; value: string }[]; value?: string
 }
@@ -85,6 +101,9 @@ export interface Run {
   started_by: string; trigger: string; scripted: boolean; source?: string; cost_usd: number; duration: number
   error: RunError | null; gate: { agent_name: string; prompt: string; options: string[]; option_details: { label: string; value: string; prompt_for?: string | null }[] } | null
   inputs?: Record<string, string>
+  rerun_of?: { run: string; step: string; n: number } | null
+  test?: { id: string; name: string } | null
+  test_result?: TestCase['last'] extends infer L ? (L extends { result: infer R } ? R : never) : never
 }
 
 export interface RunDetail extends Run {
@@ -157,6 +176,16 @@ export const api = {
   approve: (id: string, choice: string, ids?: string) => call<Run>('POST', `/api/runs/${id}/approve`, { choice, ids: ids ?? null }),
   stop: (id: string) => call<Run>('POST', `/api/runs/${id}/stop`),
   conductorUi: (id: string) => call<{ url: string; mode: 'live' | 'replay' }>('POST', `/api/runs/${id}/conductor`),
+  tryJs: (code: string, inputs: Json, returns: string[]) =>
+    call<{ ok: boolean; output?: unknown; error?: string; took: number }>('POST', '/api/javascript/try', { code, inputs, returns }),
+  inspectStep: (run: string, step: string, n: number) => call<StepDetail>('GET', `/api/runs/${run}/steps/${step}/${n}`),
+  rerunStep: (run: string, step: string, n: number) => call<Run>('POST', `/api/runs/${run}/steps/${step}/${n}/rerun`),
+  testSuggestion: (run: string) => call<Omit<TestCase, 'id' | 'last'>>('GET', `/api/runs/${run}/test-suggestion`),
+  tests: (name: string) => call<TestCase[]>('GET', `/api/agents/${name}/tests`),
+  addTest: (name: string, from_run: string, testName: string, expect: Expectation[]) => call<TestCase[]>('POST', `/api/agents/${name}/tests`, { from_run, name: testName, expect }),
+  editTest: (name: string, id: string, body: { name?: string; expect?: Expectation[] }) => call<TestCase[]>('PUT', `/api/agents/${name}/tests/${id}`, body),
+  removeTest: (name: string, id: string) => call<TestCase[]>('DELETE', `/api/agents/${name}/tests/${id}`),
+  runTests: (name: string, only?: string) => call<{ batch: string; runs: string[] }>('POST', `/api/agents/${name}/tests/run${only ? `?only=${only}` : ''}`),
   approvals: () => call<{ run: string; agent: string; started_at: number; gate: NonNullable<Run['gate']> }[]>('GET', '/api/approvals'),
 }
 

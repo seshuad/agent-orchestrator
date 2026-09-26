@@ -100,7 +100,12 @@ built-in: fixed operations, no model.
     compare: {}                 takes: {a: <ref>, b: <ref>}          returns status
     three-way-match: {}         takes: {invoice: <ref>, purchase_order: <ref>, receipts: <ref>}   returns passed, differences
     show: {}                    takes: {value: <ref>}                shows a value in the run log (debugging)
-  Outputs: tidy -> trips (with group) or records, notes; lookup -> found, <as>; filter-rows -> <as>; show -> value.
+    javascript: {code: "<function body>"}   takes: {name: <ref>, ...}   returns: {field: {type: ...}, ...}
+                The body gets `inputs` (each of takes by name) and must `return {field: ...}` with every field in returns.
+                Plain JavaScript in a sandbox (no network, files or other programs; 2 s, 64 MB): use it for exact,
+                repeatable work a model shouldn't do, like sorting, ranking, date arithmetic, counting and reshaping.
+  Outputs: tidy -> trips (with group) or records, notes; lookup -> found, <as>; filter-rows -> <as>; show -> value;
+           javascript -> its returns.
 
 free-form: a planning model picks which inner steps to run, how often, toward a goal. Use it only when the order depends
 on what is found (follow-up searches, verification); otherwise use plain sequential steps.

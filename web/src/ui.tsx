@@ -41,6 +41,7 @@ const PATHS: Record<string, string> = {
   trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   up: '<path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>',
   x: '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
+  dot: '<circle cx="12" cy="12" r="3"/>',
   code: '<path d="M8 8l-5 4 5 4"/><path d="M16 8l5 4-5 4"/>',
 }
 

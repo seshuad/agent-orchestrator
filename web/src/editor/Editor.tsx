@@ -5,6 +5,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, type AgentDetail, type Feedback, type Json, type Reference } from '../api'
 import { Dialog, Icon, Pill, ProblemsContext, SessionContext, Toast } from '../ui'
 import { AiStrip, RefineDialog } from './AiNote'
+import { AgentTabs, testSummary } from '../pages/Tests'
+import type { TestCase } from '../api'
 import DeleteAgent from '../pages/DeleteAgent'
 import RunNow from '../pages/RunNow'
 import { getIn, pathStr, setIn, type Path, type Selection } from './model'
@@ -57,6 +59,8 @@ export default function Editor() {
     return () => window.removeEventListener('keydown', onKey)
   }, [showPanel])
   const [note, setNote] = useState('')
+  const [tests, setTests] = useState<TestCase[] | null>(null)
+  useEffect(() => { if (dialog === 'publish') api.tests(name).then(setTests).catch(() => setTests([])) }, [dialog, name])
   const dirty = useRef(false)
 
   const load = useCallback((first: boolean) => {
@@ -125,10 +129,7 @@ export default function Editor() {
               <Link to="/" style={{ color: 'var(--soft-text)' }}>Agents</Link><span style={{ color: '#B7B7AC' }}>/</span>
               <span style={{ fontSize: 16, fontWeight: 700 }}>{name}</span>
               <Pill kind={detail.meta.published && !hasChanges ? 'published' : 'draft'}>{status}</Pill>
-              <nav className="row" style={{ gap: 4, marginLeft: 10 }}>
-                <span className="btn small" style={{ border: 'none', background: 'var(--acc-soft)' }}>Design</span>
-                <Link to={`/agents/${name}/runs`} className="btn small" style={{ border: 'none' }}>Runs</Link>
-              </nav>
+              <AgentTabs name={name} tab="Design" />
             </div>
             <div className="row" style={{ gap: 10 }}>
               <span className="save-state">{saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Couldn’t save' : 'All changes saved'}</span>
@@ -176,6 +177,11 @@ export default function Editor() {
             {feedback.warnings.length > 0 && (
               <div className="notice warn"><Icon name="alert" size={15} /><span>{feedback.warnings.map((w) => w.message).join(' ')}</span></div>
             )}
+            {tests && (() => {
+              const t = testSummary(tests)
+              return <div className={`notice ${t.tone === 'ok' ? 'info' : t.tone === 'bad' ? 'bad' : t.tone === 'warn' ? 'warn' : 'info'}`}>
+                <Icon name={t.tone === 'ok' ? 'check' : 'alert'} size={15} /><span>{t.text} <Link to={`/agents/${name}/tests`}>Tests</Link></span></div>
+            })()}
             <label className="stack"><span className="muted">What changed (optional)</span>
               <input className="input full" value={note} onChange={(e) => setNote(e.target.value)} aria-label="What changed" /></label>
           </Dialog>

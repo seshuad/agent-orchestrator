@@ -256,6 +256,14 @@ class Store:
     def can_undo_ai(self, name: str) -> bool:
         return (self._dir(name) / "draft.before-ai.agent.yaml").exists()
 
+    def tests(self, name: str) -> list[dict[str, Any]]:
+        """The agent's test cases: agents/<name>/tests.yaml."""
+        path = self._dir(name) / "tests.yaml"
+        return (yaml.safe_load(path.read_text()) or []) if path.exists() else []
+
+    def save_tests(self, name: str, tests: list[dict[str, Any]]) -> None:
+        (self._dir(name) / "tests.yaml").write_text(yaml.safe_dump(tests, sort_keys=False, allow_unicode=True, width=110))
+
     def set_test_data(self, name: str, sample_data: str | None, replay: str | None) -> None:
         meta = self.meta(name)
         meta["sample_data"], meta["replay"] = sample_data, replay

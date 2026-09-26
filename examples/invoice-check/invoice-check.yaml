@@ -21,6 +21,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: read_invoice
       gmail-search-vendor-emails:
         command: agent-service-gateway
         args:
@@ -32,6 +33,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: search_vendor_emails
       cel-evaluator:
         command: agent-service-cel
         env:
@@ -49,6 +51,7 @@ workflow:
           AGENT_SERVICE_SAMPLE_DATA: ${AGENT_SERVICE_SAMPLE_DATA}
           AGENT_SERVICE_SIGNING_KEY: ${AGENT_SERVICE_SIGNING_KEY}
           AGENT_SERVICE_VAULT: ${AGENT_SERVICE_VAULT:-}
+          AGENT_SERVICE_STEP: add_to_payment_queue
   input:
     email_id:
       type: string

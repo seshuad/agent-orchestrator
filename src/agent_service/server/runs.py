@@ -29,6 +29,7 @@ import yaml
 
 from .. import definition, runner
 from ..compiler import IN_GROUP
+from . import inspect
 from .store import Conflict, NotFound, Store
 
 EVENTS_DIR = Path(tempfile.gettempdir()) / "conductor"
@@ -136,10 +137,14 @@ class Runs:
                                   trigger_email=trigger_email, accounts=self.store.accounts(),
                                   connectors={c["id"]: c for c in self.store.connectors()})
         (prepared.run_dir / "agent.yaml").write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
+        return self._launch(run_id, agent_name, version, prepared, started_by, live, {"trigger": "manual", "scripted": scripted})
+
+    def _launch(self, run_id: str, agent_name: str, version: int | None, prepared: Any, started_by: str, live: bool,
+                extra: dict[str, Any]) -> dict[str, Any]:
         port = _free_port()
-        rec = {"id": run_id, "agent": agent_name, "version": version, "started_by": started_by, "trigger": "manual",
-               "scripted": scripted, "source": "live" if live else "sample", "inputs": prepared.inputs, "started_at": time.time(), "ended_at": None,
-               "status": "running", "port": port, "error": None, "gate": None}
+        rec = {"id": run_id, "agent": agent_name, "version": version, "started_by": started_by,
+               "source": "live" if live else "sample", "inputs": prepared.inputs, "started_at": time.time(), "ended_at": None,
+               "status": "running", "port": port, "error": None, "gate": None, **extra}
         self._save(rec)
         env = {**prepared.env, "CONDUCTOR_RUN_ID": run_id}
         proc = subprocess.Popen(prepared.command + ["--web", "--web-port", str(port)], env=env, stdin=subprocess.DEVNULL,
@@ -150,8 +155,17 @@ class Runs:
         return rec
 
     def events_path(self, run_id: str) -> Path | None:
+        kept = self.store.runs_root() / run_id / "events.jsonl"
+        if kept.exists():
+            return kept
         hits = sorted(EVENTS_DIR.glob(f"conductor-*-{run_id}.events.jsonl"))
         return hits[-1] if hits else None
+
+    def _keep_events(self, run_id: str) -> None:
+        """The system cleans up its temp folder; a run's event log is its record, so it moves in with the run."""
+        hits = sorted(EVENTS_DIR.glob(f"conductor-*-{run_id}.events.jsonl"))
+        if hits:
+            shutil.copyfile(hits[-1], self.store.runs_root() / run_id / "events.jsonl")
 
     def events(self, run_id: str) -> list[dict[str, Any]]:
         path = self.events_path(run_id)
@@ -177,6 +191,15 @@ class Runs:
                 rec["status"] = "waiting" if waiting else "running"
                 rec["gate"] = gate["data"] if waiting else None
                 self._save(rec)
+                if waiting and rec.get("test") and not rec.get("_answering"):
+                    step = gate["data"].get("agent_name", "")
+                    answer = (rec["test"].get("approvals") or {}).get(step) or {"choice": gate["data"]["option_details"][0]["value"]}
+                    rec["_answering"] = True             # a test answers each approval the way its source run did
+                    self._save(rec)
+                    threading.Thread(target=self._answer, args=(run_id, answer), daemon=True).start()
+            if not waiting and rec.get("_answering"):
+                rec.pop("_answering", None)
+                self._save(rec)
             end = next((e for e in evs if e["type"] in END), None)
             if end is not None or proc.poll() is not None:
                 break
@@ -194,7 +217,12 @@ class Runs:
                 rec["error"] = {**friendly_error((end["data"].get("error_type", "") + ": " + raw) if end else raw), "raw": raw}
         rec["ended_at"] = time.time()
         rec["gate"] = None
+        rec.pop("_answering", None)
         self._save(rec)
+        self._keep_events(run_id)
+        if rec.get("test"):
+            rec["test_result"] = self.check_expectations(run_id, rec["test"].get("expect") or [])
+            self._save(rec)
         if proc.poll() is None:
             proc.terminate()                         # web mode keeps the dashboard up after the run ends
             try:
@@ -293,10 +321,143 @@ class Runs:
         raise runner.RunError("Conductor's replay viewer is taking too long to start.")
 
     def close(self) -> None:
+        """When the service stops, so do its runs and replay viewers: nothing is left running on its own."""
         for proc, _ in self.replays.values():
             proc.terminate()
+        for proc in list(self.procs.values()):
+            if proc.poll() is None:
+                proc.terminate()
 
     # -------------------------------------------------------------- the readable log
+
+    def _answer(self, run_id: str, answer: dict[str, Any]) -> None:
+        try:
+            self.approve(run_id, answer.get("choice", ""), answer.get("ids"))
+        except Exception:
+            pass
+
+    def check_expectations(self, run_id: str, expect: list[dict[str, str]]) -> dict[str, Any]:
+        """A test's expectations (CEL) against what the run produced: status, steps.<id>.<field>, calls."""
+        from ..runtime.cel_server import evaluate
+        rec = json.loads((self.store.runs_root() / run_id / "run.json").read_text())
+        run_dir = self.store.runs_root() / run_id
+        calls = [json.loads(l) for l in (run_dir / "gateway.jsonl").read_text().splitlines()] if (run_dir / "gateway.jsonl").exists() else []
+        data = self.expectation_data(run_id)
+        results = []
+        for e in expect:
+            one = evaluate([{"name": "x", "cel": e["rule"], "require": e.get("name") or e["rule"]}], data)
+            results.append({"name": e.get("name") or e["rule"], "rule": e["rule"], "passed": bool(one["passed"]),
+                            "value": one["results"].get("x"), "error": one["error"]})
+        return {"passed": bool(results) and all(r["passed"] for r in results), "results": results}
+
+    def expectation_data(self, run_id: str) -> dict[str, Any]:
+        """What expectations read: status, steps.<id> (a Free-form block's results under its own id), calls."""
+        rec = json.loads((self.store.runs_root() / run_id / "run.json").read_text())
+        run_dir = self.store.runs_root() / run_id
+        calls = [json.loads(l) for l in (run_dir / "gateway.jsonl").read_text().splitlines()] if (run_dir / "gateway.jsonl").exists() else []
+        steps = inspect.outputs(self.events(run_id), run_dir)
+        raw = yaml.safe_load((run_dir / "agent.yaml").read_text()) if (run_dir / "agent.yaml").exists() else {}
+        for s in raw.get("steps") or []:
+            if s.get("kind") == "free-form" and isinstance(steps.get("finish_check"), dict):
+                steps[s["id"]] = steps["finish_check"].get("results")
+        return {"status": rec["status"], "steps": steps,
+                "calls": {"count": len(calls), "refused": sum(c["outcome"] == "refused" for c in calls)}}
+
+    def suggest_test(self, run_id: str) -> dict[str, Any]:
+        """A test case from a finished run: its inputs and approvals, and expectations from what it did."""
+        rec = self.record(run_id)
+        data = self.expectation_data(run_id)
+        raw = yaml.safe_load((self._dir(run_id) / "agent.yaml").read_text())
+        expect = [{"name": f"The run {rec['status']}", "rule": f"status == '{rec['status']}'"}]
+        for s in raw.get("steps") or []:
+            out = data["steps"].get(s["id"])
+            if s.get("kind") == "free-form" and isinstance(out, dict) and isinstance(out.get("outcome"), str):
+                expect.append({"name": f"{s['name']} ends as {out['outcome']}", "rule": f"steps.{s['id']}.outcome == '{out['outcome']}'"})
+            elif s.get("kind") == "act" and isinstance(out, dict):
+                for key in ("created", "would_create", "added", "would_add", "called", "would_call"):
+                    if isinstance(out.get(key), list) and out[key]:
+                        expect.append({"name": f"{s['name']}: {len(out[key])} {key.replace('_', ' ')}", "rule": f"size(steps.{s['id']}.{key}) == {len(out[key])}"})
+            elif s.get("kind") == "ask" and isinstance(out, dict):
+                for key, v in out.items():
+                    if isinstance(v, list) and v:
+                        expect.append({"name": f"{s['name']} finds some {key}", "rule": f"size(steps.{s['id']}.{key}) > 0"})
+        expect.append({"name": "No connection call was refused", "rule": "calls.refused == 0"})
+        approvals = {}
+        for e in self.events(run_id):
+            if e["type"] == "gate_resolved":
+                d = e["data"]
+                approvals[d.get("agent_name")] = {"choice": d.get("selected_option"), "ids": (d.get("additional_input") or {}).get("ids")}
+        inputs = {k: v for k, v in (rec.get("inputs") or {}).items() if k not in ("email_id", "sender_domain")}
+        return {"name": f"Like the run on {time.strftime('%b %d %H:%M', time.localtime(rec['started_at']))}", "from_run": run_id,
+                "inputs": inputs, "email_id": (rec.get("inputs") or {}).get("email_id"), "scripted": bool(rec.get("scripted")),
+                "source": rec.get("source", "sample"), "approvals": approvals, "expect": expect}
+
+    def start_test(self, agent_name: str, test: dict[str, Any], batch: str, started_by: str) -> dict[str, Any]:
+        """One test case against the current draft."""
+        rec = self.start(agent_name, version=None, inputs=dict(test.get("inputs") or {}), email_id=test.get("email_id"),
+                         scripted=bool(test.get("scripted")), started_by=started_by, live=test.get("source") == "live")
+        rec.update(trigger=f"test: {test['name']}", test={**test, "batch": batch})
+        self._save(rec)
+        return rec
+
+    def inspect(self, run_id: str, step: str, n: int) -> dict[str, Any]:
+        run_dir = self._dir(run_id)
+        out = inspect.inspect_step(self.events(run_id), run_dir, step, n)
+        rec = self.record(run_id)
+        out["rerun_of"] = rec.get("rerun_of")
+        out["reruns"] = [r["id"] for r in self.list(rec["agent"]) if (r.get("rerun_of") or {}).get("run") == run_id
+                         and r["rerun_of"]["step"] == step and r["rerun_of"]["n"] == n]
+        return out
+
+    def rerun_step(self, run_id: str, step: str, n: int, started_by: str) -> dict[str, Any]:
+        """Runs one step again with the agent's current draft, on exactly the inputs it had in `run_id`."""
+        source = self.record(run_id)
+        src_dir = self._dir(run_id)
+        seen = inspect.inspect_step(self.events(run_id), src_dir, step, n)
+        if not seen.get("rerunnable"):
+            raise runner.RunError("Only model steps and Built-in steps with recorded inputs can run again on their own.")
+        meta = self.store.meta(source["agent"])
+        draft = self.store.draft(source["agent"])
+        agent = definition.Agent.model_validate(draft)
+        old_raw = yaml.safe_load((src_dir / "agent.yaml").read_text()) if (src_dir / "agent.yaml").exists() else {}
+
+        def only_this_step(compiled):
+            wf = compiled.workflow
+            target = next((a for a in wf["agents"] if a["name"] == step), None)
+            if target is None:
+                raise runner.RunError(f"The draft has no step {step!r} any more.")
+            target = {k: v for k, v in target.items() if k not in ("routes", "input")}
+            target["input"] = []
+            target["routes"] = [{"to": "$end"}]
+            if seen["type"] == "agent":
+                target["prompt"] = "{% raw %}" + _rebuilt_prompt(seen["prompt"], _task(old_raw, step), _task(draft, step)) + "{% endraw %}"
+                servers = {t.split("__")[0] for t in target.get("tools") or []}
+            else:
+                target["stdin"] = "{% raw %}" + json.dumps(seen["inputs"], ensure_ascii=False) + "{% endraw %}"
+                servers = set()
+            runtime = dict(wf["workflow"].get("runtime") or {})
+            runtime["mcp_servers"] = {k: v for k, v in (runtime.get("mcp_servers") or {}).items() if k in servers}
+            if not runtime["mcp_servers"]:
+                runtime.pop("mcp_servers")
+            doc = {"workflow": {**wf["workflow"], "entry_point": step, "runtime": runtime}, "agents": [target]}
+            if target.get("tools"):
+                doc["tools"] = target["tools"]
+            compiled.workflow = doc
+            return compiled
+
+        live = source.get("source") == "live"
+        new_id = secrets.token_hex(4)
+        prepared = runner.prepare(agent, sample_data=Path(meta["sample_data"]) if meta.get("sample_data") else runner.EMPTY,
+                                  runs_root=self.store.runs_root(), inputs={k: v for k, v in (source.get("inputs") or {}).items()
+                                                                            if k not in ("email_id", "sender_domain")},
+                                  email_id=(source.get("inputs") or {}).get("email_id"), run_id=new_id,
+                                  vault=self.store.home / "vault", live=live, accounts=self.store.accounts(),
+                                  connectors={c["id"]: c for c in self.store.connectors()}, transform=only_this_step,
+                                  trigger_email={"id": source["inputs"]["email_id"], "from": "x@" + source["inputs"].get("sender_domain", "")}
+                                  if (source.get("inputs") or {}).get("email_id") else None)
+        (prepared.run_dir / "agent.yaml").write_text(yaml.safe_dump(draft, sort_keys=False, allow_unicode=True))
+        extra = {"trigger": f"re-run of {step}", "rerun_of": {"run": run_id, "step": step, "n": n}, "scripted": False}
+        return self._launch(new_id, source["agent"], None, prepared, started_by, live, extra)
 
     def detail(self, run_id: str) -> dict[str, Any]:
         rec = self.record(run_id)
@@ -308,6 +469,21 @@ class Runs:
         return {**rec, **totals, "log": entries,
                 "checks": {"calls": len(calls), "refused": [c for c in calls if c["outcome"] == "refused"]},
                 "outcome": _outcome(run_dir), "events_file": str(self.events_path(run_id) or "")}
+
+
+def _task(raw: dict[str, Any], step: str) -> str:
+    for s in raw.get("steps") or []:
+        for x in [s, *(s.get("steps") or [])]:
+            if x.get("id") == step:
+                return x.get("task") or ""
+    return ""
+
+
+def _rebuilt_prompt(recorded: str, old_task: str, new_task: str) -> str:
+    """The prompt a step saw, with its task text swapped for the draft's: the inputs stay exactly as they were."""
+    if old_task and new_task and recorded.startswith(old_task):
+        return new_task + recorded[len(old_task):]
+    return recorded
 
 
 def _names(raw: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -366,12 +542,17 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
     entries: list[dict[str, Any]] = []
     tools: dict[str, list[dict[str, Any]]] = {}
     cost = tokens = 0.0
+    ended: dict[str, int] = {}             # runs of each step finished so far: an entry's `n` for the step inspector
     for e in evs:
         t, d = e["type"], e["data"]
         name = d.get("agent_name", "").removesuffix(IN_GROUP)      # a group member runs as a copy of its step
+        count_end = t in inspect.ENDS and not (t == "mcp_completed" and d.get("group_name"))
+        n = ended.get(name, 0)
+        if count_end:
+            ended[name] = n + 1
         label, kind = names.get(name, (name, ""))
         at = round(e["timestamp"] - t0, 1)
-        base = {"at": at, "step": label, "id": name, "kind": kind, "took": round(d.get("elapsed") or 0, 1), "cost": None,
+        base = {"at": at, "step": label, "id": name, "n": n, "kind": kind, "took": round(d.get("elapsed") or 0, 1), "cost": None,
                 "detail": "", "why": None, "tone": "", "plumbing": name in PLUMBING, "tools": []}
         if t == "mcp_completed" and d.get("group_name"):
             continue                             # a scripted step inside a group: its parallel_agent_completed follows

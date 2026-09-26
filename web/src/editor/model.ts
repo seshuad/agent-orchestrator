@@ -25,7 +25,7 @@ export type Selection =
 
 export const STEP_KINDS = [
   { kind: 'ask', name: 'Ask', text: 'A model reads and extracts. It can never change anything.' },
-  { kind: 'built-in', name: 'Built-in', text: 'Fixed operations, no model: tidy up, look up, compare, match.' },
+  { kind: 'built-in', name: 'Built-in', text: 'Fixed operations, no model: tidy up, look up, compare, match, or your own JavaScript.' },
   { kind: 'approve', name: 'Approve', text: 'A person decides before anything changes.' },
   { kind: 'act', name: 'Act', text: 'Changes something outside the agent, using only checked fields.' },
 ] as const

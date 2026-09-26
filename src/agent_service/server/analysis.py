@@ -143,6 +143,8 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
 def _type_of_returns(step: Any) -> list[tuple[str, str]]:
     if isinstance(step, AskStep):
         return [(n, f.type) for n, f in step.returns.items()]
+    if isinstance(step, BuiltInStep) and step.op == "javascript":
+        return [(n, f.type) for n, f in step.returns.items()]
     if isinstance(step, BuiltInStep):
         types = {"trips": "list of Trip", "records": "list of records", "notes": "list of text", "found": "yes/no", "status": "text",
                  "passed": "yes/no", "differences": "list of text"}

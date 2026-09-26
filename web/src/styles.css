@@ -177,3 +177,14 @@ h2 { margin: 0; font-size: 18px; font-weight: 700; }
 
 .help-pop { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: #F5F8FC; border: 1px solid #D6E1EE; border-radius: 8px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .help-template { padding: 8px 10px; background: #fff; border: 1px dashed #C9D6E6; border-radius: 6px; color: var(--ink); font-size: 12.5px; line-height: 1.5; }
+
+.inspector { width: 520px; flex: none; display: flex; flex-direction: column; min-height: 0; background: #fff; border-left: 1px solid var(--line); }
+.insp-section { border-top: 1px solid var(--line-2); padding-top: 8px; }
+.insp-section > summary { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12.5px; cursor: pointer; color: var(--ink); }
+.insp-call { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.insp-call > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-wrap: wrap; }
+.rerun-box { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 10px; background: var(--acc-soft); border: 1px solid #D6E1EE; border-radius: 8px; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 8px; border: 1px dashed #C9D6E6; border-radius: 8px; }
+.log-row.inspected { background: var(--acc-soft); }
+
+.js-code { font-size: 12.5px; line-height: 1.5; tab-size: 2; white-space: pre; overflow-x: auto; }

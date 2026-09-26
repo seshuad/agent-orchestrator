@@ -178,3 +178,48 @@ def test_help_writing_instructions_and_task(page, base, monkeypatch):
     assert page.input_value("textarea[aria-label='Task']") == "Return the invoice in the email."
     page.click("button:has-text('Undo')")
     assert page.input_value("textarea[aria-label='Task']") == before and not page.errors
+
+
+def test_inspect_a_step_and_save_the_run_as_a_test(page, base):
+    import httpx
+    run = httpx.post(base + "/api/agents/invoice-check/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
+    for _ in range(120):
+        if httpx.get(base + f"/api/runs/{run['id']}").json()["status"] == "waiting":
+            break
+        time.sleep(0.5)
+    httpx.post(base + f"/api/runs/{run['id']}/approve", json={"choice": "all"})
+    for _ in range(60):
+        if httpx.get(base + f"/api/runs/{run['id']}").json()["status"] not in ("running", "waiting"):
+            break
+        time.sleep(0.5)
+    page.goto(base + f"/agents/invoice-check/runs/{run['id']}")
+    page.locator(".log-row:has(span > span:text-is('Three-way match'))").first.click()
+    page.wait_for_selector(".inspector >> text=What it was given")
+    assert "invoiced 40, received 32" in page.locator(".inspector").inner_text()
+    page.click("button:has-text('Save as test')")
+    page.wait_for_selector("text=Expectations, suggested from this run")
+    page.click("button:has-text('Save test')")
+    page.wait_for_url("**/agents/invoice-check/tests")
+    page.wait_for_selector("text=steps.match_invoice.outcome == 'amounts differ'")
+    assert not page.errors
+
+
+def test_a_javascript_step_can_be_tried_in_the_editor(page, base):
+    import httpx
+    import json
+    httpx.post(base + "/api/agents", json={"name": "js-try", "sample_set": "GitHub issues"})
+    d = httpx.get(base + "/api/agents/js-try").json()["draft"]
+    d["connections"] = {}
+    d["steps"] = [{"id": "count", "kind": "built-in", "name": "Count", "operation": {"javascript": {"code": "return { count: inputs.items.length }"}},
+                   "takes": {"items": "run.dry_run"}, "returns": {"count": {"type": "number"}}}]
+    httpx.put(base + "/api/agents/js-try", json={"draft": d})
+    page.goto(base + "/agents/js-try")
+    page.click(".side-row:has-text('Count')")
+    page.fill("textarea[aria-label='Sample inputs']", json.dumps({"items": [1, 2, 3]}))
+    page.click("button:has-text('Try it')")
+    page.wait_for_selector("text=Returned in")
+    assert '"count": 3' in page.locator(".pre").last.inner_text()
+    page.fill("textarea[aria-label='Sample inputs']", json.dumps({"items": None}))
+    page.click("button:has-text('Try it')")
+    page.wait_for_selector(".field-error:has-text('threw an error')")
+    assert not page.errors

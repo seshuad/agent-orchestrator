@@ -59,7 +59,7 @@ def main() -> None:
     def evaluate_tool(expressions: list[dict[str, Any]], data: dict[str, Any], step: str = "") -> dict[str, Any]:
         out = evaluate(expressions, data)
         if step and os.environ.get(RUN_DIR_ENV):
-            record_step(step, out)      # what the rules decided, for the run viewer
+            record_step(step, out, inputs={"expressions": expressions, "data": data})   # what the rules decided, and on what
         return out
 
     @server.tool(name="record", description="Keeps each step's answer from a parallel group for the run log.")

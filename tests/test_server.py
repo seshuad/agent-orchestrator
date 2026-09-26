@@ -15,7 +15,8 @@ needs_conductor = pytest.mark.skipif(shutil.which("conductor") is None, reason="
 
 @pytest.fixture
 def api(tmp_path):
-    return TestClient(create_app(tmp_path))
+    with TestClient(create_app(tmp_path)) as client:      # shutting down stops any runs a test left going
+        yield client
 
 
 def test_seeded_workspace(api):
@@ -557,3 +558,118 @@ def test_a_step_with_a_connection_but_no_actions_is_an_error(api):
     draft["steps"][0]["steps"][0]["uses"]["actions"] = []
     fb = api.put("/api/agents/invoice-check", json={"draft": draft}).json()["feedback"]
     assert not fb["ok"] and any("tick what it can do with 'gmail'" in e["message"] for e in fb["errors"])
+
+
+# ------------------------------------------------------------------ debugging: the step inspector and re-running one step
+
+def finished(api, run_id, timeout=60):
+    for _ in range(timeout * 2):
+        d = api.get(f"/api/runs/{run_id}").json()
+        if d["status"] not in ("running", "waiting"):
+            return d
+        time.sleep(0.5)
+    raise AssertionError("the run didn't finish")
+
+
+@needs_conductor
+def test_inspect_steps_and_rerun_a_built_in_step(api, tmp_path):
+    run = api.post("/api/agents/invoice-check/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
+    for _ in range(120):
+        d = api.get(f"/api/runs/{run['id']}").json()
+        if d["status"] == "waiting":
+            break
+        time.sleep(0.5)
+    api.post(f"/api/runs/{run['id']}/approve", json={"choice": "all"})
+    d = finished(api, run["id"])
+    assert (tmp_path / "runs" / run["id"] / "events.jsonl").exists()                 # the event log moved in with the run
+    entry = next(e for e in d["log"] if e["id"] == "three_way_match")
+    seen = api.get(f"/api/runs/{run['id']}/steps/three_way_match/{entry['n']}").json()
+    assert seen["type"] == "script" and seen["rerunnable"] and seen["inputs"]["invoice"]["vendor"] and seen["output"]["passed"] is False
+    rules = api.get(f"/api/runs/{run['id']}/steps/finish_check/0").json()
+    assert rules["inputs"]["expressions"] and rules["output"]["passed"] is False    # finishing too early was refused, and why
+    lookup = next(e for e in d["log"] if e["id"] == "look_up_vendor")
+    calls = api.get(f"/api/runs/{run['id']}/steps/look_up_vendor/{lookup['n']}").json()["calls"]
+    assert calls and calls[0]["step"] == "look_up_vendor" and "result" in calls[0]     # its connection calls, with results
+    again = api.post(f"/api/runs/{run['id']}/steps/three_way_match/{entry['n']}/rerun").json()
+    assert again["rerun_of"] == {"run": run["id"], "step": "three_way_match", "n": entry["n"]}
+    redo = finished(api, again["id"])
+    assert redo["status"] == "succeeded", redo.get("error")
+    now = api.get(f"/api/runs/{again['id']}/steps/three_way_match/0").json()
+    assert now["inputs"] == seen["inputs"] and now["output"] == seen["output"]       # same inputs, same answer
+    assert api.get(f"/api/runs/{run['id']}/steps/three_way_match/{entry['n']}").json()["reruns"] == [again["id"]]
+
+
+def test_a_rerun_keeps_the_inputs_and_takes_the_new_task():
+    from agent_service.server.runs import _rebuilt_prompt
+    recorded = "Find the open issues.\n\nhow_many: 10\n"
+    assert _rebuilt_prompt(recorded, "Find the open issues.", "List open bugs only.") == "List open bugs only.\n\nhow_many: 10\n"
+    assert _rebuilt_prompt(recorded, "Something else", "New") == recorded
+
+
+@needs_conductor
+def test_save_a_run_as_a_test_and_run_it_against_the_draft(api):
+    run = api.post("/api/agents/invoice-check/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
+    for _ in range(120):
+        if api.get(f"/api/runs/{run['id']}").json()["status"] == "waiting":
+            break
+        time.sleep(0.5)
+    api.post(f"/api/runs/{run['id']}/approve", json={"choice": "all"})
+    finished(api, run["id"])
+    s = api.get(f"/api/runs/{run['id']}/test-suggestion").json()
+    rules = [e["rule"] for e in s["expect"]]
+    assert "status == 'succeeded'" in rules and "steps.match_invoice.outcome == 'amounts differ'" in rules
+    assert s["approvals"] == {"approve_payment": {"choice": "all", "ids": None}} and s["email_id"] == "inv-northwind-2208"
+    tests = api.post("/api/agents/invoice-check/tests", json={"from_run": run["id"], "name": "Northwind: amounts differ"}).json()
+    tid = tests[0]["id"]
+    assert tests[0]["last"] is None
+    batch = api.post("/api/agents/invoice-check/tests/run").json()
+    done = finished(api, batch["runs"][0])                          # the approval is answered as saved, without anyone
+    assert done["status"] == "succeeded" and done["test_result"]["passed"], done.get("test_result")
+    status = api.get("/api/agents/invoice-check/tests").json()[0]
+    assert status["last"]["result"]["passed"] and not status["last"]["stale"]
+    api.put(f"/api/agents/invoice-check/tests/{tid}", json={"expect": [{"name": "Matched", "rule": "steps.match_invoice.outcome == 'matched'"}]})
+    batch = api.post(f"/api/agents/invoice-check/tests/run?only={tid}").json()
+    failed = finished(api, batch["runs"][0])["test_result"]
+    assert not failed["passed"] and failed["results"][0]["value"] is False
+    draft = api.get("/api/agents/invoice-check").json()["draft"]
+    draft["description"] = "Changed"
+    api.put("/api/agents/invoice-check", json={"draft": draft})
+    assert api.get("/api/agents/invoice-check/tests").json()[0]["last"]["stale"]      # the draft changed since it ran
+
+
+@needs_conductor
+def test_a_javascript_step_ranks_what_an_ask_step_found(api, tmp_path):
+    from agent_service.server.store import Store
+    api.post("/api/agents", json={"name": "oldest-issues", "sample_set": "GitHub issues"})
+    draft = api.get("/api/agents/oldest-issues").json()["draft"]
+    draft["run_options"] = {"how_many": {"type": "number", "default": 2}}
+    draft["connections"] = {}
+    draft["records"] = {"Issue": {"fields": {"number": {"type": "number"}, "title": {"type": "text"}, "created_at": {"type": "text"}}}}
+    draft["steps"] = [
+        {"id": "find", "kind": "ask", "name": "Find open issues", "model": "claude-sonnet-5", "instructions": "x", "task": "x",
+         "returns": {"issues": {"type": "list of Issue"}}},
+        {"id": "rank", "kind": "built-in", "name": "Oldest open issues", "operation": {"javascript": {"code": """
+            const now = Date.parse(inputs.now);
+            const aged = inputs.issues.map(i => ({ ...i, days_open: Math.floor((now - Date.parse(i.created_at)) / 86400000) }));
+            aged.sort((a, b) => b.days_open - a.days_open);
+            return { oldest: aged.slice(0, Number(inputs.how_many)) };"""}},
+         "takes": {"issues": "find.issues", "how_many": "run.how_many", "now": "run.started"}, "returns": {"oldest": {"type": "list of Issue"}}},
+        {"id": "show", "kind": "built-in", "name": "Show them", "operation": {"show": {}}, "takes": {"value": "rank.oldest"}}]
+    fb = api.put("/api/agents/oldest-issues", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert "code-b64" in fb["compiled"] and "Date.parse" not in fb["compiled"]           # the code can't be read as a template
+    replay = tmp_path / "replay.yaml"
+    replay.write_text("find:\n  - issues: [{number: 7, title: New, created_at: '2026-09-01T00:00:00Z'},"
+                      " {number: 3, title: Oldest, created_at: '2024-01-02T00:00:00Z'}, {number: 5, title: Old, created_at: '2025-03-01T00:00:00Z'}]\n")
+    store = Store(tmp_path)
+    store.set_test_data("oldest-issues", store.meta("oldest-issues")["sample_data"], str(replay))
+    run = api.post("/api/agents/oldest-issues/runs", json={"scripted": True, "inputs": {"how_many": "2", "started": "2026-09-26T00:00:00+00:00"}}).json()
+    d = finished(api, run["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    shown = api.get(f"/api/runs/{run['id']}/steps/rank/0").json()["output"]["oldest"]
+    assert [(i["number"], i["days_open"]) for i in shown] == [(3, 998), (5, 574)]     # "now" is run.started, as given
+    rank_inputs = api.get(f"/api/runs/{run['id']}/steps/rank/0").json()["inputs"]
+    assert rank_inputs["now"] == "2026-09-26T00:00:00+00:00"
+    tried = api.post("/api/javascript/try", json={"code": "return { n: inputs.xs.length }", "inputs": {"xs": [1, 2]}, "returns": ["n"]}).json()
+    assert tried == {"ok": True, "output": {"n": 2}, "took": tried["took"]}
+    assert api.post("/api/javascript/try", json={"code": "return 1", "returns": ["n"]}).json()["ok"] is False

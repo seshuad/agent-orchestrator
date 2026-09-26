@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -91,6 +92,18 @@ class DescribeAgent(BaseModel):
 
 class Refine(BaseModel):
     instruction: str
+
+
+class TestIn(BaseModel):
+    from_run: str | None = None                # new tests: the run it copies inputs and approvals from
+    name: str = ""
+    expect: list[dict[str, str]] | None = None
+
+
+class TryJs(BaseModel):
+    code: str
+    inputs: dict[str, Any] = {}
+    returns: list[str] = []
 
 
 class Suggest(BaseModel):
@@ -573,6 +586,16 @@ def create_app(home: Path | None = None) -> FastAPI:
             raise fail(exc, 404)
         return get_agent(name)
 
+    @app.post("/api/javascript/try")
+    def try_javascript(body: TryJs) -> dict[str, Any]:
+        """Runs a JavaScript step's code on sample inputs, with the same sandbox and limits as a run."""
+        from ..runtime.steps import ScriptError, javascript
+        started = time.time()
+        try:
+            return {"ok": True, "output": javascript(body.code, body.returns, body.inputs), "took": round(time.time() - started, 3)}
+        except ScriptError as exc:
+            return {"ok": False, "error": str(exc), "took": round(time.time() - started, 3)}
+
     @app.post("/api/agents/{name}/suggest")
     def suggest_text(name: str, body: Suggest) -> dict[str, Any]:
         """Claude writes one box of one Ask step. The editor puts it in the box; nothing else changes."""
@@ -707,8 +730,105 @@ def create_app(home: Path | None = None) -> FastAPI:
         for r in runs.list(agent)[:100]:
             d = runs.detail(r["id"])
             out.append({k: d.get(k) for k in ("id", "agent", "version", "status", "started_at", "ended_at", "started_by",
-                                              "trigger", "scripted", "source", "cost_usd", "duration", "error", "gate")})
+                                              "trigger", "scripted", "source", "cost_usd", "duration", "error", "gate", "rerun_of",
+                                              "test", "test_result")})
         return out
+
+    # -------------------------------------------------------------- test cases
+
+    def test_status(name: str) -> list[dict[str, Any]]:
+        """Each test with its latest run on the draft, and whether the draft changed since."""
+        draft = store.draft(name)
+        mine = [r for r in runs.list(name) if r.get("test")]
+        out = []
+        for t in store.tests(name):
+            last = next((r for r in mine if r["test"].get("id") == t["id"]), None)
+            info = None
+            if last:
+                run_dir = store.runs_root() / last["id"]
+                ran_on = yaml.safe_load((run_dir / "agent.yaml").read_text()) if (run_dir / "agent.yaml").exists() else None
+                info = {"run": last["id"], "status": last["status"], "at": last["started_at"], "result": last.get("test_result"),
+                        "stale": ran_on != draft, "cost_usd": runs.detail(last["id"]).get("cost_usd", 0)}
+            out.append({**t, "last": info})
+        return out
+
+    @app.get("/api/agents/{name}/tests")
+    def list_tests(name: str) -> list[dict[str, Any]]:
+        try:
+            return test_status(name)
+        except NotFound as exc:
+            raise fail(exc, 404)
+
+    @app.get("/api/runs/{run_id}/test-suggestion")
+    def test_suggestion(run_id: str) -> dict[str, Any]:
+        try:
+            return runs.suggest_test(run_id)
+        except NotFound as exc:
+            raise fail(exc, 404)
+
+    @app.post("/api/agents/{name}/tests")
+    def add_test(name: str, body: TestIn) -> list[dict[str, Any]]:
+        if not body.from_run:
+            raise fail(ValueError("Save a test from a run: its inputs and approvals are what the test repeats."), 422)
+        t = runs.suggest_test(body.from_run)
+        t = {"id": secrets.token_hex(3), **t, "name": body.name.strip() or t["name"],
+             "expect": body.expect if body.expect is not None else t["expect"], "created_at": time.time()}
+        store.save_tests(name, store.tests(name) + [t])
+        return test_status(name)
+
+    @app.put("/api/agents/{name}/tests/{tid}")
+    def edit_test(name: str, tid: str, body: TestIn) -> list[dict[str, Any]]:
+        tests = store.tests(name)
+        if not any(t["id"] == tid for t in tests):
+            raise fail(NotFound(f"No test {tid!r}."), 404)
+        store.save_tests(name, [{**t, **({"name": body.name.strip()} if body.name.strip() else {}),
+                                 **({"expect": body.expect} if body.expect is not None else {})} if t["id"] == tid else t for t in tests])
+        return test_status(name)
+
+    @app.delete("/api/agents/{name}/tests/{tid}")
+    def remove_test(name: str, tid: str) -> list[dict[str, Any]]:
+        store.save_tests(name, [t for t in store.tests(name) if t["id"] != tid])
+        return test_status(name)
+
+    @app.post("/api/agents/{name}/tests/run")
+    def run_tests(name: str, only: str | None = None) -> dict[str, Any]:
+        """Runs the agent's tests (or one) against the current draft. Results come back on the tests list."""
+        tests = [t for t in store.tests(name) if only in (None, t["id"])]
+        if not tests:
+            raise fail(ValueError("This agent has no tests yet. Save one from a run."), 422)
+        if any(not t.get("scripted") for t in tests) and not os.environ.get("ANTHROPIC_API_KEY"):
+            raise fail(ValueError("Some tests use the Claude API, and the service has no key (ANTHROPIC_API_KEY)."), 422)
+        batch = secrets.token_hex(3)
+        started = []
+        for t in tests:
+            try:
+                started.append(runs.start_test(name, t, batch, started_by=store.workspace()["user"]["name"])["id"])
+            except (runner.RunError, ValidationError) as exc:
+                raise fail(ValueError(f"{t['name']}: {exc}"), 422)
+        return {"batch": batch, "runs": started}
+
+    @app.get("/api/runs/{run_id}/steps/{step}/{n}")
+    def inspect_step(run_id: str, step: str, n: int) -> dict[str, Any]:
+        """Everything about one run of one step: what it saw, what it called, what it returned."""
+        try:
+            return runs.inspect(run_id, step, n)
+        except NotFound as exc:
+            raise fail(exc, 404)
+        except LookupError as exc:
+            raise fail(exc, 404)
+
+    @app.post("/api/runs/{run_id}/steps/{step}/{n}/rerun")
+    def rerun_step(run_id: str, step: str, n: int) -> dict[str, Any]:
+        """Runs one step again with the current draft, on the inputs it had in this run."""
+        record = runs.record(run_id)
+        if not record.get("scripted") and not os.environ.get("ANTHROPIC_API_KEY") and runs.inspect(run_id, step, n)["type"] == "agent":
+            raise fail(ValueError("The service has no Claude API key (ANTHROPIC_API_KEY), so model steps can't run."), 422)
+        try:
+            return runs.rerun_step(run_id, step, n, started_by=store.workspace()["user"]["name"])
+        except (runner.RunError, NotFound, LookupError) as exc:
+            raise fail(exc, 422)
+        except ValidationError as exc:
+            raise fail(ValueError(f"The draft doesn't validate: {exc.errors()[0]['msg']}"), 422)
 
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: str) -> dict[str, Any]:

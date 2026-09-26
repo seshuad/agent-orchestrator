@@ -365,3 +365,52 @@ def test_the_gateway_serves_only_usable_tools_over_mcp(run, monkeypatch):
     assert names == ["list_issues", "get_issue"]
     assert ok.startswith('<result tool="list_issues" from="Issues">') and "ENG-15" in ok
     assert no.startswith("Refused: team must be one of ENG") and err
+
+
+def test_live_gmail_gives_each_thread_its_own_connection(monkeypatch):
+    """The Google client's HTTP layer isn't thread-safe; parallel read_email calls shared one and hung."""
+    import threading
+    from agent_service.runtime import gmail_api
+    monkeypatch.setattr(gmail_api, "credentials", lambda c: object())
+    built = []
+    import googleapiclient.discovery
+    monkeypatch.setattr(googleapiclient.discovery, "build", lambda *a, **kw: built.append(kw["http"]) or object())
+    import google_auth_httplib2
+    monkeypatch.setattr(google_auth_httplib2, "AuthorizedHttp", lambda creds, http: http)
+    g = gmail_api.LiveGmail("x")
+    seen = []
+    threads = [threading.Thread(target=lambda: seen.append(g.svc)) for _ in range(3)]
+    [t.start() for t in threads]; [t.join() for t in threads]
+    assert len({id(s) for s in seen}) == 3 and all(h.timeout == gmail_api.HTTP_TIMEOUT for h in built)
+    assert g.svc is g.svc                       # one per thread, reused
+
+
+# ------------------------------------------------------------------ JavaScript steps
+
+def test_javascript_finds_the_oldest_open_issues():
+    issues = [{"number": n, "title": f"Issue {n}", "state": s, "created_at": c} for n, s, c in
+              [(1, "open", "2025-01-10T00:00:00Z"), (2, "closed", "2024-01-01T00:00:00Z"), (3, "open", "2024-06-01T00:00:00Z"),
+               (4, "open", "2026-09-01T00:00:00Z"), (5, "open", "2023-03-15T00:00:00Z")]]
+    code = """
+      const open = inputs.issues.filter(i => i.state === 'open');
+      const now = Date.parse('2026-09-26T00:00:00Z');
+      const aged = open.map(i => ({ ...i, days_open: Math.floor((now - Date.parse(i.created_at)) / 86400000) }));
+      aged.sort((a, b) => b.days_open - a.days_open);
+      return { oldest: aged.slice(0, inputs.how_many) };"""
+    out = steps.javascript(code, ["oldest"], {"issues": issues, "how_many": 2})
+    assert [i["number"] for i in out["oldest"]] == [5, 3] and out["oldest"][0]["days_open"] == 1291
+
+
+def test_javascript_errors_say_what_went_wrong():
+    with pytest.raises(steps.ScriptError, match="threw an error: .*nope"):
+        steps.javascript("throw new Error('nope')", ["x"], {})
+    with pytest.raises(steps.ScriptError, match="more than 2 seconds"):
+        steps.javascript("while (true) {}", ["x"], {})
+    with pytest.raises(steps.ScriptError, match="has no oldest"):
+        steps.javascript("return { top: [] }", ["oldest"], {})
+    with pytest.raises(steps.ScriptError, match="must return an object"):
+        steps.javascript("return 42", ["x"], {})
+    with pytest.raises(steps.ScriptError, match="doesn't parse"):
+        steps.javascript("return {", ["x"], {})
+    out = steps.javascript("return { access: [typeof require, typeof fetch, typeof process, typeof std].join(' ') }", ["access"], {})
+    assert out["access"] == "undefined undefined undefined undefined"            # only its inputs: no files, network or processes

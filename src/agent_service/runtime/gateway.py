@@ -259,7 +259,7 @@ async def mcp_call(conn: Mcp, session: Any, usable: dict[str, dict[str, Any]], n
         raise
     result = await session.call_tool(name, args)
     text = upstream.result_text(result)
-    log_call("mcp", name, args, "error" if result.is_error else "allowed", text[:120])
+    log_call("mcp", name, args, "error" if result.is_error else "allowed", text[:120], result=text)
     return text, bool(result.is_error)
 
 
@@ -326,7 +326,7 @@ def call(conn: Any, name: str, action: str, args: dict[str, Any]) -> Any:
     size = len(result) if isinstance(result, list) else 1
     if isinstance(result, str):
         size = 1
-    log_call(name, action, args, "allowed", f"{size} result(s)")
+    log_call(name, action, args, "allowed", f"{size} result(s)", result=result)
     return result
 
 
