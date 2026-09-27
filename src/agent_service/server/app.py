@@ -100,6 +100,10 @@ class TestIn(BaseModel):
     expect: list[dict[str, str]] | None = None
 
 
+class Rename(BaseModel):
+    name: str
+
+
 class TryJs(BaseModel):
     code: str
     inputs: dict[str, Any] = {}
@@ -660,6 +664,22 @@ def create_app(home: Path | None = None) -> FastAPI:
         store.delete(name)
         return {"deleted": name, "runs_deleted": removed}
 
+    @app.post("/api/agents/{name}/rename")
+    def rename_agent(name: str, body: Rename) -> dict[str, Any]:
+        """Renames the agent everywhere its name is kept. Refused while one of its runs is in progress."""
+        new = body.name.strip()
+        try:
+            store.meta(name)
+        except NotFound as exc:
+            raise fail(exc, 404)
+        if any(r["status"] in ("running", "waiting") for r in runs.list(name)):
+            raise fail(Conflict(f"{name} has a run in progress. Wait for it to finish (or stop it), then rename."), 409)
+        try:
+            store.rename(name, new)
+        except Conflict as exc:
+            raise fail(exc, 409)
+        return get_agent(new)
+
     @app.get("/api/agents/{name}/references")
     def refs(name: str, step: str | None = None) -> list[dict[str, str]]:
         return analysis.references(store.draft(name), step)
@@ -731,7 +751,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             d = runs.detail(r["id"])
             out.append({k: d.get(k) for k in ("id", "agent", "version", "status", "started_at", "ended_at", "started_by",
                                               "trigger", "scripted", "source", "cost_usd", "duration", "error", "gate", "rerun_of",
-                                              "test", "test_result")})
+                                              "test", "test_result", "data")})
         return out
 
     # -------------------------------------------------------------- test cases

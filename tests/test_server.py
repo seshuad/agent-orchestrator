@@ -320,10 +320,11 @@ ISSUES_SERVER = {"transport": "command", "command": sys.executable, "args": [str
 def add_issues_connector(api):
     c = api.post("/api/connectors", json={"type": "mcp", "name": "Issues", "settings": {"server": ISSUES_SERVER, "auth": {"kind": "none"}}}).json()
     tested = api.post(f"/api/connectors/{c['id']}/test").json()
-    assert tested["status"]["state"] == "ready" and [t["treat"] for t in tested["tools"]] == ["off"] * 4     # new tools aren't offered
+    assert tested["status"]["state"] == "ready" and {t["treat"] for t in tested["tools"]} == {"off"}          # new tools aren't offered
     return api.put(f"/api/connectors/{c['id']}", json={"tools": [
         {"name": "list_issues", "treat": "read", "limits": ["team"]}, {"name": "get_issue", "treat": "read", "limits": ["team"]},
-        {"name": "create_issue", "treat": "act", "limits": ["team"]}, {"name": "delete_issue", "treat": "off"}]}).json()
+        {"name": "create_issue", "treat": "act", "limits": ["team"]}, {"name": "delete_issue", "treat": "off"},
+        {"name": "crash", "treat": "off"}, {"name": "slow", "treat": "off"}]}).json()
 
 
 def test_new_workspaces_have_google_and_github_connectors(api):
@@ -428,6 +429,7 @@ def test_a_run_calls_an_mcp_act_tool_through_the_gateway(api, tmp_path):
     assert [_json.loads(l)["title"] for l in created.read_text().splitlines()] == ["Follow up: Leak at 418 Alder Lane", "Follow up: Leak at 12 Birch Road"]
     calls = [_json.loads(l) for l in (tmp_path / "runs" / run["id"] / "gateway.jsonl").read_text().splitlines()]
     assert [(x["action"], x["outcome"]) for x in calls] == [("create_issue", "allowed")] * 2
+    assert d["data"]["text"] == "Real: Issues"                  # an MCP connector is real even on a sample-data run
 
 
 # ------------------------------------------------------------------ drafting agents with Claude (a scripted stand-in)
@@ -619,6 +621,8 @@ def test_save_a_run_as_a_test_and_run_it_against_the_draft(api):
     rules = [e["rule"] for e in s["expect"]]
     assert "status == 'succeeded'" in rules and "steps.match_invoice.outcome == 'amounts differ'" in rules
     assert s["approvals"] == {"approve_payment": {"choice": "all", "ids": None}} and s["email_id"] == "inv-northwind-2208"
+    data = api.get(f"/api/runs/{run['id']}").json()["data"]
+    assert data["text"] == "Sample data (Invoices and purchase orders)" and data["real"] == []
     tests = api.post("/api/agents/invoice-check/tests", json={"from_run": run["id"], "name": "Northwind: amounts differ"}).json()
     tid = tests[0]["id"]
     assert tests[0]["last"] is None
@@ -673,3 +677,31 @@ def test_a_javascript_step_ranks_what_an_ask_step_found(api, tmp_path):
     tried = api.post("/api/javascript/try", json={"code": "return { n: inputs.xs.length }", "inputs": {"xs": [1, 2]}, "returns": ["n"]}).json()
     assert tried == {"ok": True, "output": {"n": 2}, "took": tried["took"]}
     assert api.post("/api/javascript/try", json={"code": "return 1", "returns": ["n"]}).json()["ok"] is False
+
+
+@needs_conductor
+def test_renaming_an_agent_carries_its_versions_runs_and_tests_over(api):
+    run = api.post("/api/agents/invoice-check/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
+    for _ in range(120):
+        if api.get(f"/api/runs/{run['id']}").json()["status"] == "waiting":
+            break
+        time.sleep(0.5)
+    refused = api.post("/api/agents/invoice-check/rename", json={"name": "invoice-matcher"})
+    assert refused.status_code == 409 and "run in progress" in refused.json()["detail"]
+    api.post(f"/api/runs/{run['id']}/approve", json={"choice": "all"})
+    finished(api, run["id"])
+    api.post("/api/agents/invoice-check/tests", json={"from_run": run["id"], "name": "Northwind"})
+    assert api.post("/api/agents/invoice-check/rename", json={"name": "Invoice Matcher"}).status_code == 409   # not a valid name
+    assert api.post("/api/agents/invoice-check/rename", json={"name": "travel-sync"}).status_code == 409       # taken
+    out = api.post("/api/agents/invoice-check/rename", json={"name": "invoice-matcher"}).json()
+    assert out["draft"]["name"] == "invoice-matcher" and out["meta"]["published"] == 1 and not out["has_changes"]
+    assert api.get("/api/agents/invoice-check").status_code == 404
+    assert [r["id"] for r in api.get("/api/runs?agent=invoice-matcher").json()] == [run["id"]]
+    assert api.get(f"/api/runs/{run['id']}").json()["agent"] == "invoice-matcher"
+    tests = api.get("/api/agents/invoice-matcher/tests").json()
+    assert tests[0]["name"] == "Northwind" and not tests[0]["last"]
+    fb = api.get("/api/agents/invoice-matcher").json()["feedback"]
+    assert fb["ok"] and "name: invoice-matcher" in fb["compiled"]
+    again = api.post("/api/agents/invoice-matcher/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
+    assert again["agent"] == "invoice-matcher"
+    api.post(f"/api/runs/{again['id']}/stop")

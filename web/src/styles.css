@@ -188,3 +188,12 @@ h2 { margin: 0; font-size: 18px; font-weight: 700; }
 .log-row.inspected { background: var(--acc-soft); }
 
 .js-code { font-size: 12.5px; line-height: 1.5; tab-size: 2; white-space: pre; overflow-x: auto; }
+
+/* A page scrolls as a whole: its sections keep their full height instead of shrinking to fit the window
+   (a card with overflow: hidden would otherwise shrink and cut off its rows, leaving nothing to scroll). */
+.page > * { flex-shrink: 0; }
+
+/* A table keeps a readable width and scrolls sideways inside its card when the window is narrower. */
+.table-scroll { overflow-x: auto; }
+.table-scroll > .table { min-width: 980px; }
+.table-scroll > .table th, .table-scroll > .table td:not(:first-child) { white-space: nowrap; }

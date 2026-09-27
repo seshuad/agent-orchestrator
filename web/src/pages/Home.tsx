@@ -95,6 +95,7 @@ export default function Home() {
           <Segmented options={['All', 'Mine', 'Published', 'Drafts'] as Filter[]} value={filter} onChange={setFilter}
             labels={Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, `${k} ${v}`]))} />
         </div>
+        <div className="table-scroll">
         <table className="table">
           <thead><tr><th>Agent</th><th>Status</th><th>Starts</th><th>Last run</th><th>Recent runs</th><th>Next run</th><th /></tr></thead>
           <tbody>
@@ -140,6 +141,7 @@ export default function Home() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
       {deleting && <DeleteAgent agent={deleting} onClose={() => setDeleting(null)} onDeleted={() => { setDeleting(null); load() }} />}
       {running && <RunNow agent={running} onClose={() => setRunning(null)} onStarted={(run) => navigate(`/agents/${running}/runs/${run.id}`)} />}

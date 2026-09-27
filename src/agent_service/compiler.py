@@ -336,7 +336,7 @@ class Compiler:
             out["sender_domain"] = {"type": "string", "description": "Its sender's domain, from the email's headers."}
         kinds = {"yes/no": "boolean", "text": "string", "number": "number"}
         for name, opt in self.agent.run_options.items():
-            out[name] = {"type": kinds[opt.type], "required": False, "default": opt.default, "description": opt.description}
+            out[name] = {"type": kinds[opt.type], "required": False, "default": default_of(name, opt), "description": opt.description}
         if uses_started(self.agent) and "started" not in out:
             out["started"] = {"type": "string", "required": False, "default": "",
                               "description": "When the run started (UTC, ISO 8601), set by the service."}
@@ -893,6 +893,29 @@ def output_fields(step: Any) -> list[str]:
     return {"tidy": ["trips" if grouped else "records", "notes"], "lookup": ["found", conf.get("as", "row") if isinstance(conf, dict) else "row"],
             "filter-rows": [conf.get("as", "rows") if isinstance(conf, dict) else "rows"], "compare": ["status"],
             "three-way-match": ["passed", "differences"], "show": ["value"]}[step.op]
+
+
+def default_of(name: str, opt: Any) -> Any:
+    """A run option's default as its type: the editor may have saved "10" for a number, or "true" for yes/no."""
+    value = opt.default
+    if value is None or value == "":
+        return {"number": None, "yes/no": None}.get(opt.type, value)
+    if opt.type == "number" and not isinstance(value, bool):
+        try:
+            number = float(str(value).strip())
+        except ValueError:
+            raise CompileError(f"The run option {name!r} is a number, but its default {value!r} isn't one.") from None
+        return int(number) if number.is_integer() else number
+    if opt.type == "yes/no" and not isinstance(value, bool):
+        text = str(value).strip().lower()
+        if text in ("true", "yes", "1"):
+            return True
+        if text in ("false", "no", "0"):
+            return False
+        raise CompileError(f"The run option {name!r} is yes/no, but its default {value!r} isn't yes or no.")
+    if opt.type == "text" and not isinstance(value, str):
+        return str(value)
+    return value
 
 
 def uses_started(agent: Agent) -> bool:

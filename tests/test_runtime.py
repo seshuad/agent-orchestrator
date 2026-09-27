@@ -414,3 +414,31 @@ def test_javascript_errors_say_what_went_wrong():
         steps.javascript("return {", ["x"], {})
     out = steps.javascript("return { access: [typeof require, typeof fetch, typeof process, typeof std].join(' ') }", ["access"], {})
     assert out["access"] == "undefined undefined undefined undefined"            # only its inputs: no files, network or processes
+
+
+def test_the_mcp_gateway_survives_a_broken_or_slow_upstream(run, monkeypatch):
+    """A connector's server crashing or stalling mid-step must come back to the model as an error, not hang the run."""
+    import asyncio
+    import os
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from agent_service.runtime import upstream
+    listed = {t["name"]: t for t in upstream.list_tools(ISSUES, {"kind": "none"})}
+    spec = issues_limits(["get_issue", "crash", "slow"])
+    spec["upstream"]["tools"].update({n: {"treat": "read", "pin": upstream.pin(listed[n]), "limits": []} for n in ("crash", "slow")})
+    env = {**os.environ, "AGENT_SERVICE_LIMITS_TOKEN": limits.mint(spec), "AGENT_SERVICE_TOOL_TIMEOUT": "2"}
+
+    async def go():
+        params = StdioServerParameters(command="agent-service-gateway", args=["--connection", "mcp"], env=env)
+        async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
+            await s.initialize()
+            crashed = await asyncio.wait_for(s.call_tool("crash", {}), 20)
+            after_crash = await asyncio.wait_for(s.call_tool("get_issue", {"id": "ENG-12", "team": "ENG"}), 20)
+            stalled = await asyncio.wait_for(s.call_tool("slow", {"seconds": 10}), 20)
+            after_stall = await asyncio.wait_for(s.call_tool("get_issue", {"id": "ENG-12", "team": "ENG"}), 20)
+            return crashed, after_crash, stalled, after_stall
+    crashed, after_crash, stalled, after_stall = asyncio.run(go())
+    assert crashed.is_error and "Issues failed" in crashed.content[0].text
+    assert not after_crash.is_error and "ENG-12" in after_crash.content[0].text          # reconnected
+    assert stalled.is_error and "no answer from Issues in 2 seconds" in stalled.content[0].text
+    assert not after_stall.is_error

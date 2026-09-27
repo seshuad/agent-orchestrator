@@ -152,3 +152,15 @@ def test_travel_sync_reads_every_source_at_the_same_time(tmp_path):
     assert json.loads((run / "steps/approve_trips_preselect.json").read_text())["results"]["preselected"] == ["b0bde9c185"]
     events = json.loads((run / "steps/add_to_calendar.json").read_text())
     assert events["would_create"] == ["Hotel: Courtyard Chicago Downtown/River North (2026-10-20T16:00:00-05:00 to 2026-10-22T12:00:00-05:00)"]
+
+
+def test_run_option_defaults_are_given_their_type():
+    data = raw("invoice-check")
+    data["run_options"] = {"max_prs": {"type": "number", "default": "10"}, "rate": {"type": "number", "default": "0.5"},
+                           "dry_run": {"type": "yes/no", "default": "false"}, "owner": {"type": "text", "default": "microsoft"}}
+    data["steps"][-1]["follows_dry_run"] = "run.dry_run"
+    inputs = compile_agent(definition.Agent.model_validate(data)).workflow["workflow"]["input"]
+    assert (inputs["max_prs"]["default"], inputs["rate"]["default"], inputs["dry_run"]["default"], inputs["owner"]["default"]) == (10, 0.5, False, "microsoft")
+    data["run_options"]["max_prs"]["default"] = "ten"
+    with pytest.raises(CompileError, match="'max_prs' is a number, but its default 'ten' isn't one"):
+        compile_agent(definition.Agent.model_validate(data))

@@ -268,7 +268,10 @@ def call_tools(tool: str, arguments: dict, dry_run: bool, data: dict) -> dict:
             listed = {t.name: upstream.tool_dict(t) for t in (await session.list_tools()).tools}
             usable = conn.usable(listed)
             for args in calls:
-                text, error = await gateway.mcp_call(conn, session, usable, tool, args)
+                try:
+                    text, error = await asyncio.wait_for(gateway.mcp_call(conn, session, usable, tool, args), gateway.TOOL_TIMEOUT)
+                except asyncio.TimeoutError:
+                    raise gateway.Refused(f"{tool} got no answer in {int(gateway.TOOL_TIMEOUT)} seconds; later items weren't sent") from None
                 if error:
                     raise gateway.Refused(f"{tool} failed: {text[:300]}")
                 done.append({"tool": tool, "arguments": args, "result": text[:500]})

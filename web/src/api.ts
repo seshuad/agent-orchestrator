@@ -102,6 +102,7 @@ export interface Run {
   error: RunError | null; gate: { agent_name: string; prompt: string; options: string[]; option_details: { label: string; value: string; prompt_for?: string | null }[] } | null
   inputs?: Record<string, string>
   rerun_of?: { run: string; step: string; n: number } | null
+  data?: { real: string[]; sample: string[]; sample_set: string; text: string; short: string }
   test?: { id: string; name: string } | null
   test_result?: TestCase['last'] extends infer L ? (L extends { result: infer R } ? R : never) : never
 }
@@ -134,6 +135,7 @@ export const api = {
   createAgent: (body: { name: string; description: string; start: string; sample_set: string | null }) =>
     call<AgentDetail>('POST', '/api/agents', body),
   saveAgent: (name: string, draft: Json) => call<{ feedback: Feedback; has_changes: boolean }>('PUT', `/api/agents/${name}`, { draft }),
+  renameAgent: (name: string, newName: string) => call<AgentDetail>('POST', `/api/agents/${name}/rename`, { name: newName }),
   deleteAgent: (name: string) => call<Json>('DELETE', `/api/agents/${name}`),
   describeAgent: (body: { description: string; name: string; sample_set: string | null }) => call<{ job: string }>('POST', '/api/agents/describe', body),
   refineAgent: (name: string, instruction: string) => call<{ job: string }>('POST', `/api/agents/${name}/refine`, { instruction }),

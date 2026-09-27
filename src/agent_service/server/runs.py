@@ -468,7 +468,37 @@ class Runs:
         calls = [json.loads(l) for l in (run_dir / "gateway.jsonl").read_text().splitlines()] if (run_dir / "gateway.jsonl").exists() else []
         return {**rec, **totals, "log": entries,
                 "checks": {"calls": len(calls), "refused": [c for c in calls if c["outcome"] == "refused"]},
-                "outcome": _outcome(run_dir), "events_file": str(self.events_path(run_id) or "")}
+                "outcome": _outcome(run_dir), "events_file": str(self.events_path(run_id) or ""),
+                "data": self.data_used(rec, raw, run_dir)}
+
+    def data_used(self, rec: dict[str, Any], raw: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+        """Which systems a run read or changed for real, and which on sample data, from the connections its agent used."""
+        from .connections import SERVICES
+        from .store import SAMPLE_SETS
+        from .. import runner
+        accounts = self.store.accounts()
+        connectors = {c["id"]: c for c in self.store.connectors()}
+        real, sample = [], []
+        for conn in (raw.get("connections") or {}).values():
+            service = conn.get("service", "")
+            account = accounts.get(conn.get("account") or "", {})
+            name = (connectors.get(account.get("connector") or "", {}).get("name") if service == "mcp"
+                    else SERVICES.get(service, {}).get("name", service))
+            is_real = service in runner.ALWAYS_LIVE or (rec.get("source") == "live" and service in runner.LIVE_SERVICES)
+            label = name + (f" ({account.get('signed_in_as') or account.get('account')})" if is_real and service != "mcp"
+                            and (account.get("signed_in_as") or account.get("account")) else "")
+            (real if is_real else sample).append(label)
+        sets = {str(v): k for k, v in SAMPLE_SETS.items()}
+        sample_set = next((sets.get(str(Path(v)), "") for v in [self.store.meta(rec["agent"]).get("sample_data")] if v), "") if not real or sample else ""
+        dedupe = lambda xs: list(dict.fromkeys(xs))
+        real, sample = dedupe(real), dedupe(sample)
+        if real and sample:
+            text = f"Real: {', '.join(real)} · sample: {', '.join(sample)}"
+        elif real:
+            text = f"Real: {', '.join(real)}"
+        else:
+            text = "Sample data" + (f" ({sample_set})" if sample_set else "")
+        return {"real": real, "sample": sample, "sample_set": sample_set, "text": text, "short": "real data" if real else "sample data"}
 
 
 def _task(raw: dict[str, Any], step: str) -> str:

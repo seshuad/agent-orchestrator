@@ -51,6 +51,18 @@ def delete_issue(id: str) -> str:
     return f"Deleted {id}."
 
 
+@server.tool(description="For tests: the server process exits, as if it crashed.", structured_output=False)
+def crash() -> str:
+    os._exit(1)
+
+
+@server.tool(description="For tests: answers after the given number of seconds.", structured_output=False)
+def slow(seconds: float = 5) -> str:
+    import time
+    time.sleep(seconds)
+    return "done"
+
+
 def main() -> None:
     if len(sys.argv) > 2 and sys.argv[1] == "--http":
         import uvicorn

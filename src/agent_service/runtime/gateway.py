@@ -14,6 +14,7 @@ MCP tools below. Both go through the same checks.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -263,6 +264,92 @@ async def mcp_call(conn: Mcp, session: Any, usable: dict[str, dict[str, Any]], n
     return text, bool(result.is_error)
 
 
+TOOL_TIMEOUT = float(os.environ.get("AGENT_SERVICE_TOOL_TIMEOUT", "90"))    # seconds per upstream tool call
+
+
+class Upstream:
+    """One long-lived session with the connector's server, owned by its own task.
+
+    Servers rate-limit opening sessions, so calls share one. But the step's side of the gateway must outlive it: if
+    the connection breaks (a network or TLS error, the server restarting), the calls in flight fail with an error the
+    model sees, the next call opens a fresh session, and nothing waits forever."""
+
+    def __init__(self, conn: Mcp):
+        self.conn = conn
+        self.session: Any = None
+        self.owner: asyncio.Task | None = None
+        self.stop: asyncio.Event | None = None
+        self.lock = asyncio.Lock()
+
+    def broken(self) -> bool:
+        return self.owner is None or self.owner.done()
+
+    async def get(self) -> Any:
+        async with self.lock:
+            if not self.broken():
+                return self.session
+            ready: asyncio.Future = asyncio.get_running_loop().create_future()
+            stop = asyncio.Event()
+
+            async def own() -> None:
+                try:
+                    async with self.conn.session() as s:
+                        ready.set_result(s)
+                        await stop.wait()
+                except BaseException as exc:          # the connection broke, or never opened
+                    if not ready.done():
+                        ready.set_exception(exc if isinstance(exc, Exception) else RuntimeError(str(exc)))
+
+            self.stop, self.owner = stop, asyncio.create_task(own())
+            self.session = await ready
+            return self.session
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        """The tool's result. Retries once on a fresh session if the connection broke; gives up after TOOL_TIMEOUT."""
+        for attempt in (1, 2):
+            session = await asyncio.wait_for(self.get(), TOOL_TIMEOUT)
+            owner = self.owner
+            call = asyncio.ensure_future(session.call_tool(name, args))
+            done, _ = await asyncio.wait({call, owner}, timeout=TOOL_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
+            if call in done:
+                exc = call.exception()
+                if exc is None:
+                    return call.result()
+                if attempt == 1 and _connection_lost(exc):
+                    await self.drop()                  # the session is dead even if its task hasn't noticed: start afresh
+                    continue
+                raise exc
+            call.cancel()
+            if owner in done and attempt == 1:
+                await self.drop()
+                continue                               # the connection broke under this call: once more, freshly
+            if owner in done:
+                raise ConnectionError(f"the connection to {self.conn.up.get('name', 'the server')} broke twice")
+            raise TimeoutError(f"no answer from {self.conn.up.get('name', 'the server')} in {int(TOOL_TIMEOUT)} seconds")
+        raise AssertionError("unreachable")
+
+    async def drop(self) -> None:
+        """Forget the current session; the next call opens a new one."""
+        owner, stop = self.owner, self.stop
+        self.owner = self.stop = self.session = None
+        if stop is not None:
+            stop.set()
+        if owner is not None:
+            try:
+                await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 5)
+            except asyncio.TimeoutError:
+                owner.cancel()
+
+    async def close(self) -> None:
+        await self.drop()
+
+
+def _connection_lost(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(k in text for k in ("connection closed", "closedresource", "brokenresource", "endofstream", "connecterror",
+                                   "remoteprotocolerror", "readerror", "writeerror", "certificate"))
+
+
 async def serve_mcp(conn: Mcp) -> None:
     """The step's view of the connector, over stdio: only its usable tools, each call checked first."""
     import mcp.types as types
@@ -270,30 +357,41 @@ async def serve_mcp(conn: Mcp) -> None:
     from mcp.server.stdio import stdio_server
     from . import upstream
 
-    async with conn.session() as up:
-        listed = {t.name: upstream.tool_dict(t) for t in (await up.list_tools()).tools}
-        usable = conn.usable(listed)
-        name = conn.up.get("name", "the connector")
+    up = Upstream(conn)
+    session = await up.get()
+    listed = {t.name: upstream.tool_dict(t) for t in (await session.list_tools()).tools}
+    usable = conn.usable(listed)
+    name = conn.up.get("name", "the connector")
 
-        async def list_tools(ctx, params):
-            return types.ListToolsResult(tools=[types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
-                                                for t in usable.values()])
+    async def list_tools(ctx, params):
+        return types.ListToolsResult(tools=[types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+                                            for t in usable.values()])
 
-        async def call_tool(ctx, params):
-            args = params.arguments or {}
-            try:
-                text, error = await mcp_call(conn, up, usable, params.name, args)
-            except Refused as exc:
-                return types.CallToolResult(content=[types.TextContent(type="text", text=f"Refused: {exc}")], is_error=True)
-            except Exception as exc:
-                log_call("mcp", params.name, args, "error", str(exc)[:200])
-                return types.CallToolResult(content=[types.TextContent(type="text", text=f"{name} failed: {exc}")], is_error=True)
-            wrapped = f'<result tool="{params.name}" from="{name}">\n{text}\n</result>'
-            return types.CallToolResult(content=[types.TextContent(type="text", text=wrapped)], is_error=error)
+    async def call_tool(ctx, params):
+        args = params.arguments or {}
+        try:
+            conn.check(params.name, args, usable)
+        except Refused as exc:
+            log_call("mcp", params.name, args, "refused", str(exc))
+            return types.CallToolResult(content=[types.TextContent(type="text", text=f"Refused: {exc}")], is_error=True)
+        try:
+            result = await up.call(params.name, args)
+        except Exception as exc:
+            reason = upstream._reason(exc) if not isinstance(exc, (TimeoutError, ConnectionError)) else str(exc)
+            log_call("mcp", params.name, args, "error", reason[:300])
+            return types.CallToolResult(content=[types.TextContent(type="text", text=f"{name} failed: {reason}. You can try again, "
+                                                                   "or carry on and say what you couldn't get.")], is_error=True)
+        text = upstream.result_text(result)
+        log_call("mcp", params.name, args, "error" if result.is_error else "allowed", text[:120], result=text)
+        wrapped = f'<result tool="{params.name}" from="{name}">\n{text}\n</result>'
+        return types.CallToolResult(content=[types.TextContent(type="text", text=wrapped)], is_error=bool(result.is_error))
 
-        server = Server("gateway-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
+    server = Server("gateway-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
+    try:
         async with stdio_server() as (r, w):
             await server.run(r, w, server.create_initialization_options())
+    finally:
+        await up.close()
 
 
 CONNECTIONS = {"gmail": Gmail, "google-sheets": Sheets, "google-calendar": Calendar, "github": GitHub, "mcp": Mcp}

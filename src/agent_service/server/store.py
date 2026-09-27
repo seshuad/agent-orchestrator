@@ -290,6 +290,44 @@ class Store:
         self._write_meta(name, meta)
         return n
 
+    def rename(self, old: str, new: str) -> None:
+        """A new name everywhere the agent's name is kept: its folder, the draft and every published version, its
+        metadata, and its runs (so their history, re-runs and tests carry over). The caller makes sure none is running."""
+        if not new or not new.replace("-", "").isalnum() or new.lower() != new or new.startswith("-"):
+            raise Conflict("Agent names are lower case letters, digits and dashes, like travel-sync.")
+        src = self._dir(old)
+        dst = self.home / "agents" / new
+        if new == old:
+            return
+        if dst.exists():
+            raise Conflict(f"There's already an agent called {new!r}.")
+        src.rename(dst)
+        for path in dst.glob("*.agent.yaml"):
+            raw = yaml.safe_load(path.read_text())
+            if isinstance(raw, dict) and raw.get("name") == old:
+                raw["name"] = new
+                path.write_text(_dump(raw))
+        meta = self.meta(new)
+        meta["name"] = new
+        meta["updated"] = time.time()
+        meta.setdefault("renamed_from", []).append({"name": old, "at": time.time()})
+        self._write_meta(new, meta)
+        for run in self.runs_root().iterdir():
+            record = run / "run.json"
+            if not record.exists():
+                continue
+            rec = json.loads(record.read_text())
+            if rec.get("agent") != old:
+                continue
+            rec["agent"] = new
+            record.write_text(json.dumps(rec, indent=1))
+            snapshot = run / "agent.yaml"
+            if snapshot.exists():
+                raw = yaml.safe_load(snapshot.read_text())
+                if isinstance(raw, dict) and raw.get("name") == old:
+                    raw["name"] = new
+                    snapshot.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
+
     def has_unpublished_changes(self, name: str) -> bool:
         meta = self.meta(name)
         if not meta["published"]:

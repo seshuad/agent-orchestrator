@@ -223,3 +223,17 @@ def test_a_javascript_step_can_be_tried_in_the_editor(page, base):
     page.click("button:has-text('Try it')")
     page.wait_for_selector(".field-error:has-text('threw an error')")
     assert not page.errors
+
+
+def test_rename_an_agent_from_its_settings(page, base):
+    import httpx
+    httpx.post(base + "/api/agents", json={"name": "rename-me", "start": "read-check-approve-act", "sample_set": "Travel emails"})
+    page.goto(base + "/agents/rename-me")
+    page.click(".side-row:has-text('Settings')")
+    page.fill("input[aria-label='Agent name']", "Renamed Agent")
+    page.wait_for_selector("text=Saved as")
+    page.click("button:has-text('Rename')")
+    page.wait_for_url("**/agents/renamed-agent")
+    page.wait_for_selector("span:text-is('renamed-agent')")
+    assert httpx.get(base + "/api/agents/rename-me").status_code == 404
+    assert httpx.get(base + "/api/agents/renamed-agent").json()["draft"]["name"] == "renamed-agent" and not page.errors

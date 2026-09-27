@@ -57,7 +57,7 @@ export default function RunsPage() {
                 <span className="row faint" style={{ gap: 12 }}>
                   <span>{r.trigger === 'manual' ? `Manual · ${r.started_by.split(' ')[0]}` : r.trigger}</span>
                   {r.test_result && <Pill kind={r.test_result.passed ? 'succeeded' : 'failed'}>{r.test_result.passed ? 'test passed' : 'test failed'}</Pill>}
-                  <span>{r.version ? `v${r.version}` : 'draft'}{r.scripted ? ' · scripted' : ''}{r.source === 'live' ? ' · real Gmail' : ''}</span>
+                  <span>{r.version ? `v${r.version}` : 'draft'}{r.scripted ? ' · scripted' : ''}{r.data?.real.length ? ` · real: ${r.data.real.map((x) => x.replace(/ \(.*\)$/, '')).join(', ')}` : ''}</span>
                   <span>{duration(r.duration)}</span><span>${(r.cost_usd ?? 0).toFixed(2)}</span>
                 </span>
               </Link>
@@ -139,8 +139,8 @@ function RunView({ id }: { id: string }) {
         </span>
       </div>
       <div className="meta">
-        {[['Agent', d.agent], ['Started', `Manually by ${d.started_by}`], ['Version', d.version ? `v${d.version}` : 'Draft (test run)'],
-          ['Data', d.source === 'live' ? 'Real Gmail' : 'Sample data'], ['Model steps', d.scripted ? 'Scripted answers' : 'Claude API'], ['Dry run', d.inputs?.dry_run === 'false' ? 'No' : d.inputs?.dry_run ? 'Yes' : '—'],
+        {[['Agent', d.agent], ['Started', `Manually by ${d.started_by}`], ['Version', d.version ? `v${d.version}` : 'Draft (not published)'],
+          ['Data', d.data?.text ?? (d.source === 'live' ? 'Real accounts' : 'Sample data')], ['Model steps', d.scripted ? 'Scripted answers' : 'Claude API'], ['Dry run', d.inputs?.dry_run === 'false' ? 'No' : d.inputs?.dry_run ? 'Yes' : '—'],
           ['Took', duration(d.duration)], ['Cost', `$${(d.cost_usd ?? 0).toFixed(2)}`], ['Tokens', d.tokens ? `${Math.round(d.tokens / 1000)}K` : '0'],
           ...(d.test ? [['Test', d.test.name]] : []), ...(d.rerun_of ? [['Re-run of', `${d.rerun_of.step} (run ${d.rerun_of.run})`]] : [])]
           .map(([k, v]) => <span key={k}><span>{k}</span><span>{v}</span></span>)}

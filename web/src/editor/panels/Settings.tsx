@@ -1,5 +1,6 @@
 // Agent settings: trigger, run options, limits, test data, shared instructions.
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, type Json } from '../../api'
 import { Area, Block, FieldErrors, Icon, Segmented, Select, Text } from '../../ui'
 import { useEditor } from '../Editor'
@@ -13,7 +14,21 @@ export function triggerText(t: Json | undefined): string {
 }
 
 export default function Settings() {
-  const { draft, update, meta, setTestData } = useEditor()
+  const { draft, update, meta, setTestData, name } = useEditor()
+  const navigate = useNavigate()
+  const [newName, setNewName] = useState(name)
+  const [renaming, setRenaming] = useState(false)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  useEffect(() => { setNewName(name); setRenameError(null) }, [name])
+  const slug = newName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  const rename = async () => {
+    setRenaming(true); setRenameError(null)
+    try {
+      await api.saveAgent(name, draft)                // keep edits the autosave hasn't sent yet
+      await api.renameAgent(name, slug)
+      navigate(`/agents/${slug}`, { replace: true })
+    } catch (e: any) { setRenameError(e.message) } finally { setRenaming(false) }
+  }
   const [sets, setSets] = useState<string[]>([])
   useEffect(() => { api.sampleSets().then(setSets) }, [])
   const t = draft.trigger ?? { kind: 'manual' }
@@ -27,6 +42,16 @@ export default function Settings() {
         <span className="eyebrow">Agent settings</span>
         <span style={{ fontSize: 17, fontWeight: 700 }}>{draft.name}</span>
       </div>
+      <Block title="Name">
+        <span className="row" style={{ flexWrap: 'nowrap' }}>
+          <input className="input grow" value={newName} onChange={(e) => setNewName(e.target.value)} aria-label="Agent name"
+            onKeyDown={(e) => { if (e.key === 'Enter' && slug && slug !== name) rename() }} />
+          <button className="btn small" disabled={!slug || slug === name || renaming} onClick={rename}>{renaming ? 'Renaming…' : 'Rename'}</button>
+        </span>
+        {slug && slug !== newName.trim() && slug !== name && <span className="faint">Saved as <code className="mono">{slug}</code></span>}
+        <span className="faint">Renaming keeps its published versions, runs and tests. Not while one of its runs is in progress.</span>
+        {renameError && <span className="field-error">{renameError}</span>}
+      </Block>
       <Block title="Description"><Area value={draft.description} onChange={(v) => update(['description'], v)} rows={2} path="description" label="Description" /></Block>
       <Block title="Starts when">
         <Segmented options={['schedule', 'email', 'webhook', 'manual']} value={t.kind} onChange={(k) => update(['trigger'], k === 'schedule' ? { kind: k, every: 'weekday', at: '07:00', time_zone: 'Pacific time' } : k === 'email' ? { kind: k, to: '' } : { kind: k })}
@@ -48,10 +73,13 @@ export default function Settings() {
           <div key={name} className="op">
             <span className="row" style={{ gap: 6 }}>
               <code className="mono" style={{ fontWeight: 600, width: 110 }}>{name}</code>
-              <Select value={o.type} options={['yes/no', 'text', 'number']} onChange={(v) => update(['run_options', name, 'type'], v)} label="Type" />
+              <Select value={o.type} options={['yes/no', 'text', 'number']} label="Type"
+                onChange={(v) => update(['run_options', name], { ...o, type: v, default: v === 'yes/no' ? true : v === 'number' ? (Number.isFinite(Number(o.default)) && o.default !== '' ? Number(o.default) : undefined) : String(o.default ?? '') })} />
               {o.type === 'yes/no'
                 ? <Select value={String(o.default ?? true)} options={['true', 'false']} labels={{ true: 'Default: yes', false: 'Default: no' }} onChange={(v) => update(['run_options', name, 'default'], v === 'true')} label="Default" />
-                : <Text width={140} value={o.default} onChange={(v) => update(['run_options', name, 'default'], v)} placeholder="Default" />}
+                : <Text width={140} value={o.default === undefined || o.default === null ? '' : String(o.default)} placeholder="Default"
+                    onChange={(v) => update(['run_options', name, 'default'],
+                      o.type === 'number' ? (v.trim() === '' ? undefined : Number.isFinite(Number(v)) ? Number(v) : v) : v)} />}
               <button className="icon-btn" aria-label={`Remove ${name}`} onClick={() => { const c = { ...opts }; delete c[name]; update(['run_options'], c) }}><Icon name="x" size={12} /></button>
             </span>
             <input className="input full" placeholder="What it's for" value={o.description ?? ''} aria-label="Description" onChange={(e) => update(['run_options', name, 'description'], e.target.value)} />
