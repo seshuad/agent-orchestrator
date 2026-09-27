@@ -50,9 +50,11 @@ STEP_ENV = "AGENT_SERVICE_STEP"          # the step a connection call is made fo
 RESULT_CAP = 200_000                     # characters of a call's result kept for the step inspector
 
 
-def log_call(connection: str, action: str, args: dict[str, Any], outcome: str, detail: str = "", result: Any = None) -> None:
+def log_call(connection: str, action: str, args: dict[str, Any], outcome: str, detail: str = "", result: Any = None,
+             **extra: Any) -> None:
     entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": time.time(), "step": os.environ.get(STEP_ENV, ""),
-             "connection": connection, "action": action, "args": args, "outcome": outcome, "detail": detail}
+             "connection": connection, "action": action, "args": args, "outcome": outcome, "detail": detail,
+             **{k: v for k, v in extra.items() if v is not None}}
     if result is not None:
         text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
         entry["result"] = text[:RESULT_CAP] + (f"\n[{len(text) - RESULT_CAP} more characters not kept]" if len(text) > RESULT_CAP else "")

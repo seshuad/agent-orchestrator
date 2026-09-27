@@ -140,6 +140,47 @@ class Calendar:
         return event
 
 
+class BigQuery:
+    """Read queries (and, for Act steps, inserts) within the step's data, byte and row limits: see bigquery_api."""
+
+    def __init__(self, limits: dict[str, Any]):
+        from .bigquery_api import Warehouse
+        self.limits = limits
+        self.wh = Warehouse(limits)
+
+    def _allowed(self, action: str) -> None:
+        if action not in self.limits.get("actions", []):
+            raise Refused(f"This step may not {action.replace('_', ' ')} in BigQuery.")
+
+    def query(self, sql: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .bigquery_api import QueryRefused
+        self._allowed("query")
+        try:
+            return self.wh.query(sql, params or {})
+        except QueryRefused as exc:
+            raise Refused(str(exc)) from None
+
+    def list_tables(self, dataset: str) -> list[dict[str, Any]]:
+        self._allowed("list_tables")
+        return self.wh.list_tables(dataset)
+
+    def get_schema(self, table: str) -> dict[str, Any]:
+        from .bigquery_api import QueryRefused
+        self._allowed("get_schema")
+        try:
+            return self.wh.get_schema(table)
+        except QueryRefused as exc:
+            raise Refused(str(exc)) from None
+
+    def insert_rows(self, table: str, rows: list[dict[str, Any]], dry_run: bool) -> dict[str, Any]:
+        from .bigquery_api import QueryRefused
+        self._allowed("insert_rows")
+        try:
+            return self.wh.insert_rows(table, rows, dry_run)
+        except QueryRefused as exc:
+            raise Refused(str(exc)) from None
+
+
 class _SampleGitHub:
     search = staticmethod(sampledata.github_search)
     issue = staticmethod(sampledata.github_issue)
@@ -394,7 +435,7 @@ async def serve_mcp(conn: Mcp) -> None:
         await up.close()
 
 
-CONNECTIONS = {"gmail": Gmail, "google-sheets": Sheets, "google-calendar": Calendar, "github": GitHub, "mcp": Mcp}
+CONNECTIONS = {"gmail": Gmail, "google-sheets": Sheets, "google-calendar": Calendar, "github": GitHub, "mcp": Mcp, "bigquery": BigQuery}
 
 
 def connect(connection: str, token: str | None = None, narrow: dict[str, Any] | None = None) -> Any:
@@ -424,6 +465,11 @@ def call(conn: Any, name: str, action: str, args: dict[str, Any]) -> Any:
     size = len(result) if isinstance(result, list) else 1
     if isinstance(result, str):
         size = 1
+    if isinstance(result, dict) and "bytes_billed" in result:
+        from .bigquery_api import human
+        log_call(name, action, args, "allowed", f"{result.get('row_count', 0)} row(s), {human(result['bytes_billed'])} billed", result=result,
+                 bytes_billed=result["bytes_billed"], connector=(getattr(conn, "limits", {}).get("upstream") or {}).get("connector"))
+        return result
     log_call(name, action, args, "allowed", f"{size} result(s)", result=result)
     return result
 
@@ -517,6 +563,49 @@ def main() -> None:
             except (Refused, LimitsError) as exc:
                 return f"Refused: {exc}"
             return f'<file repo="{repo}" path="{path}">\n{text}\n</file>'
+
+    if a.connection == "bigquery":
+        allow = ", ".join(conn.wh.allow) or "nothing"
+
+        def _json(v: Any) -> str:
+            return json.dumps(v, ensure_ascii=False, default=str)
+
+        if "query" in actions:
+            @server.tool(name="run_query", structured_output=False,
+                         description=f"Run one BigQuery SELECT (GoogleSQL) and get its rows as JSON. It may read only: {allow}; "
+                                     f"at most {conn.wh.max_rows} rows come back, and a query may scan at most "
+                                     f"{__import__('agent_service.runtime.bigquery_api', fromlist=['human']).human(conn.wh.max_bytes)}. "
+                                     "Name tables in full (`project.dataset.table`). Pass values as @parameters in `params` rather than in the SQL.")
+            def run_query(sql: str, params: dict[str, Any] | None = None) -> str:
+                try:
+                    out = call(conn, "bigquery", "query", {"sql": sql, "params": params or {}})
+                except (Refused, LimitsError) as exc:
+                    return f"Refused: {exc}"
+                except Exception as exc:
+                    log_call("bigquery", "query", {"sql": sql}, "error", str(exc)[:300])
+                    return f"BigQuery failed: {str(exc).splitlines()[0][:400]}"
+                note = " (more rows were left out: aggregate or filter to see everything)" if out["truncated"] else ""
+                return f'<rows count="{out["row_count"]}" billed_bytes="{out["bytes_billed"]}"{note and " truncated=\"true\""}>\n{_json(out["rows"])}\n</rows>{note}'
+
+        if "list_tables" in actions:
+            @server.tool(name="list_tables", structured_output=False, description=f"List the tables in a dataset this step may read ({allow}).")
+            def list_tables(dataset: str) -> str:
+                try:
+                    return _json(call(conn, "bigquery", "list_tables", {"dataset": dataset}))
+                except (Refused, LimitsError) as exc:
+                    return f"Refused: {exc}"
+                except Exception as exc:
+                    return f"BigQuery failed: {str(exc).splitlines()[0][:400]}"
+
+        if "get_schema" in actions:
+            @server.tool(name="get_schema", structured_output=False, description="A table's columns (name, type, description) and row count.")
+            def get_schema(table: str) -> str:
+                try:
+                    return _json(call(conn, "bigquery", "get_schema", {"table": table}))
+                except (Refused, LimitsError) as exc:
+                    return f"Refused: {exc}"
+                except Exception as exc:
+                    return f"BigQuery failed: {str(exc).splitlines()[0][:400]}"
 
     if a.connection == "google-sheets" and "append_row" in actions:
         sheet = a.sheet or (conn.limits.get("sheets") or [None])[0]

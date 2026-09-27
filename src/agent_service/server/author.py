@@ -87,6 +87,8 @@ ask: a model reads and extracts. It can never change anything.
            from_domain (trigger.sender_domain), only_cited_by (a step id: only emails its output names).
     google-sheets: action read. Limit: sheets [names].
     github: actions search, open, read. Limits: repos [owner/name] (required), lookback_days.
+    bigquery: actions query, list_tables, get_schema. Limits: datasets [dataset | project.dataset | project.dataset.table],
+           max_bytes ("1GB"), max_rows. Only single SELECTs run; the model sees a run_query tool.
     mcp: actions are the connector's tool names marked read. Limit: arg_limits {argument: [allowed values]} for the
          arguments the admin lets steps limit. A limited argument must be passed on every call.
 
@@ -100,6 +102,9 @@ built-in: fixed operations, no model.
     compare: {}                 takes: {a: <ref>, b: <ref>}          returns status
     three-way-match: {}         takes: {invoice: <ref>, purchase_order: <ref>, receipts: <ref>}   returns passed, differences
     show: {}                    takes: {value: <ref>}                shows a value in the run log (debugging)
+    bigquery: {sql: "SELECT ... WHERE x = @name"}   takes: {name: <ref>} (the @parameters)   uses: {connection: bq, actions: [query],
+                datasets: [..], max_bytes: "1GB"}   returns: {rows: {type: list of <Record>}}   -> rows, row_count, truncated, bytes_billed
+                Prefer this over an Ask step when the query is known ahead: no model writes SQL.
     javascript: {code: "<function body>"}   takes: {name: <ref>, ...}   returns: {field: {type: ...}, ...}
                 The body gets `inputs` (each of takes by name) and must `return {field: ...}` with every field in returns.
                 Plain JavaScript in a sandbox (no network, files or other programs; 2 s, 64 MB): use it for exact,
@@ -149,6 +154,7 @@ act: changes something outside the agent, using only checked fields (never free 
     add_row:       {sheet: Leaks, for_each: <list ref>, row: {column: "{field}", ...}}     uses: {connection: sheets, actions: [append_row], sheets: [Leaks]}
     create_events: {calendar: Personal, templates: {default: {title: "...", starts: "{start}", ends: "{end}"}}, never_twice: {match_fields: [..]}}
                    takes: {records: <list ref>}                                            uses: {connection: calendar, actions: [create_event], calendar: Personal}
+    insert_rows:   {table: project.dataset.table, for_each: <list ref>, row: {column: "{field}"}}   uses: {connection: bq, actions: [insert_rows], tables: [..]}
     call_tool:     {tool: <act tool>, for_each: <list ref>, arguments: {arg: "{field}" or "text"}}   uses: {connection: <mcp>, actions: [<tool>], arg_limits: {..}}
     follows_dry_run: run.dry_run                             # optional: on a dry run it lists what it would do
 

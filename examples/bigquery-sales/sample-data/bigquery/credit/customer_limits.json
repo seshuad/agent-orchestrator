@@ -1,0 +1,152 @@
+[
+{
+"customer_id": "C001",
+"credit_limit": 25000,
+"risk": "medium"
+},
+{
+"customer_id": "C002",
+"credit_limit": 10000,
+"risk": "medium"
+},
+{
+"customer_id": "C003",
+"credit_limit": 10000,
+"risk": "high"
+},
+{
+"customer_id": "C004",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C005",
+"credit_limit": 25000,
+"risk": "low"
+},
+{
+"customer_id": "C006",
+"credit_limit": 25000,
+"risk": "low"
+},
+{
+"customer_id": "C007",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C008",
+"credit_limit": 25000,
+"risk": "high"
+},
+{
+"customer_id": "C009",
+"credit_limit": 10000,
+"risk": "low"
+},
+{
+"customer_id": "C010",
+"credit_limit": 5000,
+"risk": "low"
+},
+{
+"customer_id": "C011",
+"credit_limit": 10000,
+"risk": "high"
+},
+{
+"customer_id": "C012",
+"credit_limit": 25000,
+"risk": "medium"
+},
+{
+"customer_id": "C013",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C014",
+"credit_limit": 5000,
+"risk": "high"
+},
+{
+"customer_id": "C015",
+"credit_limit": 10000,
+"risk": "medium"
+},
+{
+"customer_id": "C016",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C017",
+"credit_limit": 5000,
+"risk": "high"
+},
+{
+"customer_id": "C018",
+"credit_limit": 10000,
+"risk": "high"
+},
+{
+"customer_id": "C019",
+"credit_limit": 10000,
+"risk": "medium"
+},
+{
+"customer_id": "C020",
+"credit_limit": 25000,
+"risk": "medium"
+},
+{
+"customer_id": "C021",
+"credit_limit": 5000,
+"risk": "low"
+},
+{
+"customer_id": "C022",
+"credit_limit": 10000,
+"risk": "high"
+},
+{
+"customer_id": "C023",
+"credit_limit": 25000,
+"risk": "low"
+},
+{
+"customer_id": "C024",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C025",
+"credit_limit": 5000,
+"risk": "medium"
+},
+{
+"customer_id": "C026",
+"credit_limit": 5000,
+"risk": "low"
+},
+{
+"customer_id": "C027",
+"credit_limit": 10000,
+"risk": "low"
+},
+{
+"customer_id": "C028",
+"credit_limit": 10000,
+"risk": "medium"
+},
+{
+"customer_id": "C029",
+"credit_limit": 5000,
+"risk": "high"
+},
+{
+"customer_id": "C030",
+"credit_limit": 10000,
+"risk": "high"
+}
+]

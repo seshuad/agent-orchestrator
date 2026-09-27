@@ -66,7 +66,7 @@ class Limits(Strict):
 
 
 class Connection(Strict):
-    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp"]
+    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp", "bigquery"]
     permission: str
     account: str | None = None               # the workspace connection (account) it uses
 
@@ -84,6 +84,10 @@ class Uses(Strict):
     calendar: str | None = None
     repos: list[str] | None = None           # GitHub: the repositories (owner/name) it may read
     arg_limits: dict[str, list[str]] | None = None   # MCP: argument -> the only values a call may pass
+    datasets: list[str] | None = None        # BigQuery: dataset, project.dataset or project.dataset.table it may read
+    max_bytes: str | int | None = None       # BigQuery: the most one query may scan, e.g. "1GB"
+    max_rows: int | None = None              # BigQuery: rows returned per query
+    tables: list[str] | None = None          # BigQuery: tables an Act step may insert into
 
 
 class Repeat(Strict):
@@ -135,7 +139,7 @@ class BuiltInStep(Step):
     @field_validator("operation")
     @classmethod
     def _one_operation(cls, v: dict[str, Any]) -> dict[str, Any]:
-        known = {"tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript"}
+        known = {"tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery"}
         if len(v) != 1 or next(iter(v)) not in known:
             raise ValueError(f"operation must be exactly one of {sorted(known)}")
         return v
@@ -217,12 +221,13 @@ class ActStep(Step):
     create_events: dict[str, Any] | None = None
     add_row: dict[str, Any] | None = None
     call_tool: dict[str, Any] | None = None      # MCP: {tool, arguments: {arg: "{field}" or text}, for_each}
+    insert_rows: dict[str, Any] | None = None    # BigQuery: {table, for_each, row: {column: "{field}"}}
     follows_dry_run: str | None = None          # a yes/no run option; none: it always makes its changes
 
     @model_validator(mode="after")
     def _one_action(self) -> ActStep:
-        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool)) != 1:
-            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row or call_tool")
+        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool, self.insert_rows)) != 1:
+            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row, call_tool or insert_rows")
         return self
 
 
@@ -250,7 +255,7 @@ class Agent(Strict):
             # Built-in services: Ask steps only read. An MCP connector's tools are read or act by its admin's choice,
             # checked against the workspace's connectors when the agent is saved.
             if (isinstance(s, AskStep) and uses and self.connections[uses.connection].service != "mcp"
-                    and set(uses.actions) - {"search", "open", "read"}):
+                    and set(uses.actions) - {"search", "open", "read", "query", "list_tables", "get_schema"}):
                 raise ValueError(f"{s.name}: Ask steps can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")

@@ -41,6 +41,16 @@ SERVICES: dict[str, dict[str, Any]] = {
         },
         "never": "Change or delete existing events: not offered.",
     },
+    "bigquery": {
+        "name": "BigQuery", "icon": "database",
+        "permissions": {
+            "read": {"label": "Run read queries", "actions": ["query", "list_tables", "get_schema"], "scope": "bigquery (SELECT only)",
+                     "detail": "Query, list tables and read schemas, in the data the connector allows. Each step names its datasets and a byte cap."},
+            "write": {"label": "Insert rows", "actions": ["insert_rows"], "scope": "bigquery (named tables)",
+                      "detail": "Append rows to tables a step names. Act steps only. Never deletes, updates or changes schemas."},
+        },
+        "never": "Deleting or updating rows, dropping tables, changing schemas: not offered.",
+    },
     "github": {
         "name": "GitHub", "icon": "code", "sign_in": "token",
         "permissions": {

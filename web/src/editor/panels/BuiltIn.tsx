@@ -4,11 +4,11 @@ import { api, type Json } from '../../api'
 import { Block, Cel, Check, FieldErrors, Icon, Segmented, Select, Text } from '../../ui'
 import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useStep } from './common'
 
-const OPS = ['tidy', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'javascript'] as const
-const OP_LABEL: Record<string, string> = { tidy: 'Tidy up', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript' }
+const OPS = ['tidy', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'javascript', 'bigquery'] as const
+const OP_LABEL: Record<string, string> = { tidy: 'Tidy up', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript', bigquery: 'BigQuery query' }
 const OP_TAKES: Record<string, Json> = {
   tidy: { records: '' }, lookup: { any_of: [] }, 'filter-rows': { equals: '' }, compare: { value: '', on_file: '' },
-  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' },
+  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' }, bigquery: {},
 }
 const JS_TEMPLATE = `// \`inputs\` holds what this step takes, by name (see Takes).
 // Return an object with every field listed under Returns.
@@ -17,6 +17,51 @@ return { count: items.length };`
 const OP_DEFAULT: Record<string, Json> = {
   tidy: [], lookup: { sheet: '', column: '', as: 'row' }, 'filter-rows': { sheet: '', column: '', as: 'rows' }, compare: {}, 'three-way-match': {}, show: {},
   javascript: { code: JS_TEMPLATE },
+  bigquery: { sql: 'SELECT column, COUNT(*) AS n\nFROM `project.dataset.table`\nWHERE column = @value\nGROUP BY column\nORDER BY n DESC' },
+}
+
+/** A fixed BigQuery query: the SQL, the step's Takes as @parameters, its limits, and a free cost estimate. */
+function BigQueryQuery() {
+  const { step, set, p, name, draft } = useStep()
+  const sql: string = step.operation.bigquery?.sql ?? ''
+  const [est, setEst] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const params = Object.fromEntries(Object.entries(step.takes ?? {}).map(([k, v]: [string, any]) => {
+    const opt = typeof v === 'string' && v.startsWith('run.') ? draft.run_options?.[v.slice(4)] : null
+    return [k, opt?.default ?? null]
+  }))
+  const estimate = async () => {
+    setBusy(true); setEst(null)
+    try { setEst(await api.bqEstimate(name, { sql, connection: step.uses?.connection ?? '', params, datasets: step.uses?.datasets, max_bytes: step.uses?.max_bytes })) }
+    catch (e: any) { setEst({ ok: false, error: e.message }) } finally { setBusy(false) }
+  }
+  return (
+    <>
+      <Block title="Uses"><UsesEditor actions={['query']} limits={['datasets', 'max_bytes', 'max_rows']} /></Block>
+      <Block title="SQL" aside="GoogleSQL; a single SELECT">
+        <textarea className="textarea cel js-code" rows={Math.min(20, Math.max(6, sql.split('\n').length + 1))} value={sql} spellCheck={false}
+          onChange={(e) => set(['operation', 'bigquery', 'sql'], e.target.value)} aria-label="SQL" />
+        <FieldErrors path={p('operation', 'bigquery')} />
+        <span className="faint">Name tables in full: <code className="mono">`project.dataset.table`</code>. Each of Takes is a parameter: <code className="mono">@name</code>.
+          No model writes this query, so the same inputs always run the same SQL. Before it runs, the service checks it reads only the data above and stays under the byte limit.</span>
+        <span className="row" style={{ gap: 12 }}>
+          <button className="btn small" disabled={busy || !sql.trim() || !step.uses?.connection} onClick={estimate}><Icon name="database" size={12} />{busy ? 'Estimating…' : 'Estimate cost'}</button>
+          <span className="faint">A free dry run on the real data{Object.keys(params).length ? ', with run options at their defaults' : ''}.</span>
+        </span>
+        {est && (est.ok
+          ? <div className="stack" style={{ gap: 3 }}>
+              <span className="muted">Reads {est.tables.join(', ') || 'no tables'} · scans <strong>{est.human}</strong> · about <strong>${est.cost_usd.toFixed(4)}</strong> · limit {est.limit}</span>
+              {est.problems.map((x: string, i: number) => <span key={i} className="field-error">{x}</span>)}
+              {!est.problems.length && <span className="faint">Within this step's limits.</span>}
+            </div>
+          : <span className="field-error">{est.error}</span>)}
+      </Block>
+      <Block title="Returns" aside="rows, row_count, truncated, bytes_billed, cost_usd">
+        <span className="faint">Give <code className="mono">rows</code> a record type so later steps can pick its fields.</span>
+        <FieldsEditor fields={step.returns ?? {}} path={[...p().split('.'), 'returns']} onChange={(f) => set(['returns'], f)} />
+      </Block>
+    </>
+  )
 }
 
 /** A JavaScript step: the code, and trying it on sample inputs (or the inputs this step had in the latest run). */
@@ -150,12 +195,16 @@ function Tidy() {
 }
 
 export default function BuiltIn() {
-  const { step, set, p, inside } = useStep()
+  const { step, set, p, inside, draft } = useStep()
   const op = Object.keys(step.operation ?? {})[0] ?? 'lookup'
   const conf = step.operation?.[op] ?? {}
   const setOp = (next: string) => {
     set(['operation'], { [next]: OP_DEFAULT[next] }); set(['takes'], OP_TAKES[next])
-    set(['returns'], next === 'javascript' ? { count: { type: 'number' } } : undefined)
+    set(['returns'], next === 'javascript' ? { count: { type: 'number' } } : next === 'bigquery' ? { rows: { type: 'text' } } : undefined)
+    if (next === 'bigquery') {
+      const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'bigquery')?.[0]
+      set(['uses'], conn ? { connection: conn, actions: ['query'], max_bytes: '1GB' } : undefined)
+    } else if (step.operation && 'bigquery' in step.operation) set(['uses'], undefined)
   }
   return (
     <>
@@ -180,7 +229,8 @@ export default function BuiltIn() {
         </Block>
       )}
       {op === 'three-way-match' && <Block title="Three-way match"><span className="muted">Prices against the purchase order; quantities against the order and, for goods, what was received. Returns <code className="mono">passed</code> and <code className="mono">differences</code>.</span></Block>}
-      <Block title="Takes"><TakesEditor fixed={op === 'javascript' ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
+      <Block title="Takes" aside={op === 'bigquery' ? 'the query\u2019s @parameters' : undefined}><TakesEditor fixed={op === 'javascript' || op === 'bigquery' ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
+      {op === 'bigquery' && <BigQueryQuery />}
       {op === 'javascript' && <JavaScript />}
       {(op === 'lookup' || op === 'filter-rows') && <Block title="Can use"><UsesEditor actions={['read']} limits={['sheets']} /></Block>}
       {inside && (

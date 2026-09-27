@@ -1,0 +1,62 @@
+[
+{
+"month": "2025-01",
+"total_orders": 58,
+"total_revenue": 44120.5
+},
+{
+"month": "2025-02",
+"total_orders": 61,
+"total_revenue": 46210.0
+},
+{
+"month": "2025-03",
+"total_orders": 66,
+"total_revenue": 50880.2
+},
+{
+"month": "2025-04",
+"total_orders": 60,
+"total_revenue": 45300.0
+},
+{
+"month": "2025-05",
+"total_orders": 63,
+"total_revenue": 47950.4
+},
+{
+"month": "2025-06",
+"total_orders": 59,
+"total_revenue": 44800.9
+},
+{
+"month": "2025-07",
+"total_orders": 64,
+"total_revenue": 48120.0
+},
+{
+"month": "2025-08",
+"total_orders": 41,
+"total_revenue": 19750.3
+},
+{
+"month": "2025-09",
+"total_orders": 62,
+"total_revenue": 46900.1
+},
+{
+"month": "2025-10",
+"total_orders": 67,
+"total_revenue": 51230.6
+},
+{
+"month": "2025-11",
+"total_orders": 60,
+"total_revenue": 45010.0
+},
+{
+"month": "2025-12",
+"total_orders": 70,
+"total_revenue": 53400.8
+}
+]

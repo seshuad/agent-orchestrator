@@ -198,6 +198,23 @@ service on 8700).
 | Runs | Every run, live while it runs: outcome, what an Act step did or would do, the service's checks, and a readable log with the planner's reasons, tool calls, costs, and plain-language failures |
 | Approvals | Runs waiting for a person; the choices are on the run's page and go to Conductor's gate |
 
+### BigQuery
+
+A built-in connector (Connections → Connectors → Add connector → BigQuery). The admin sets how it signs in (a service
+account key, the gcloud account on the service's machine, or its default credentials), the billing project and
+location, the data agents may read (`dataset`, `project.dataset` or `project.dataset.table`), a byte cap per query and
+a monthly budget. Steps use it three ways:
+
+- **Built-in "BigQuery query"**: fixed SQL with the step's Takes as `@parameters`. No model writes the SQL. Estimate
+  cost does a free dry run on the real data.
+- **Ask steps** get `run_query`, `list_tables` and `get_schema` for questions that can't be written ahead.
+- **Act steps** can insert rows into tables they name (append only).
+
+Every query is checked before it runs: a dry run must show a single SELECT, reading only the step's data (within the
+connector's), scanning under its byte cap and within the budget left. It then runs with BigQuery's own
+`maximum_bytes_billed` and labels for the agent, run and step. Results are capped at the step's `max_rows`. Test runs
+query sample tables (`<sample set>/bigquery/<dataset>/<table>.json`) in DuckDB, with the same checks.
+
 ### JavaScript steps
 
 A Built-in step can run your own JavaScript: the body of a function that gets `inputs` (the step's Takes, by name)

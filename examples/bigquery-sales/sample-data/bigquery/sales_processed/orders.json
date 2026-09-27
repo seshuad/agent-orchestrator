@@ -1,0 +1,1082 @@
+[
+{
+"order_id": "SO-1001",
+"order_date": "2026-08-05",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 35,
+"amount": 244.03
+},
+{
+"order_id": "SO-1002",
+"order_date": "2026-06-17",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 28,
+"amount": 1015.25
+},
+{
+"order_id": "SO-1003",
+"order_date": "2026-07-03",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C027",
+"quantity": 37,
+"amount": 314.65
+},
+{
+"order_id": "SO-1004",
+"order_date": "2026-07-21",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C019",
+"quantity": 26,
+"amount": 138.02
+},
+{
+"order_id": "SO-1005",
+"order_date": "2026-07-02",
+"region": "East",
+"product": "Label maker",
+"customer_id": "C014",
+"quantity": 10,
+"amount": 1306.83
+},
+{
+"order_id": "SO-1006",
+"order_date": "2026-08-18",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C019",
+"quantity": 37,
+"amount": 1540.61
+},
+{
+"order_id": "SO-1007",
+"order_date": "2026-08-04",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C002",
+"quantity": 40,
+"amount": 510.18
+},
+{
+"order_id": "SO-1008",
+"order_date": "2026-09-25",
+"region": "Central",
+"product": "Desk lamp",
+"customer_id": "C019",
+"quantity": 30,
+"amount": 880.57
+},
+{
+"order_id": "SO-1009",
+"order_date": "2026-07-26",
+"region": "East",
+"product": "Printer paper",
+"customer_id": "C003",
+"quantity": 37,
+"amount": 734.59
+},
+{
+"order_id": "SO-1010",
+"order_date": "2026-09-11",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C020",
+"quantity": 5,
+"amount": 301.0
+},
+{
+"order_id": "SO-1011",
+"order_date": "2026-09-06",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C030",
+"quantity": 32,
+"amount": 1023.64
+},
+{
+"order_id": "SO-1012",
+"order_date": "2026-06-25",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C023",
+"quantity": 23,
+"amount": 1434.6
+},
+{
+"order_id": "SO-1013",
+"order_date": "2026-09-03",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C016",
+"quantity": 5,
+"amount": 164.39
+},
+{
+"order_id": "SO-1014",
+"order_date": "2026-08-21",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C023",
+"quantity": 25,
+"amount": 2131.16
+},
+{
+"order_id": "SO-1015",
+"order_date": "2026-08-01",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C006",
+"quantity": 40,
+"amount": 298.69
+},
+{
+"order_id": "SO-1016",
+"order_date": "2026-06-07",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C024",
+"quantity": 16,
+"amount": 967.0
+},
+{
+"order_id": "SO-1017",
+"order_date": "2026-09-03",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C013",
+"quantity": 36,
+"amount": 681.26
+},
+{
+"order_id": "SO-1018",
+"order_date": "2026-07-27",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C009",
+"quantity": 27,
+"amount": 2367.79
+},
+{
+"order_id": "SO-1019",
+"order_date": "2026-09-08",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C006",
+"quantity": 10,
+"amount": 572.06
+},
+{
+"order_id": "SO-1020",
+"order_date": "2026-07-01",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C006",
+"quantity": 17,
+"amount": 691.0
+},
+{
+"order_id": "SO-1021",
+"order_date": "2026-07-14",
+"region": "Central",
+"product": "Monitor arm",
+"customer_id": "C019",
+"quantity": 21,
+"amount": 2288.37
+},
+{
+"order_id": "SO-1022",
+"order_date": "2026-06-15",
+"region": "South",
+"product": "Desk lamp",
+"customer_id": "C013",
+"quantity": 26,
+"amount": 266.42
+},
+{
+"order_id": "SO-1023",
+"order_date": "2026-09-02",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C007",
+"quantity": 29,
+"amount": 406.28
+},
+{
+"order_id": "SO-1024",
+"order_date": "2026-08-20",
+"region": "West",
+"product": "Toner cartridge",
+"customer_id": "C001",
+"quantity": 37,
+"amount": 380.01
+},
+{
+"order_id": "SO-1025",
+"order_date": "2026-06-12",
+"region": "West",
+"product": "Toner cartridge",
+"customer_id": "C028",
+"quantity": 14,
+"amount": 1481.48
+},
+{
+"order_id": "SO-1026",
+"order_date": "2026-07-21",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C020",
+"quantity": 24,
+"amount": 1148.48
+},
+{
+"order_id": "SO-1027",
+"order_date": "2026-06-28",
+"region": "South",
+"product": "Desk lamp",
+"customer_id": "C016",
+"quantity": 31,
+"amount": 762.21
+},
+{
+"order_id": "SO-1028",
+"order_date": "2026-07-04",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C016",
+"quantity": 11,
+"amount": 1248.88
+},
+{
+"order_id": "SO-1029",
+"order_date": "2026-07-17",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C023",
+"quantity": 35,
+"amount": 2195.67
+},
+{
+"order_id": "SO-1030",
+"order_date": "2026-08-21",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C017",
+"quantity": 24,
+"amount": 2181.66
+},
+{
+"order_id": "SO-1031",
+"order_date": "2026-08-25",
+"region": "East",
+"product": "Monitor arm",
+"customer_id": "C018",
+"quantity": 33,
+"amount": 804.6
+},
+{
+"order_id": "SO-1032",
+"order_date": "2026-07-20",
+"region": "East",
+"product": "Printer paper",
+"customer_id": "C027",
+"quantity": 26,
+"amount": 1780.9
+},
+{
+"order_id": "SO-1033",
+"order_date": "2026-07-07",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C024",
+"quantity": 2,
+"amount": 2375.26
+},
+{
+"order_id": "SO-1034",
+"order_date": "2026-08-16",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C023",
+"quantity": 39,
+"amount": 2296.51
+},
+{
+"order_id": "SO-1035",
+"order_date": "2026-09-26",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C003",
+"quantity": 15,
+"amount": 263.13
+},
+{
+"order_id": "SO-1036",
+"order_date": "2026-09-07",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C016",
+"quantity": 40,
+"amount": 2364.89
+},
+{
+"order_id": "SO-1037",
+"order_date": "2026-06-16",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C027",
+"quantity": 8,
+"amount": 2185.27
+},
+{
+"order_id": "SO-1038",
+"order_date": "2026-07-16",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C026",
+"quantity": 22,
+"amount": 226.46
+},
+{
+"order_id": "SO-1039",
+"order_date": "2026-09-15",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C024",
+"quantity": 11,
+"amount": 424.61
+},
+{
+"order_id": "SO-1040",
+"order_date": "2026-07-01",
+"region": "East",
+"product": "Monitor arm",
+"customer_id": "C029",
+"quantity": 30,
+"amount": 1939.47
+},
+{
+"order_id": "SO-1041",
+"order_date": "2026-07-20",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C005",
+"quantity": 36,
+"amount": 1324.92
+},
+{
+"order_id": "SO-1042",
+"order_date": "2026-06-01",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C024",
+"quantity": 9,
+"amount": 1052.47
+},
+{
+"order_id": "SO-1043",
+"order_date": "2026-07-27",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 14,
+"amount": 717.26
+},
+{
+"order_id": "SO-1044",
+"order_date": "2026-07-25",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C018",
+"quantity": 27,
+"amount": 2005.38
+},
+{
+"order_id": "SO-1045",
+"order_date": "2026-06-24",
+"region": "Central",
+"product": "Desk lamp",
+"customer_id": "C022",
+"quantity": 38,
+"amount": 1959.81
+},
+{
+"order_id": "SO-1046",
+"order_date": "2026-09-27",
+"region": "East",
+"product": "Monitor arm",
+"customer_id": "C005",
+"quantity": 34,
+"amount": 1235.1
+},
+{
+"order_id": "SO-1047",
+"order_date": "2026-09-25",
+"region": "East",
+"product": "Monitor arm",
+"customer_id": "C001",
+"quantity": 10,
+"amount": 430.19
+},
+{
+"order_id": "SO-1048",
+"order_date": "2026-09-20",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C002",
+"quantity": 21,
+"amount": 1643.95
+},
+{
+"order_id": "SO-1049",
+"order_date": "2026-09-26",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C002",
+"quantity": 16,
+"amount": 475.31
+},
+{
+"order_id": "SO-1050",
+"order_date": "2026-06-25",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C015",
+"quantity": 36,
+"amount": 86.32
+},
+{
+"order_id": "SO-1051",
+"order_date": "2026-06-15",
+"region": "Central",
+"product": "Monitor arm",
+"customer_id": "C017",
+"quantity": 39,
+"amount": 1238.94
+},
+{
+"order_id": "SO-1052",
+"order_date": "2026-08-15",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C008",
+"quantity": 34,
+"amount": 2106.15
+},
+{
+"order_id": "SO-1053",
+"order_date": "2026-08-18",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C005",
+"quantity": 27,
+"amount": 309.46
+},
+{
+"order_id": "SO-1054",
+"order_date": "2026-09-11",
+"region": "West",
+"product": "Printer paper",
+"customer_id": "C014",
+"quantity": 5,
+"amount": 526.2
+},
+{
+"order_id": "SO-1055",
+"order_date": "2026-08-26",
+"region": "West",
+"product": "Printer paper",
+"customer_id": "C023",
+"quantity": 24,
+"amount": 360.29
+},
+{
+"order_id": "SO-1056",
+"order_date": "2026-07-15",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C013",
+"quantity": 32,
+"amount": 407.45
+},
+{
+"order_id": "SO-1057",
+"order_date": "2026-07-06",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C013",
+"quantity": 22,
+"amount": 1022.64
+},
+{
+"order_id": "SO-1058",
+"order_date": "2026-08-11",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C001",
+"quantity": 22,
+"amount": 1338.64
+},
+{
+"order_id": "SO-1059",
+"order_date": "2026-09-23",
+"region": "West",
+"product": "Desk lamp",
+"customer_id": "C011",
+"quantity": 34,
+"amount": 1504.95
+},
+{
+"order_id": "SO-1060",
+"order_date": "2026-06-04",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 17,
+"amount": 667.17
+},
+{
+"order_id": "SO-1061",
+"order_date": "2026-07-09",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C028",
+"quantity": 17,
+"amount": 986.16
+},
+{
+"order_id": "SO-1062",
+"order_date": "2026-09-23",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 4,
+"amount": 1923.02
+},
+{
+"order_id": "SO-1063",
+"order_date": "2026-07-14",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C001",
+"quantity": 6,
+"amount": 1927.88
+},
+{
+"order_id": "SO-1064",
+"order_date": "2026-06-20",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 8,
+"amount": 1099.98
+},
+{
+"order_id": "SO-1065",
+"order_date": "2026-08-18",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C020",
+"quantity": 9,
+"amount": 122.83
+},
+{
+"order_id": "SO-1066",
+"order_date": "2026-07-04",
+"region": "East",
+"product": "Label maker",
+"customer_id": "C002",
+"quantity": 12,
+"amount": 500.21
+},
+{
+"order_id": "SO-1067",
+"order_date": "2026-08-21",
+"region": "Central",
+"product": "Monitor arm",
+"customer_id": "C025",
+"quantity": 14,
+"amount": 710.11
+},
+{
+"order_id": "SO-1068",
+"order_date": "2026-07-09",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 3,
+"amount": 56.52
+},
+{
+"order_id": "SO-1069",
+"order_date": "2026-07-17",
+"region": "South",
+"product": "Printer paper",
+"customer_id": "C030",
+"quantity": 29,
+"amount": 272.95
+},
+{
+"order_id": "SO-1070",
+"order_date": "2026-09-22",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C027",
+"quantity": 26,
+"amount": 2329.34
+},
+{
+"order_id": "SO-1071",
+"order_date": "2026-08-23",
+"region": "East",
+"product": "Printer paper",
+"customer_id": "C011",
+"quantity": 13,
+"amount": 2000.84
+},
+{
+"order_id": "SO-1072",
+"order_date": "2026-07-13",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C027",
+"quantity": 9,
+"amount": 53.93
+},
+{
+"order_id": "SO-1073",
+"order_date": "2026-08-14",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 25,
+"amount": 2091.88
+},
+{
+"order_id": "SO-1074",
+"order_date": "2026-08-20",
+"region": "East",
+"product": "Label maker",
+"customer_id": "C002",
+"quantity": 30,
+"amount": 461.14
+},
+{
+"order_id": "SO-1075",
+"order_date": "2026-08-15",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C012",
+"quantity": 22,
+"amount": 2334.84
+},
+{
+"order_id": "SO-1076",
+"order_date": "2026-08-08",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C007",
+"quantity": 23,
+"amount": 455.44
+},
+{
+"order_id": "SO-1077",
+"order_date": "2026-08-13",
+"region": "West",
+"product": "Desk lamp",
+"customer_id": "C009",
+"quantity": 33,
+"amount": 1581.32
+},
+{
+"order_id": "SO-1078",
+"order_date": "2026-07-17",
+"region": "West",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 6,
+"amount": 362.4
+},
+{
+"order_id": "SO-1079",
+"order_date": "2026-06-13",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C010",
+"quantity": 15,
+"amount": 221.07
+},
+{
+"order_id": "SO-1080",
+"order_date": "2026-07-22",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C024",
+"quantity": 32,
+"amount": 375.72
+},
+{
+"order_id": "SO-1081",
+"order_date": "2026-07-02",
+"region": "South",
+"product": "Monitor arm",
+"customer_id": "C005",
+"quantity": 34,
+"amount": 1811.82
+},
+{
+"order_id": "SO-1082",
+"order_date": "2026-06-27",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C001",
+"quantity": 3,
+"amount": 336.76
+},
+{
+"order_id": "SO-1083",
+"order_date": "2026-08-04",
+"region": "South",
+"product": "Desk lamp",
+"customer_id": "C018",
+"quantity": 4,
+"amount": 1514.09
+},
+{
+"order_id": "SO-1084",
+"order_date": "2026-07-16",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C015",
+"quantity": 5,
+"amount": 1800.87
+},
+{
+"order_id": "SO-1085",
+"order_date": "2026-06-22",
+"region": "West",
+"product": "Desk lamp",
+"customer_id": "C009",
+"quantity": 5,
+"amount": 2033.8
+},
+{
+"order_id": "SO-1086",
+"order_date": "2026-07-24",
+"region": "East",
+"product": "Printer paper",
+"customer_id": "C024",
+"quantity": 30,
+"amount": 1195.6
+},
+{
+"order_id": "SO-1087",
+"order_date": "2026-09-03",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C025",
+"quantity": 3,
+"amount": 1488.4
+},
+{
+"order_id": "SO-1088",
+"order_date": "2026-07-03",
+"region": "East",
+"product": "Label maker",
+"customer_id": "C009",
+"quantity": 20,
+"amount": 1498.34
+},
+{
+"order_id": "SO-1089",
+"order_date": "2026-07-01",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C016",
+"quantity": 18,
+"amount": 2334.57
+},
+{
+"order_id": "SO-1090",
+"order_date": "2026-06-23",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C010",
+"quantity": 34,
+"amount": 699.59
+},
+{
+"order_id": "SO-1091",
+"order_date": "2026-09-15",
+"region": "West",
+"product": "Monitor arm",
+"customer_id": "C007",
+"quantity": 20,
+"amount": 2347.94
+},
+{
+"order_id": "SO-1092",
+"order_date": "2026-09-01",
+"region": "Central",
+"product": "Desk lamp",
+"customer_id": "C003",
+"quantity": 33,
+"amount": 2324.1
+},
+{
+"order_id": "SO-1093",
+"order_date": "2026-09-09",
+"region": "South",
+"product": "Printer paper",
+"customer_id": "C030",
+"quantity": 14,
+"amount": 197.58
+},
+{
+"order_id": "SO-1094",
+"order_date": "2026-06-05",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C005",
+"quantity": 39,
+"amount": 1972.12
+},
+{
+"order_id": "SO-1095",
+"order_date": "2026-08-04",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C016",
+"quantity": 32,
+"amount": 957.91
+},
+{
+"order_id": "SO-1096",
+"order_date": "2026-07-01",
+"region": "South",
+"product": "Desk lamp",
+"customer_id": "C013",
+"quantity": 20,
+"amount": 1750.69
+},
+{
+"order_id": "SO-1097",
+"order_date": "2026-09-12",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C004",
+"quantity": 22,
+"amount": 24.14
+},
+{
+"order_id": "SO-1098",
+"order_date": "2026-08-27",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C030",
+"quantity": 13,
+"amount": 1717.0
+},
+{
+"order_id": "SO-1099",
+"order_date": "2026-08-09",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C013",
+"quantity": 25,
+"amount": 2397.13
+},
+{
+"order_id": "SO-1100",
+"order_date": "2026-06-12",
+"region": "South",
+"product": "Label maker",
+"customer_id": "C028",
+"quantity": 4,
+"amount": 687.92
+},
+{
+"order_id": "SO-1101",
+"order_date": "2026-06-27",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C008",
+"quantity": 18,
+"amount": 1058.25
+},
+{
+"order_id": "SO-1102",
+"order_date": "2026-08-07",
+"region": "Central",
+"product": "Desk lamp",
+"customer_id": "C029",
+"quantity": 2,
+"amount": 1952.47
+},
+{
+"order_id": "SO-1103",
+"order_date": "2026-09-18",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C002",
+"quantity": 27,
+"amount": 1093.05
+},
+{
+"order_id": "SO-1104",
+"order_date": "2026-07-21",
+"region": "Central",
+"product": "Desk lamp",
+"customer_id": "C002",
+"quantity": 36,
+"amount": 323.0
+},
+{
+"order_id": "SO-1105",
+"order_date": "2026-09-14",
+"region": "Central",
+"product": "Label maker",
+"customer_id": "C010",
+"quantity": 17,
+"amount": 1778.9
+},
+{
+"order_id": "SO-1106",
+"order_date": "2026-08-13",
+"region": "East",
+"product": "Label maker",
+"customer_id": "C016",
+"quantity": 36,
+"amount": 1611.92
+},
+{
+"order_id": "SO-1107",
+"order_date": "2026-06-06",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C007",
+"quantity": 33,
+"amount": 2176.18
+},
+{
+"order_id": "SO-1108",
+"order_date": "2026-09-18",
+"region": "East",
+"product": "Desk lamp",
+"customer_id": "C030",
+"quantity": 22,
+"amount": 2391.61
+},
+{
+"order_id": "SO-1109",
+"order_date": "2026-09-14",
+"region": "East",
+"product": "Monitor arm",
+"customer_id": "C007",
+"quantity": 16,
+"amount": 235.9
+},
+{
+"order_id": "SO-1110",
+"order_date": "2026-08-18",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C008",
+"quantity": 24,
+"amount": 634.89
+},
+{
+"order_id": "SO-1111",
+"order_date": "2026-07-01",
+"region": "South",
+"product": "Desk lamp",
+"customer_id": "C014",
+"quantity": 34,
+"amount": 519.81
+},
+{
+"order_id": "SO-1112",
+"order_date": "2026-08-11",
+"region": "West",
+"product": "Desk lamp",
+"customer_id": "C009",
+"quantity": 37,
+"amount": 2323.09
+},
+{
+"order_id": "SO-1113",
+"order_date": "2026-07-22",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C009",
+"quantity": 16,
+"amount": 935.25
+},
+{
+"order_id": "SO-1114",
+"order_date": "2026-09-14",
+"region": "Central",
+"product": "Toner cartridge",
+"customer_id": "C005",
+"quantity": 3,
+"amount": 1031.98
+},
+{
+"order_id": "SO-1115",
+"order_date": "2026-09-19",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 26,
+"amount": 2233.97
+},
+{
+"order_id": "SO-1116",
+"order_date": "2026-09-15",
+"region": "East",
+"product": "Toner cartridge",
+"customer_id": "C008",
+"quantity": 10,
+"amount": 381.92
+},
+{
+"order_id": "SO-1117",
+"order_date": "2026-06-27",
+"region": "South",
+"product": "Toner cartridge",
+"customer_id": "C018",
+"quantity": 3,
+"amount": 23.25
+},
+{
+"order_id": "SO-1118",
+"order_date": "2026-07-08",
+"region": "West",
+"product": "Label maker",
+"customer_id": "C005",
+"quantity": 17,
+"amount": 1277.24
+},
+{
+"order_id": "SO-1119",
+"order_date": "2026-09-23",
+"region": "West",
+"product": "Toner cartridge",
+"customer_id": "C003",
+"quantity": 20,
+"amount": 1268.16
+},
+{
+"order_id": "SO-1120",
+"order_date": "2026-07-13",
+"region": "Central",
+"product": "Printer paper",
+"customer_id": "C026",
+"quantity": 39,
+"amount": 22.74
+}
+]

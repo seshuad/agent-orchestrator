@@ -51,7 +51,8 @@ def test_conductor_accepts_the_compiled_workflow(name, tmp_path):
 
 def test_one_limits_token_per_connection_use():
     limits = compile_agent(definition.load(AGENTS["invoice-check"])).limits
-    assert limits["LIMITS_GMAIL_READ_INVOICE"] == {"connection": "gmail", "actions": ["open"], "only_message": "$input.email_id"}
+    assert limits["LIMITS_GMAIL_READ_INVOICE"] == {"connection": "gmail", "actions": ["open"], "only_message": "$input.email_id",
+                                                  "agent": "invoice-check"}
     assert limits["LIMITS_GMAIL_SEARCH_VENDOR_EMAILS"]["from_domain"] == "$input.sender_domain"
     assert limits["LIMITS_SHEETS_ADD_TO_PAYMENT_QUEUE"]["actions"] == ["append_row"]
 

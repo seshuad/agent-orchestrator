@@ -31,6 +31,7 @@ TYPES: dict[str, dict[str, Any]] = {
                "reach": "Gmail · Google Sheets · Google Calendar"},
     "github": {"name": "GitHub", "icon": "code", "services": ["github"], "reach": "Issues · pull requests · files, read only"},
     "mcp": {"name": "MCP server", "icon": "plug", "services": ["mcp"], "reach": "Any system with an MCP server"},
+    "bigquery": {"name": "BigQuery", "icon": "database", "services": ["bigquery"], "reach": "BigQuery: read queries, optionally inserts"},
 }
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -96,6 +97,9 @@ def public(connector: dict[str, Any], vault_dir: Path, accounts: list[dict[str, 
 
 
 def reach(connector: dict[str, Any]) -> str:
+    if connector["type"] == "bigquery":
+        st = connector.get("settings") or {}
+        return f"BigQuery · {st.get('billing_project') or 'no project yet'}" + (f" · {', '.join(st.get('allowed') or [])}" if st.get("allowed") else "")
     if connector["type"] == "mcp":
         server = (connector.get("settings") or {}).get("server") or {}
         where = server.get("url", "").split("//")[-1].split("/")[0] if server.get("transport") == "url" else server.get("command", "")
@@ -111,6 +115,8 @@ def sign_in_kind(connector: dict[str, Any] | None) -> str:
         return "google"
     if connector["type"] == "github":
         return "token"
+    if connector["type"] == "bigquery":
+        return "shared"
     kind = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "none")
     return {"oauth": "oauth", "bearer": "shared", "header": "shared"}.get(kind, "none")
 
@@ -157,6 +163,29 @@ def test_github(connector: dict[str, Any]) -> tuple[bool, str]:
         return False, f"{api} answered {exc.code}."
     except urllib.error.URLError as exc:
         return False, f"Couldn't reach {api}: {exc.reason}"
+
+
+def test_bigquery(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str]:
+    """Who it signs in as, and a free dry run against each allowed dataset."""
+    import os
+    os.environ.setdefault("AGENT_SERVICE_VAULT", str(vault_dir))
+    from ..runtime import bigquery_api
+    st = connector.get("settings") or {}
+    if not st.get("billing_project"):
+        return False, "Enter the billing project first."
+    up = {**st, "connector": connector["id"]}
+    try:
+        who = bigquery_api.identity(up)
+        live = bigquery_api._Live(up)
+        live.dry_run("SELECT 1", {})
+        seen = []
+        for ref in st.get("allowed") or []:
+            project, dataset, _ = bigquery_api.scope_of(ref, st["billing_project"])
+            tables = [t.table_id for t in live.client.list_tables(f"{project}.{dataset}", max_results=100)]
+            seen.append(f"{project}.{dataset} ({len(tables)} tables)")
+    except Exception as exc:
+        return False, f"BigQuery refused: {str(exc).splitlines()[0][:240]}"
+    return True, f"Signed in as {who}; billing {st['billing_project']}." + (f" Can see {', '.join(seen)}." if seen else " No data allowed yet.")
 
 
 def mcp_credentials(connector: dict[str, Any], vault_dir: Path, account: str | None = None) -> dict[str, Any]:

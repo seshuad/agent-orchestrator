@@ -705,3 +705,44 @@ def test_renaming_an_agent_carries_its_versions_runs_and_tests_over(api):
     again = api.post("/api/agents/invoice-matcher/runs", json={"version": 1, "email_id": "inv-northwind-2208", "scripted": True}).json()
     assert again["agent"] == "invoice-matcher"
     api.post(f"/api/runs/{again['id']}/stop")
+
+
+@needs_conductor
+def test_a_bigquery_query_step_runs_on_sample_tables(api, tmp_path):
+    c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
+        "auth": {"kind": "gcloud"}, "billing_project": "demo-project", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+    assert c["reach"].startswith("BigQuery · demo-project") and c["sign_in"] == "shared"
+    acct = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
+    assert acct["signed_in"] and acct["allowed"] == ["get_schema", "list_tables", "query"]
+    api.post("/api/agents", json={"name": "revenue", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/revenue").json()["draft"]
+    draft["run_options"] = {"min_amount": {"type": "number", "default": 100}}
+    draft["connections"] = {"bq": {"service": "bigquery", "permission": "read", "account": acct["id"]}}
+    draft["records"] = {"Region": {"fields": {"region": {"type": "text"}, "revenue": {"type": "number"}}}}
+    draft["steps"] = [
+        {"id": "by_region", "kind": "built-in", "name": "Revenue by region",
+         "operation": {"bigquery": {"sql": "SELECT region, ROUND(SUM(amount), 2) AS revenue FROM `demo-project.sales_processed.orders` "
+                                           "WHERE amount >= @min_amount GROUP BY region ORDER BY revenue DESC"}},
+         "takes": {"min_amount": "run.min_amount"}, "uses": {"connection": "bq", "actions": ["query"], "datasets": ["sales_processed"], "max_bytes": "1GB"},
+         "returns": {"rows": {"type": "list of Region"}}},
+        {"id": "ask", "kind": "ask", "name": "Explain", "model": "claude-sonnet-5", "instructions": "x", "task": "x",
+         "uses": {"connection": "bq", "actions": ["query", "get_schema"], "datasets": ["sales_processed"]}, "returns": {"summary": {"type": "text"}}},
+        {"id": "show", "kind": "built-in", "name": "Show", "operation": {"show": {}}, "takes": {"value": "by_region.rows"}}]
+    fb = api.put("/api/agents/revenue", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert "bigquery-ask__run_query" in fb["compiled"] and "sql-b64" in fb["compiled"]
+    refs = api.get("/api/agents/revenue/references?step=show").json()
+    assert any(r["ref"] == "by_region.rows" and r["type"] == "list of Region" for r in refs)
+    draft["steps"] = draft["steps"][:1] + draft["steps"][2:]                 # without the model step, for a scripted run
+    api.put("/api/agents/revenue", json={"draft": draft})
+    replay = tmp_path / "replay.yaml"
+    replay.write_text("{}\n")
+    from agent_service.server.store import Store
+    store = Store(tmp_path)
+    store.set_test_data("revenue", store.meta("revenue")["sample_data"], str(replay))
+    run = api.post("/api/agents/revenue/runs", json={"scripted": True, "inputs": {"min_amount": "500"}}).json()
+    d = finished(api, run["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    out = api.get(f"/api/runs/{run['id']}/steps/by_region/0").json()["output"]
+    assert out["row_count"] == 4 and set(out["rows"][0]) == {"region", "revenue"} and out["tables"] == ["demo-project.sales_processed.orders"]
+    assert api.get(f"/api/runs/{run['id']}").json()["data"]["text"] == "Sample data (Sales (BigQuery))"

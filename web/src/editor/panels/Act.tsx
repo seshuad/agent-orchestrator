@@ -5,20 +5,26 @@ import { ArgLimits, StepHeader, UsesEditor, useMcpTools, useStep } from './commo
 
 export default function Act() {
   const { step, set, p, refs, draft } = useStep()
-  const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : 'add_row'
+  const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : step.insert_rows ? 'insert_rows' : 'add_row'
   const mcpConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'mcp')?.[0]
+  const bqConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'bigquery')?.[0]
+  const ir: Json = step.insert_rows ?? {}
+  const irType = refs.find((r) => r.ref === ir.for_each)?.type.replace(/^list of /, '') ?? ''
+  const irFields = Object.keys(draft.records?.[irType]?.fields ?? {})
   const tools = useMcpTools(action === 'call_tool' ? step.uses?.connection : undefined)
   const ce: Json = step.create_events ?? {}
   const row: Json = step.add_row?.row ?? {}
   const yesNo = Object.entries(draft.run_options ?? {}).filter(([, o]: [string, any]) => o.type === 'yes/no').map(([k]) => `run.${k}`)
   const switchTo = (a: string) => {
-    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : 'google-sheets'
+    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : a === 'insert_rows' ? 'bigquery' : 'google-sheets'
     const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === service)?.[0] ?? ''
     set(['create_events'], a === 'create_events' ? { calendar: 'Personal', templates: { default: { title: '', starts: '{start}', ends: '{end}' } }, never_twice: { match_fields: [] } } : undefined)
     set(['add_row'], a === 'add_row' ? { sheet: '', row: {} } : undefined)
     set(['call_tool'], a === 'call_tool' ? { tool: '', arguments: {} } : undefined)
+    set(['insert_rows'], a === 'insert_rows' ? { table: '', row: {} } : undefined)
     set(['uses'], a === 'create_events' ? { connection: conn, actions: ['create_event'], calendar: 'Personal' }
-      : a === 'call_tool' ? { connection: conn, actions: [] } : { connection: conn, actions: ['append_row'], sheets: [] })
+      : a === 'call_tool' ? { connection: conn, actions: [] } : a === 'insert_rows' ? { connection: conn, actions: ['insert_rows'], tables: [] }
+      : { connection: conn, actions: ['append_row'], sheets: [] })
     set(['takes'], a === 'create_events' ? { records: '' } : undefined)
   }
   const ct: Json = step.call_tool ?? {}
@@ -41,10 +47,38 @@ export default function Act() {
     <>
       <StepHeader note="The only kind of step that changes the outside world, and it takes no text a model wrote: only checked fields." />
       <Block title="Does">
-        <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : [])]} value={action} onChange={switchTo}
-          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool' }} />
+        <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : []), ...(bqConn || action === 'insert_rows' ? ['insert_rows'] : [])]} value={action} onChange={switchTo}
+          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery' }} />
       </Block>
-      {action === 'call_tool' ? (
+      {action === 'insert_rows' ? (
+        <>
+          <Block title="Uses"><UsesEditor actions={['insert_rows']} limits={[]} /></Block>
+          <Block title="Insert">
+            <span className="row"><span className="muted">Into table</span>
+              <input className="input mono grow" value={ir.table ?? ''} placeholder="project.dataset.table" aria-label="Table"
+                onChange={(e) => { set(['insert_rows', 'table'], e.target.value); set(['uses', 'tables'], e.target.value ? [e.target.value] : []) }} /></span>
+            <span className="row"><span className="muted">For each</span>
+              <RefPicker value={ir.for_each ?? ''} refs={refs.filter((r) => r.type.startsWith('list'))} onChange={(v) => set(['insert_rows', 'for_each'], v || undefined)} path={p('insert_rows', 'for_each')} /></span>
+            <span className="faint">One row per item; columns fill from each item's checked fields. Append only: it never updates or deletes.</span>
+            {irFields.length > 0 && <span className="row" style={{ gap: 4 }}><span className="faint">Fields of {irType}:</span>{irFields.map((f) => <code key={f} className="ref">{`{${f}}`}</code>)}</span>}
+            {Object.entries(ir.row ?? {}).map(([col, value]) => (
+              <span key={col} className="row" style={{ flexWrap: 'nowrap' }}>
+                <code className="mono" style={{ width: 130, flex: 'none' }}>{col}</code>
+                <input className="input cel grow" value={value as string} aria-label={col} placeholder="{field}" onChange={(e) => set(['insert_rows', 'row', col], e.target.value)} />
+                <button className="icon-btn" aria-label={`Remove ${col}`} onClick={() => { const c = { ...ir.row }; delete c[col]; set(['insert_rows', 'row'], c) }}><Icon name="x" size={12} /></button>
+              </span>
+            ))}
+            <span className="row"><input className="input" placeholder="column name" aria-label="Column name"
+              onKeyDown={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (e.key === 'Enter' && v) { set(['insert_rows', 'row', v], `{${v}}`); (e.target as HTMLInputElement).value = '' } }} />
+              <span className="faint">Enter adds a column</span></span>
+            {irFields.length > 0 && Object.keys(ir.row ?? {}).length === 0 && (
+              <button className="link" onClick={() => set(['insert_rows', 'row'], Object.fromEntries(irFields.map((f) => [f, `{${f}}`])))}>
+                <Icon name="plus" size={13} width={2} />A column for every field of {irType}</button>
+            )}
+            <FieldErrors path={p('insert_rows')} />
+          </Block>
+        </>
+      ) : action === 'call_tool' ? (
         <>
           <Block title="Uses">
             <span className="row"><Select value={step.uses?.connection ?? ''} options={Object.entries(draft.connections ?? {}).filter(([, c]: [string, any]) => c.service === 'mcp').map(([k]) => k)}
@@ -76,7 +110,7 @@ export default function Act() {
           </Block>
         </>
       ) : <Block title="Uses"><UsesEditor actions={action === 'create_events' ? ['create_event'] : ['append_row']} limits={action === 'create_events' ? ['calendar'] : ['sheets']} /></Block>}
-      {action === 'call_tool' ? null : action === 'create_events' ? (
+      {action === 'call_tool' || action === 'insert_rows' ? null : action === 'create_events' ? (
         <>
           <Block title="For each"><RefPicker value={step.takes?.records ?? ''} refs={refs} onChange={(v) => set(['takes', 'records'], v)} path={p('takes', 'records')} />
             <span className="faint">e.g. <code className="mono">approve_trips.approved[*].bookings</code>: every booking in the approved trips.</span></Block>

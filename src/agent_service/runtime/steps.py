@@ -280,6 +280,20 @@ def call_tools(tool: str, arguments: dict, dry_run: bool, data: dict) -> dict:
     return {"called": asyncio.run(run()), "would_call": []}
 
 
+# ------------------------------------------------------------------ BigQuery
+
+def bigquery(sql: str, data: dict) -> dict:
+    """A fixed query, with the step's Takes as @parameters, through the gateway's checks."""
+    conn = gateway.connect("bigquery")
+    return gateway.call(conn, "bigquery", "query", {"sql": sql, "params": {k: v for k, v in data.items() if v is not None}})
+
+
+def insert_rows(table: str, row: dict, dry_run: bool, data: dict) -> dict:
+    conn = gateway.connect("bigquery")
+    rows = [{col: _fill_value(tpl, rec) if isinstance(tpl, str) else tpl for col, tpl in row.items()} for rec in data.get("records", [])]
+    return gateway.call(conn, "bigquery", "insert_rows", {"table": table, "rows": rows, "dry_run": dry_run})
+
+
 # ------------------------------------------------------------------ JavaScript
 
 JS_TIME_LIMIT = 2                 # seconds of JavaScript per step run
@@ -343,7 +357,7 @@ def show(data: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -356,6 +370,8 @@ def main() -> None:
     p.add_argument("--row", help="add-rows: column -> template over each record, as JSON.")
     p.add_argument("--tool", help="call-tools: the MCP connector's act tool.")
     p.add_argument("--code-b64", help="javascript: the function body, base64.")
+    p.add_argument("--sql-b64", help="bigquery: the query, base64.")
+    p.add_argument("--table", help="insert-rows: the BigQuery table.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
     a = p.parse_args()
@@ -377,6 +393,17 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation in ("bigquery", "insert-rows"):
+        import base64
+        try:
+            out = (bigquery(base64.b64decode(a.sql_b64).decode(), data) if a.operation == "bigquery"
+                   else insert_rows(a.table, json.loads(a.row or "{}"), a.dry_run == "true", data))
+        except gateway.Refused as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            sys.exit(f"Refused: {exc}")
+        except Exception as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            sys.exit(f"BigQuery failed: {str(exc).splitlines()[0][:400]}")
     elif a.operation == "javascript":
         import base64
         try:

@@ -24,9 +24,10 @@ export default function Ask() {
       <Block title="Can use">
         <UsesEditor mcpTools={service === 'mcp' ? mcpTools : undefined}
           actions={service === 'mcp' ? mcpTools.filter((t) => t.treat === 'read').map((t) => t.name)
-            : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read'] : ['search', 'open']}
+            : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read']
+            : service === 'bigquery' ? ['query', 'list_tables', 'get_schema'] : ['search', 'open']}
           limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
-            : service === 'github' ? ['repos', 'lookback_days'] : []} />
+            : service === 'github' ? ['repos', 'lookback_days'] : service === 'bigquery' ? ['datasets', 'max_bytes', 'max_rows'] : []} />
         <span className="faint">Ask steps can only read: send, delete and change actions aren't offered.</span>
       </Block>
       <Block title="Instructions">

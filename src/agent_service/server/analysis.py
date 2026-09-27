@@ -21,7 +21,7 @@ from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
 
-UNTRUSTED = {"gmail", "github", "mcp"}    # services whose content other people wrote
+UNTRUSTED = {"gmail", "github", "mcp"}     # BigQuery is your own data, not other people's    # services whose content other people wrote
 RUN_BUILT_INS = {"started"}        # run.* values every run has, besides its run options
 
 
@@ -145,6 +145,10 @@ def _type_of_returns(step: Any) -> list[tuple[str, str]]:
         return [(n, f.type) for n, f in step.returns.items()]
     if isinstance(step, BuiltInStep) and step.op == "javascript":
         return [(n, f.type) for n, f in step.returns.items()]
+    if isinstance(step, BuiltInStep) and step.op == "bigquery":
+        rows = step.returns.get("rows")
+        return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),
+                ("bytes_billed", "number"), ("cost_usd", "number")]
     if isinstance(step, BuiltInStep):
         types = {"trips": "list of Trip", "records": "list of records", "notes": "list of text", "found": "yes/no", "status": "text",
                  "passed": "yes/no", "differences": "list of text"}

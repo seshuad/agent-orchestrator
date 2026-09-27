@@ -237,3 +237,27 @@ def test_rename_an_agent_from_its_settings(page, base):
     page.wait_for_selector("span:text-is('renamed-agent')")
     assert httpx.get(base + "/api/agents/rename-me").status_code == 404
     assert httpx.get(base + "/api/agents/renamed-agent").json()["draft"]["name"] == "renamed-agent" and not page.errors
+
+
+def test_a_bigquery_query_step_in_the_editor(page, base):
+    import httpx
+    c = httpx.post(base + "/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
+        "auth": {"kind": "gcloud"}, "billing_project": "demo-project", "allowed": ["sales_processed"]}}).json()
+    acct = httpx.post(base + "/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Warehouse", "permissions": ["read"]}).json()
+    httpx.post(base + "/api/agents", json={"name": "bq-editor", "sample_set": "Sales (BigQuery)"})
+    d = httpx.get(base + "/api/agents/bq-editor").json()["draft"]
+    d["connections"] = {"bq": {"service": "bigquery", "permission": "read", "account": acct["id"]}}
+    d["steps"] = [{"id": "q", "kind": "built-in", "name": "Orders", "operation": {"bigquery": {"sql": "SELECT 1"}},
+                   "uses": {"connection": "bq", "actions": ["query"]}, "returns": {"rows": {"type": "text"}}}]
+    httpx.put(base + "/api/agents/bq-editor", json={"draft": d})
+    page.goto(base + "/agents/bq-editor")
+    page.click(".side-row:has-text('Orders')")
+    page.wait_for_selector("textarea[aria-label='SQL']")
+    page.fill("textarea[aria-label='SQL']", "SELECT region FROM `demo-project.sales_processed.orders`")
+    for _ in range(40):                                        # autosave waits a moment after the last keystroke
+        if httpx.get(base + "/api/agents/bq-editor").json()["draft"]["steps"][0]["operation"]["bigquery"]["sql"].startswith("SELECT region"):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("the SQL wasn't saved")
+    assert page.locator("text=run read queries (SELECT)").count() == 1 and not page.errors

@@ -442,3 +442,46 @@ def test_the_mcp_gateway_survives_a_broken_or_slow_upstream(run, monkeypatch):
     assert not after_crash.is_error and "ENG-12" in after_crash.content[0].text          # reconnected
     assert stalled.is_error and "no answer from Issues in 2 seconds" in stalled.content[0].text
     assert not after_stall.is_error
+
+
+# ------------------------------------------------------------------ BigQuery (sample tables in DuckDB)
+
+BQ_UP = {"connector": "bq", "name": "Warehouse", "auth": {"kind": "gcloud"}, "billing_project": "demo-project",
+         "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}
+
+
+def test_bigquery_queries_are_checked_before_they_run(run, monkeypatch):
+    use_sample(monkeypatch, "bigquery-sales")
+    bq = gateway.connect("bigquery", limits.mint({"connection": "bigquery", "actions": ["query", "list_tables", "get_schema"],
+                                                  "datasets": ["sales_processed"], "max_rows": 2, "max_bytes": "1MB", "upstream": BQ_UP}))
+    out = gateway.call(bq, "bigquery", "query", {"sql": "SELECT region, COUNT(*) AS n FROM `demo-project.sales_processed.orders` "
+                                                        "WHERE amount > @min GROUP BY region ORDER BY n DESC", "params": {"min": 100}})
+    assert out["row_count"] == 2 and out["truncated"] and out["tables"] == ["demo-project.sales_processed.orders"]
+    for sql, why in [("SELECT * FROM `demo-project.credit.customer_limits`", "may not read demo-project.credit.customer_limits"),
+                     ("DELETE FROM sales_processed.orders WHERE true", "Only a single SELECT"),
+                     ("SELECT 1; SELECT 2", "Only a single SELECT")]:
+        with pytest.raises(gateway.Refused, match=why):
+            gateway.call(bq, "bigquery", "query", {"sql": sql})
+    assert [t["table"] for t in gateway.call(bq, "bigquery", "list_tables", {"dataset": "sales_processed"})] == \
+        ["demo-project.sales_processed.monthly_trend", "demo-project.sales_processed.orders",
+         "demo-project.sales_processed.revenue_by_product", "demo-project.sales_processed.revenue_by_region"]
+    tight = gateway.connect("bigquery", limits.mint({"connection": "bigquery", "actions": ["query"], "max_bytes": "1KB", "upstream": BQ_UP}))
+    with pytest.raises(gateway.Refused, match="over this step's limit of 1.0 KB"):
+        gateway.call(tight, "bigquery", "query", {"sql": "SELECT * FROM `demo-project.sales_processed.orders`"})
+    calls = [json.loads(l) for l in (run / "gateway.jsonl").read_text().splitlines()]
+    assert calls[0]["connector"] == "bq" and "bytes_billed" in calls[0]                  # counted against the monthly budget
+
+
+def test_a_step_cannot_read_beyond_its_connector():
+    from agent_service.runtime.bigquery_api import Warehouse
+    wh = Warehouse({"source": "sample", "datasets": ["sales_processed", "credit", "other-project.x"], "upstream": BQ_UP},
+                   EXAMPLES / "bigquery-sales/sample-data")
+    assert wh.allow == ["sales_processed"]                                                 # the admin allowed only sales_processed
+
+
+def test_bigquery_budget_counts_this_months_queries(tmp_path):
+    from agent_service import runner
+    (tmp_path / "r1").mkdir()
+    (tmp_path / "r1" / "gateway.jsonl").write_text(json.dumps({"ts": __import__("time").time(), "connector": "bq",
+                                                               "bytes_billed": 1024 ** 4}) + "\n")      # 1 TiB = $6.25
+    assert round(runner.month_spend("bq", tmp_path), 2) == 6.25 and runner.month_spend("other", tmp_path) == 0

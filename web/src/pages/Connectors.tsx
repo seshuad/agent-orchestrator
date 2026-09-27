@@ -6,10 +6,11 @@ import { Block, Check, Chips, Guarantees, Icon, SessionContext } from '../ui'
 import { StatusDot } from './ConnectAccount'
 import { ConnectionsHeader } from './Connections'
 
-const SERVICE_ICON: Record<string, string> = { gmail: 'mail', 'google-sheets': 'group', 'google-calendar': 'calendar', github: 'code' }
+const SERVICE_ICON: Record<string, string> = { gmail: 'mail', 'google-sheets': 'group', 'google-calendar': 'calendar', github: 'code', bigquery: 'database' }
 
 function ConnectorCard({ c, selected, onOpen }: { c: Connector; selected: boolean; onOpen: () => void }) {
-  const how = c.type === 'google' ? (c.settings.client_id ? 'OAuth client set' : 'No OAuth client yet')
+  const how = c.type === 'bigquery' ? ({ service_account: 'A service account key', gcloud: "The service's gcloud account", adc: "The machine's default credentials" } as Record<string, string>)[c.settings.auth?.kind ?? 'gcloud']
+    : c.type === 'google' ? (c.settings.client_id ? 'OAuth client set' : 'No OAuth client yet')
     : c.type === 'github' ? 'A fine-grained token per account'
     : { oauth: 'OAuth: each builder signs in', shared: 'One shared credential', none: 'No sign-in' }[c.sign_in as string] ?? ''
   const tools = c.type === 'mcp' ? `${c.tools?.length ?? 0} tools: ${c.tools?.filter((t) => t.treat === 'read').length} read, ${c.tools?.filter((t) => t.treat === 'act').length} act` : ''
@@ -35,6 +36,8 @@ function ConnectorCard({ c, selected, onOpen }: { c: Connector; selected: boolea
 function BuiltInPanel({ c, admin, onSaved }: { c: Connector; admin: boolean; onSaved: (c: Connector) => void }) {
   const [clientId, setClientId] = useState(c.settings.client_id ?? '')
   const [apiUrl, setApiUrl] = useState(c.settings.api_url ?? 'https://api.github.com')
+  const [bq, setBq] = useState({ auth: c.settings.auth?.kind ?? 'gcloud', billing_project: c.settings.billing_project ?? '', location: c.settings.location ?? 'US',
+    allowed: (c.settings.allowed ?? []) as string[], max_bytes_cap: c.settings.max_bytes_cap ?? '10GB', monthly_budget_usd: c.settings.monthly_budget_usd ?? '' })
   const [secret, setSecret] = useState<string | null>(null)
   const [offered, setOffered] = useState<Record<string, string[]>>(c.offered ?? {})
   const [who, setWho] = useState(c.who)
@@ -47,7 +50,11 @@ function BuiltInPanel({ c, admin, onSaved }: { c: Connector; admin: boolean; onS
   const save = async () => {
     setBusy('save'); setError(null)
     try {
-      const out = await api.editConnector(c.id, { settings: c.type === 'google' ? { client_id: clientId.trim(), client_kind: c.settings.client_kind ?? 'web' } : { api_url: apiUrl.trim() },
+      const settings = c.type === 'google' ? { client_id: clientId.trim(), client_kind: c.settings.client_kind ?? 'web' }
+        : c.type === 'bigquery' ? { auth: { kind: bq.auth }, billing_project: bq.billing_project.trim(), location: bq.location.trim(), allowed: bq.allowed,
+            max_bytes_cap: bq.max_bytes_cap, monthly_budget_usd: bq.monthly_budget_usd === '' ? null : Number(bq.monthly_budget_usd) }
+        : { api_url: apiUrl.trim() }
+      const out = await api.editConnector(c.id, { settings,
         secret, offered, who, domains })
       setSecret(null); onSaved(out); return out
     } catch (e: any) { setError(e.message) } finally { setBusy(null) }
@@ -77,6 +84,36 @@ function BuiltInPanel({ c, admin, onSaved }: { c: Connector; admin: boolean; onS
               <button className="link" onClick={() => navigator.clipboard?.writeText(redirect)}>Copy</button></span></label>
           <span className="faint">Google Cloud Console → Credentials → OAuth client ID (Web application), with the Gmail API enabled. The secret goes to the vault; nobody can read it back.</span>
         </Block>
+      )}
+      {c.type === 'bigquery' && (
+        <>
+          <Block title="How it signs in">
+            {([['service_account', 'A service account key', 'Recommended: grant it BigQuery Data Viewer on the datasets and BigQuery Job User on the billing project.'],
+               ['gcloud', "The service's gcloud account", 'Whoever is signed in to gcloud where the service runs. Handy on a laptop.'],
+               ['adc', "The machine's default credentials", 'Application default credentials, e.g. on Google Cloud.']] as const).map(([k, label, detail]) => (
+              <label key={k} className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', gap: 8 }}>
+                <input type="radio" name="bq-auth" checked={bq.auth === k} disabled={!admin} onChange={() => setBq({ ...bq, auth: k })} style={{ marginTop: 3 }} />
+                <span className="stack" style={{ gap: 1 }}><span>{label}</span><span className="faint">{detail}</span></span></label>
+            ))}
+            {bq.auth === 'service_account' && (secret === null
+              ? <span className="row" style={{ flexWrap: 'nowrap' }}><input className="input mono grow" disabled value={c.secret_set ? `key set${c.secret_set_at ? ' ' + when(c.secret_set_at) : ''}` : 'no key yet'} aria-label="Service account key" />
+                  {admin && <button className="link" onClick={() => setSecret('')}>{c.secret_set ? 'Replace' : 'Add key'}</button>}</span>
+              : <textarea className="textarea cel" rows={5} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder='Paste the JSON key file: {"type": "service_account", ...}' aria-label="Service account key JSON" />)}
+          </Block>
+          <Block title="Project and data">
+            <span className="row"><span className="muted" style={{ width: 110 }}>Billing project</span><input className="input mono grow" value={bq.billing_project} disabled={!admin} onChange={(e) => setBq({ ...bq, billing_project: e.target.value })} aria-label="Billing project" /></span>
+            <span className="row"><span className="muted" style={{ width: 110 }}>Location</span><input className="input mono" style={{ width: 120 }} value={bq.location} disabled={!admin} onChange={(e) => setBq({ ...bq, location: e.target.value })} aria-label="Location" /></span>
+            <span className="row"><span className="muted" style={{ width: 110 }}>Data agents may read</span><Chips values={bq.allowed} onChange={(v) => admin && setBq({ ...bq, allowed: v })} placeholder="dataset, project.dataset or project.dataset.table" /></span>
+            <span className="faint">The most any step may read. Each step names its own datasets within these.</span>
+          </Block>
+          <Block title="Cost">
+            <span className="row"><span className="muted" style={{ width: 110 }}>Max per query</span><input className="input mono" style={{ width: 100 }} value={bq.max_bytes_cap} disabled={!admin} onChange={(e) => setBq({ ...bq, max_bytes_cap: e.target.value })} aria-label="Max bytes per query" />
+              <span className="faint">scanned, e.g. 10GB. BigQuery refuses bigger queries.</span></span>
+            <span className="row"><span className="muted" style={{ width: 110 }}>Monthly budget</span><span className="muted">$</span><input className="input mono" style={{ width: 80 }} value={bq.monthly_budget_usd} disabled={!admin} onChange={(e) => setBq({ ...bq, monthly_budget_usd: e.target.value })} aria-label="Monthly budget" placeholder="none" />
+              <span className="faint">across every agent; runs stop querying once it's used.</span></span>
+            <span className="faint">On-demand pricing, $6.25 per TB scanned, at least 10 MB per query. Every job is labelled with its agent, run and step.</span>
+          </Block>
+        </>
       )}
       {c.type === 'github' && (
         <Block title="API">
@@ -131,7 +168,8 @@ export default function Connectors() {
   const add = async (type: string) => {
     setAdding(false); setError(null)
     if (type === 'mcp') { navigate('/connections/connectors/new'); return }
-    try { const c = await api.addConnector({ type, name: type === 'github' ? 'GitHub Enterprise' : 'Google Workspace' }); await load(); setParams({ c: c.id }) }
+    try { const c = await api.addConnector({ type, name: type === 'github' ? 'GitHub Enterprise' : type === 'bigquery' ? 'BigQuery' : 'Google Workspace',
+      ...(type === 'bigquery' ? { settings: { auth: { kind: 'gcloud' }, location: 'US', allowed: [], max_bytes_cap: '10GB' } } : {}) }); await load(); setParams({ c: c.id }) }
     catch (e: any) { setError(e.message) }
   }
   return (
@@ -142,6 +180,7 @@ export default function Connectors() {
           {adding && (
             <div className="menu" style={{ right: 0, left: 'auto', top: 40, width: 280 }}>
               <button onClick={() => add('mcp')}><Icon name="plug" size={15} /><span className="stack" style={{ gap: 1, alignItems: 'flex-start' }}><strong>MCP server</strong><span className="faint">Any system with an MCP server</span></span></button>
+              <button onClick={() => add('bigquery')}><Icon name="database" size={15} /><span className="stack" style={{ gap: 1, alignItems: 'flex-start' }}><strong>BigQuery</strong><span className="faint">Read queries within datasets and a cost cap</span></span></button>
               <button onClick={() => add('github')}><Icon name="code" size={15} /><span className="stack" style={{ gap: 1, alignItems: 'flex-start' }}><strong>GitHub</strong><span className="faint">Another GitHub, e.g. Enterprise</span></span></button>
               <button onClick={() => add('google')}><Icon name="mail" size={15} /><span className="stack" style={{ gap: 1, alignItems: 'flex-start' }}><strong>Google Workspace</strong><span className="faint">Another OAuth client</span></span></button>
             </div>

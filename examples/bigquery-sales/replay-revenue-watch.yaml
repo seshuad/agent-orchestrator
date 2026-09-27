@@ -1,0 +1,13 @@
+# Scripted answer for monthly-revenue-watch's model step, for test runs without the Claude API.
+explain_the_drop:
+  - headline: "August revenue fell to about 41% of a typical month"
+    report: |
+      ## August revenue fell to about 41% of a typical month
+
+      - **Revenue:** $19,750 against a typical $47,630 (the average of the other months): 58.5% lower.
+      - **Orders:** 41 against about 62 a month, so most of the drop is fewer orders; the average order was also smaller ($482 against about $770).
+      - **What the data can't say:** revenue by region and by product covers the whole period, not months, so it can't show which region or product fell in August.
+
+      **What to check next**
+      - Order-level data for August by region and product.
+      - Whether anything stopped taking orders in August (a site outage, a pricing change, a stock-out on laptops).

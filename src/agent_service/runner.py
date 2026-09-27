@@ -51,6 +51,43 @@ def _resolve(spec: dict[str, Any], inputs: dict[str, str]) -> dict[str, Any]:
     return {k: inputs[v.split(".", 1)[1]] if isinstance(v, str) and v.startswith("$input.") else v for k, v in spec.items()}
 
 
+def _warehouse(account_id: str | None, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]],
+               runs_root: Path) -> tuple[dict[str, Any], float | None]:
+    """A BigQuery connector's settings for the gateway, and what's left of its monthly budget."""
+    account = accounts.get(account_id or "")
+    connector = connectors.get((account or {}).get("connector") or "")
+    if account is None or connector is None:
+        raise RunError("This agent's BigQuery connection isn't linked to a workspace account. Pick one in its Connections.")
+    if (connector.get("status") or {}).get("state") == "attention":
+        raise RunError(f"{connector['name']} needs an admin's attention (Connections → Connectors): {connector['status'].get('message', '')}")
+    st = connector.get("settings") or {}
+    up = {"connector": connector["id"], "name": connector["name"], "auth": st.get("auth") or {"kind": "gcloud"},
+          "billing_project": st.get("billing_project"), "location": st.get("location"), "allowed": st.get("allowed") or [],
+          "max_bytes_cap": st.get("max_bytes_cap")}
+    budget = st.get("monthly_budget_usd")
+    if budget in (None, ""):
+        return up, None
+    left = float(budget) - month_spend(connector["id"], runs_root)
+    if left <= 0:
+        raise RunError(f"{connector['name']} has used its monthly budget of ${float(budget):.2f}. An admin can raise it under Connectors.")
+    return up, round(left, 4)
+
+
+def month_spend(connector_id: str, runs_root: Path) -> float:
+    """What a BigQuery connector's queries cost this calendar month, from every run's gateway log."""
+    from .runtime.bigquery_api import cost_of
+    start = time.mktime(time.strptime(time.strftime("%Y-%m-01"), "%Y-%m-%d"))
+    total = 0.0
+    for log in runs_root.glob("*/gateway.jsonl"):
+        if log.stat().st_mtime < start:
+            continue
+        for line in log.read_text().splitlines():
+            c = json.loads(line)
+            if c.get("connector") == connector_id and c.get("ts", 0) >= start:
+                total += cost_of(c.get("bytes_billed"))
+    return total
+
+
 def _upstream(account_id: str, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """What the gateway needs to reach an MCP connector for this account: signed into the limits token, never from the model."""
     account = accounts.get(account_id)
@@ -66,7 +103,7 @@ def _upstream(account_id: str, accounts: dict[str, dict[str, Any]], connectors: 
                       for t in connector.get("tools") or [] if t.get("treat") in ("read", "act")}}
 
 
-LIVE_SERVICES = {"gmail", "github"}    # services a run can use for real so far; the rest stay on sample data
+LIVE_SERVICES = {"gmail", "github", "bigquery"}    # services a run can use for real so far; the rest stay on sample data
 ALWAYS_LIVE = {"mcp"}                  # an MCP connector has no sample data: its steps always reach the real system
 
 
@@ -112,6 +149,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             raise RunError(f"A {spec['connection']} connection in this agent isn't linked to a workspace account; pick one in its Connections.")
         if spec["connection"] == "mcp":
             spec["upstream"] = _upstream(spec["account"], accounts or {}, connectors or {})
+        if spec["connection"] == "bigquery":
+            spec["upstream"], spec["budget_left_usd"] = _warehouse(spec.get("account"), accounts or {}, connectors or {}, runs_root)
             if vault is None:
                 raise RunError("MCP connectors need the workspace vault.")
         compiled.limits[var] = spec

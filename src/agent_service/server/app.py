@@ -104,6 +104,14 @@ class Rename(BaseModel):
     name: str
 
 
+class Estimate(BaseModel):
+    sql: str
+    connection: str                            # the agent's connection name
+    params: dict[str, Any] = {}
+    datasets: list[str] | None = None
+    max_bytes: str | int | None = None
+
+
 class TryJs(BaseModel):
     code: str
     inputs: dict[str, Any] = {}
@@ -178,7 +186,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         conn = store.accounts().get(cid or "")
         if conn is None:
             return False
-        kind = conn_types.sign_in_kind(store.connector(conn.get("connector")))
+        connector = store.connector(conn.get("connector"))
+        kind = conn_types.sign_in_kind(connector)
+        if connector and connector["type"] == "bigquery":        # the service's gcloud account or its own credentials need no secret
+            auth = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "gcloud")
+            return auth != "service_account" or bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
         if kind == "shared":
             return bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
         if kind == "none" and conn["service"] == "mcp":
@@ -359,8 +371,16 @@ def create_app(home: Path | None = None) -> FastAPI:
         if not secret.strip():
             vault.delete(conn_types.secret_key(cid), vault_dir)
             return
-        field = "client_secret" if ctype == "google" else "token"
-        vault.save(conn_types.secret_key(cid), {field: secret.strip(), "_set_at": time.time()}, vault_dir)
+        value: Any = secret.strip()
+        if ctype == "bigquery":
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise fail(ValueError("Paste the service account's whole JSON key file."), 422)
+            if value.get("type") != "service_account" or "private_key" not in value:
+                raise fail(ValueError("That isn't a service account key (it needs \"type\": \"service_account\" and a private key)."), 422)
+        field = "client_secret" if ctype == "google" else "key" if ctype == "bigquery" else "token"
+        vault.save(conn_types.secret_key(cid), {field: value, "_set_at": time.time()}, vault_dir)
 
     def _connector_fields(body: ConnectorIn, existing: dict[str, Any] | None, ctype: str) -> dict[str, Any]:
         item: dict[str, Any] = {"name": body.name.strip() or (existing or {}).get("name") or conn_types.TYPES[ctype]["name"],
@@ -440,6 +460,8 @@ def create_app(home: Path | None = None) -> FastAPI:
             ok, msg = conn_types.test_google(c, vault_dir)
         elif c["type"] == "github":
             ok, msg = conn_types.test_github(c)
+        elif c["type"] == "bigquery":
+            ok, msg = conn_types.test_bigquery(c, vault_dir)
         else:
             auth = ((c.get("settings") or {}).get("auth") or {}).get("kind", "none")
             if auth == "oauth" and not vault.load(conn_types.secret_key(cid) + "-admin", vault_dir):
@@ -589,6 +611,35 @@ def create_app(home: Path | None = None) -> FastAPI:
         except NotFound as exc:
             raise fail(exc, 404)
         return get_agent(name)
+
+    @app.post("/api/agents/{name}/bigquery/estimate")
+    def bigquery_estimate(name: str, body: Estimate) -> dict[str, Any]:
+        """A free dry run of a Query step's SQL on the real data: what it reads, what it would scan and cost,
+        and whether the step's limits would let it run."""
+        from ..runtime import bigquery_api
+        draft = store.draft(name)
+        conn = (draft.get("connections") or {}).get(body.connection) or {}
+        account = store.accounts().get(conn.get("account") or "")
+        connector = store.connector((account or {}).get("connector"))
+        if not connector or connector["type"] != "bigquery":
+            raise fail(ValueError("Pick a BigQuery connection for this step first."), 422)
+        st = connector.get("settings") or {}
+        up = {"connector": connector["id"], "name": connector["name"], "auth": st.get("auth") or {"kind": "gcloud"},
+              "billing_project": st.get("billing_project"), "location": st.get("location"), "allowed": st.get("allowed") or [],
+              "max_bytes_cap": st.get("max_bytes_cap")}
+        try:
+            wh = bigquery_api.Warehouse({"source": "live", "upstream": up, "datasets": body.datasets, "max_bytes": body.max_bytes})
+            kind, tables, size = wh.engine.dry_run(body.sql, body.params)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc).splitlines()[0][:400]}
+        problems = []
+        try:
+            wh.check(body.sql, body.params)
+        except bigquery_api.QueryRefused as exc:
+            problems.append(str(exc))
+        return {"ok": True, "statement": kind, "tables": tables, "bytes": size, "human": bigquery_api.human(size),
+                "cost_usd": round(bigquery_api.cost_of(max(size, bigquery_api.MIN_BILLED) if size else 0), 6),
+                "limit": bigquery_api.human(wh.max_bytes), "problems": problems}
 
     @app.post("/api/javascript/try")
     def try_javascript(body: TryJs) -> dict[str, Any]:

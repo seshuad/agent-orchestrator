@@ -71,7 +71,7 @@ export interface McpTool {
   pin?: string; approved_pin?: string | null; new?: boolean; changed?: boolean
 }
 export interface Connector {
-  id: string; type: 'google' | 'github' | 'mcp'; type_name: string; name: string; icon: string; reach: string
+  id: string; type: 'google' | 'github' | 'mcp' | 'bigquery'; type_name: string; name: string; icon: string; reach: string
   settings: Json; offered?: Record<string, string[]>; tools?: McpTool[]; who: 'builders' | 'admins'; domains: string[]
   status: { state: 'ready' | 'attention' | 'setup'; message?: string; tested_at?: number | null; tested_by?: string; reason?: string }
   secret_set: boolean; secret_set_at?: number | null; accounts: number; created_by?: string
@@ -178,6 +178,8 @@ export const api = {
   approve: (id: string, choice: string, ids?: string) => call<Run>('POST', `/api/runs/${id}/approve`, { choice, ids: ids ?? null }),
   stop: (id: string) => call<Run>('POST', `/api/runs/${id}/stop`),
   conductorUi: (id: string) => call<{ url: string; mode: 'live' | 'replay' }>('POST', `/api/runs/${id}/conductor`),
+  bqEstimate: (name: string, body: { sql: string; connection: string; params: Json; datasets?: string[]; max_bytes?: string }) =>
+    call<{ ok: boolean; error?: string; statement?: string; tables: string[]; bytes: number; human: string; cost_usd: number; limit: string; problems: string[] }>('POST', `/api/agents/${name}/bigquery/estimate`, body),
   tryJs: (code: string, inputs: Json, returns: string[]) =>
     call<{ ok: boolean; output?: unknown; error?: string; took: number }>('POST', '/api/javascript/try', { code, inputs, returns }),
   inspectStep: (run: string, step: string, n: number) => call<StepDetail>('GET', `/api/runs/${run}/steps/${step}/${n}`),
