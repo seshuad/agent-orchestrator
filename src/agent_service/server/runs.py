@@ -135,7 +135,7 @@ class Runs:
                                   inputs=inputs, email_id=email_id, replay=Path(meta["replay"]) if scripted else None,
                                   replay_gates=False, run_id=run_id, vault=self.store.home / "vault", live=live,
                                   trigger_email=trigger_email, accounts=self.store.accounts(),
-                                  connectors={c["id"]: c for c in self.store.connectors()})
+                                  connectors={c["id"]: c for c in self.store.connectors()}, memory=self.store.memory(agent_name))
         (prepared.run_dir / "agent.yaml").write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
         return self._launch(run_id, agent_name, version, prepared, started_by, live, {"trigger": "manual", "scripted": scripted})
 
@@ -203,6 +203,8 @@ class Runs:
             end = next((e for e in evs if e["type"] in END), None)
             if end is not None or proc.poll() is not None:
                 break
+        if not (self.store.runs_root() / run_id / "run.json").exists():
+            return                                   # the agent was deleted while the run ended
         rec = json.loads((self.store.runs_root() / run_id / "run.json").read_text())
         problem = self._problem(run_id, evs)
         if rec["status"] in ("running", "waiting"):
@@ -220,6 +222,10 @@ class Runs:
         rec.pop("_answering", None)
         self._save(rec)
         self._keep_events(run_id)
+        try:
+            self.remember(run_id)
+        except Exception:
+            pass                                 # memory is a help, never a reason for a run to fail
         if rec.get("test"):
             rec["test_result"] = self.check_expectations(run_id, rec["test"].get("expect") or [])
             self._save(rec)
@@ -329,6 +335,64 @@ class Runs:
                 proc.terminate()
 
     # -------------------------------------------------------------- the readable log
+
+    def remember(self, run_id: str) -> list[dict[str, Any]]:
+        """A finished run's judgments, as memory candidates: each model-decided Branch's path (reason, evidence) and each
+        Free-form block's outcome (steps run, planner notes), with the fields they match on. Used once a person confirms."""
+        run_dir = self.store.runs_root() / run_id
+        rec = json.loads((run_dir / "run.json").read_text())
+        if rec.get("test") or rec.get("rerun_of") or rec.get("status") != "succeeded":
+            return []
+        raw = yaml.safe_load((run_dir / "agent.yaml").read_text()) if (run_dir / "agent.yaml").exists() else {}
+        evs = self.events(run_id)
+        hist = [json.loads(l) for l in (run_dir / "history.jsonl").read_text().splitlines()] if (run_dir / "history.jsonl").exists() else []
+        keys_of = lambda step: next((h["output"].get("keys") for h in reversed(hist) if h["step"] == f"{step}_recall"), {}) or {}
+        found = []
+        for s in raw.get("steps") or []:
+            if not s.get("memory"):
+                continue
+            if s.get("kind") == "branch" and s.get("decide") == "model" and s.get("for_each"):
+                collected = next((h["output"] for h in reversed(hist) if h["step"] == s["id"]), None) or {}
+                for dec in collected.get("decisions") or []:
+                    if dec.get("decided"):
+                        found.append({"step": s["id"], "step_name": s["name"], "kind": "branch", "subject": dec.get("label"),
+                                      "decision": dec.get("path"), "reason": dec.get("reason"), "evidence": dec.get("evidence") or [],
+                                      "keys": dec.get("keys") or {}, "choices": [p["name"] for p in s.get("paths") or []]})
+            elif s.get("kind") == "branch" and s.get("decide") == "model":
+                for e in evs:
+                    d = e["data"]
+                    if e["type"] == "agent_completed" and d.get("agent_name") == s["id"]:
+                        out = inspect._value(d.get("output")) or {}
+                        found.append({"step": s["id"], "step_name": s["name"], "kind": "branch", "decision": out.get("path"),
+                                      "reason": out.get("reason"), "evidence": out.get("evidence") or [], "keys": keys_of(s["id"]),
+                                      "choices": [p["name"] for p in s.get("paths") or []]})
+                    elif e["type"] == "script_completed" and d.get("agent_name") == s["id"]:       # scripted answers
+                        out = inspect._value(d.get("stdout")) or {}
+                        found.append({"step": s["id"], "step_name": s["name"], "kind": "branch", "decision": out.get("path"),
+                                      "reason": out.get("reason"), "evidence": out.get("evidence") or [], "keys": keys_of(s["id"]),
+                                      "choices": [p["name"] for p in s.get("paths") or []]})
+            elif s.get("kind") == "free-form":
+                finish = next((h["output"] for h in reversed(hist) if h["step"] == "finish_check" and h["output"].get("passed")), None)
+                if not finish:
+                    continue
+                inner = {x["id"] for x in s.get("steps") or []}
+                ran = [e["data"].get("agent_name", "").removesuffix("__together") for e in evs if e["type"].endswith("_completed")
+                       and e["data"].get("agent_name", "").removesuffix("__together") in inner]
+                plans = [inspect._value(e["data"].get("output") if e["type"] == "agent_completed" else e["data"].get("stdout")) or {}
+                         for e in evs if e["data"].get("agent_name") == "plan" and e["type"] in ("agent_completed", "script_completed")]
+                results = finish.get("results") or {}
+                found.append({"step": s["id"], "step_name": s["name"], "kind": "free-form",
+                              "decision": results.get("outcome") or "finished", "reason": (plans[-1] if plans else {}).get("reason"),
+                              "summary": f"ran {', '.join(ran) or 'no steps'} in {len(plans)} planner turns",
+                              "notes": (plans[-1] if plans else {}).get("notes") or [], "keys": keys_of(s["id"]),
+                              "choices": s.get("outcomes") or []})
+        if not found:
+            return []
+        cases = self.store.memory(rec["agent"])
+        cases = [c for c in cases if c.get("run") != run_id]
+        new = [{"id": secrets.token_hex(4), "run": run_id, "at": rec.get("started_at", time.time()), "status": "candidate", **f} for f in found]
+        self.store.save_memory(rec["agent"], cases + new)
+        return new
 
     def _answer(self, run_id: str, answer: dict[str, Any]) -> None:
         try:
@@ -527,6 +591,17 @@ def _names(raw: dict[str, Any]) -> dict[str, tuple[str, str]]:
             out[s["id"]] = (s.get("name", s["id"]), "show" if shows else s.get("kind", ""))
             if s.get("kind") == "approve":
                 out[f"{s['id']}_preselect"] = (f"{s.get('name')}: pre-select", "rules")
+            if s.get("memory"):
+                out[f"{s['id']}_recall"] = (f"{s.get('name')}: recall past cases", "memory")
+            if s.get("kind") == "branch" and s.get("decide") == "model" and s.get("for_each"):
+                each = (s["for_each"].get("as") or "item")
+                out[f"{s['id']}_items"] = (f"{s.get('name')}: the {each}s to decide", "loop-items")
+                out[f"{s['id']}_each"] = (s.get("name", s["id"]), "loop")
+                out[s["id"]] = (f"{s.get('name')}: every {each}'s decision", "decisions")
+            elif s.get("kind") == "branch" and s.get("decide") == "model":
+                out[s["id"]] = (s.get("name", s["id"]), "decision")
+                if s.get("rules_first"):
+                    out[f"{s['id']}_rules"] = (f"{s.get('name')}: hard rules", "rules")
             if s.get("kind") == "free-form":
                 out[f"{s['id']}_together_record"] = ("Record answers", "plumbing")
                 for i in range(2, 10):
@@ -575,7 +650,7 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
     ended: dict[str, int] = {}             # runs of each step finished so far: an entry's `n` for the step inspector
     for e in evs:
         t, d = e["type"], e["data"]
-        name = d.get("agent_name", "").removesuffix(IN_GROUP)      # a group member runs as a copy of its step
+        name = (d.get("agent_name") or d.get("group_name") or "").removesuffix(IN_GROUP)   # a group member runs as a copy of its step
         count_end = t in inspect.ENDS and not (t == "mcp_completed" and d.get("group_name"))
         n = ended.get(name, 0)
         if count_end:
@@ -584,8 +659,34 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
         at = round(e["timestamp"] - t0, 1)
         base = {"at": at, "step": label, "id": name, "n": n, "kind": kind, "took": round(d.get("elapsed") or 0, 1), "cost": None,
                 "detail": "", "why": None, "tone": "", "plumbing": name in PLUMBING, "tools": []}
+        if t in ("mcp_completed", "agent_completed", "agent_started", "mcp_started") and d.get("item_key") is not None:
+            continue                             # one item of a for-each group: its for_each_item_completed follows
         if t == "mcp_completed" and d.get("group_name"):
             continue                             # a scripted step inside a group: its parallel_agent_completed follows
+        if t == "for_each_started":
+            each = names.get(name.removesuffix("_each") + "_items", ("", ""))[0].rsplit("the ", 1)[-1].removesuffix(" to decide")
+            entries.append({**base, "kind": "group", "detail": f"Decides for {d.get('item_count')} {each}, {d.get('max_concurrent')} at a time"})
+            continue
+        if t in ("for_each_item_completed", "for_each_item_failed"):
+            items = next((h["output"].get("items") for h in reversed(history) if h["step"] == name.removesuffix("_each") + "_items"), None) or []
+            label = next((i.get("label") for i in items if i.get("key") == str(d.get("item_key"))), f"Item {d.get('item_key')}")
+            tool_calls = tools.pop(f"{name}[{d.get('item_key')}]", [])
+            if t == "for_each_item_failed":
+                entries.append({**base, "kind": "decision", "step": label, "detail": friendly_error(d.get("message", ""))["title"], "tone": "bad", "tools": tool_calls})
+                continue
+            decisions = next((h["output"].get("decisions") for h in reversed(history) if h["step"] == name.removesuffix("_each")), None) or []
+            index = next((i for i, it in enumerate(items) if it.get("key") == str(d.get("item_key"))), -1)
+            out = decisions[index] if 0 <= index < len(decisions) else {}
+            c = d.get("cost_usd") or 0.0
+            cost += c
+            tokens += d.get("tokens") or 0
+            entries.append({**base, "kind": "decision", "step": label, "cost": round(c, 4) if c else None, "tokens": d.get("tokens"),
+                            "tools": tool_calls, "why": out.get("reason"),
+                            # Conductor doesn't report a for-each item's answer: it shows once the loop's results are collected.
+                            "detail": f"Chose: {out['path']}" if out.get("path") else "Decided"})
+            continue
+        if t == "for_each_completed":
+            continue
         if t == "parallel_started":
             members = ", ".join(names.get(m.removesuffix(IN_GROUP), (m, ""))[0] for m in d.get("agents", []))
             entries.append({**base, "step": "Together", "kind": "group", "detail": f"Runs {members} at the same time", "plumbing": False})
@@ -605,7 +706,32 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
         elif t == "parallel_agent_failed":
             entries.append({**base, "detail": friendly_error(d.get("message", ""))["title"], "tone": "bad"})
         elif t == "agent_tool_start":
-            tools.setdefault(d.get("agent_name", ""), []).append({"tool": d["tool_name"].split("__")[-1], "args": d.get("arguments", "")})
+            who = d.get("agent_name", "") + (f"[{d['item_key']}]" if d.get("item_key") is not None else "")
+            tools.setdefault(who, []).append({"tool": d["tool_name"].split("__")[-1], "args": d.get("arguments", "")})
+        elif t == "script_completed" and kind == "loop-items":
+            out = recorded(name) or _json(d.get("stdout")) or {}
+            n, r = out.get("count", 0), out.get("recalled", 0)
+            entries.append({**base, "detail": f"{n} to decide" + (f", with {r} past case{'s' if r != 1 else ''} recalled" if r else "")})
+        elif t == "script_completed" and kind == "decisions":
+            out = recorded(name) or _json(d.get("stdout")) or {}
+            counts = ", ".join(f"{v} {k}" for k, v in (out.get("counts") or {}).items() if v)
+            entries.append({**base, "detail": counts or "Nothing to decide",
+                            "why": f"{out['undecided']} couldn't be decided and took the safe default" if out.get("undecided") else None,
+                            "tone": "warn" if out.get("undecided") else ""})
+        elif t == "script_completed" and kind == "memory":
+            out = recorded(name) or _json(d.get("stdout")) or {}
+            cases = out.get("cases") or []
+            entries.append({**base, "detail": (f"Recalled {len(cases)} past case{'s' if len(cases) != 1 else ''}"
+                                               + ("" if out.get("similar") or not cases else " (the most recent; none similar)")) if cases
+                            else "No confirmed past cases yet", "tone": ""})
+        elif t in ("agent_completed", "script_completed") and kind == "decision":
+            out = d.get("output") if t == "agent_completed" else _json(d.get("stdout"))
+            out = inspect._value(out) if not isinstance(out, dict) else out
+            c = d.get("cost_usd") or 0.0
+            cost += c
+            tokens += d.get("tokens") or 0
+            entries.append({**base, "cost": round(c, 4) if c else None, "model": d.get("model") or ("scripted" if t == "script_completed" else None),
+                            "tokens": d.get("tokens"), "detail": f"Chose: {(out or {}).get('path')}", "why": (out or {}).get("reason")})
         elif t in ("agent_completed", "script_completed") and kind in ("ask", "planner"):
             out = d.get("output") if t == "agent_completed" else _json(d.get("stdout"))
             c = d.get("cost_usd") or 0.0

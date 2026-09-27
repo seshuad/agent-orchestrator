@@ -2,7 +2,7 @@
 import type { Json } from '../../api'
 import { Area, Block, Cel, Chips, FieldErrors, Guarantees, Icon, KIND_ICON, Pill, RefPicker, Select, Text } from '../../ui'
 import { MODELS, MODEL_LABEL } from '../model'
-import { FieldsEditor, StepHeader, useStep } from './common'
+import { FieldsEditor, MemoryEditor, StepHeader, useStep } from './common'
 
 export default function FreeForm() {
   const { step, set, p, select, path, refs, feedback } = useStep()
@@ -71,6 +71,7 @@ export default function FreeForm() {
         ))}
         <button className="link" onClick={() => { let n = 1; while (collect[`results_${n}`]) n++; set(['collect', `results_${n}`], ['']) }}><Icon name="plus" size={13} width={2} />Collect results</button>
       </Block>
+      <Block title="Memory" aside="past confirmed investigations"><MemoryEditor where="free-form" /></Block>
       <Block title="Limits">
         <span className="row"><span className="muted">Run Ask steps at most</span><Text width={48} value={step.limits?.ask_runs} onChange={(v) => set(['limits', 'ask_runs'], Number(v) || 0)} label="Ask step runs" /><span className="muted">times</span></span>
         <span className="row"><span className="muted">Stop planning after</span><Text width={48} value={step.limits?.turns} onChange={(v) => set(['limits', 'turns'], Number(v) || 0)} label="Turns" /><span className="muted">turns</span></span>

@@ -346,6 +346,70 @@ def _js_message(exc: Exception) -> str:
     return re.sub(r"<input>:(\d+)", lambda m: f"line {max(1, int(m.group(1)) - 3)}", " ".join(lines)).replace("at __main", "").strip()
 
 
+# ------------------------------------------------------------------ deciding for each item
+
+LABEL_FIELDS = ("title", "name", "subject", "label", "id", "number")
+
+
+def _label(item: Any, index: int) -> str:
+    """A short name for an item in the run log and memory: its number and title, or whatever names it."""
+    if isinstance(item, dict):
+        num = item.get("number") if item.get("number") not in (None, "") else item.get("id")
+        text = next((str(item[f]) for f in ("title", "name", "subject", "label") if item.get(f) not in (None, "")), "")
+        if num not in (None, "") or text:
+            return (f"#{num} " if num not in (None, "") else "") + text[:80]
+    if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+        return str(item)[:80]
+    return f"Item {index + 1}"
+
+
+def _at(value: Any, path: str) -> Any:
+    for seg in [p for p in path.split(".") if p]:
+        value = value.get(seg) if isinstance(value, dict) else None
+    return value
+
+
+def decide_prep(data: dict, item_keys: dict[str, str], for_step: str, memory: bool, max_cases: int) -> dict:
+    """The items a Branch decides for, one by one: each with a key, a label, the fields memory matches on, and the
+    confirmed past cases most like it."""
+    items = data.get("items")
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise ScriptError(f"Deciding for each item needs a list, but got {type(items).__name__}.")
+    from .memory import recall
+    out = []
+    for i, item in enumerate(items):
+        keys = {**(data.get("fixed") or {}), **{k: _at(item, path) for k, path in item_keys.items()}}
+        rec = recall(for_step, keys, max_cases) if memory else {"text": "", "cases": []}
+        out.append({"key": str(i), "item": item, "label": _label(item, i), "keys": keys,
+                    "memory": rec["text"], "recalled": len(rec["cases"])})
+    return {"items": out, "count": len(out), "recalled": sum(x["recalled"] for x in out)}
+
+
+def decide_collect(data: dict, paths: list[str]) -> dict:
+    """Every item's decision, in the list's order. An item whose decision failed, or isn't one of the paths, takes the
+    last path (the safe default) and says so."""
+    outputs = data.get("outputs") or {}
+    decisions, counts = [], {p: 0 for p in paths}
+    for it in data.get("items") or []:
+        out = outputs.get(it["key"]) if isinstance(outputs, dict) else None
+        if isinstance(out, str):
+            try:
+                out = json.loads(out)
+            except json.JSONDecodeError:
+                out = None
+        out = out if isinstance(out, dict) else {}
+        decided = out.get("path") in paths
+        path = out["path"] if decided else paths[-1]
+        reason = out.get("reason") if decided else ("It couldn't decide this one, so it took the safe default." if not out
+                                                    else f"Its answer {out.get('path')!r} isn't one of the paths, so it took the safe default.")
+        counts[path] += 1
+        decisions.append({"label": it.get("label"), "item": it.get("item"), "path": path, "reason": reason or "",
+                          "evidence": out.get("evidence") or [], "keys": it.get("keys") or {}, "decided": decided})
+    return {"decisions": decisions, "counts": counts, "undecided": sum(not d["decided"] for d in decisions)}
+
+
 # ------------------------------------------------------------------ debugging
 
 def show(data: dict) -> dict:
@@ -357,7 +421,7 @@ def show(data: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -371,7 +435,12 @@ def main() -> None:
     p.add_argument("--tool", help="call-tools: the MCP connector's act tool.")
     p.add_argument("--code-b64", help="javascript: the function body, base64.")
     p.add_argument("--sql-b64", help="bigquery: the query, base64.")
+    p.add_argument("--max-cases", type=int, default=5, help="memory-recall: how many past cases.")
+    p.add_argument("--for-step", help="memory-recall: the step whose past cases to recall.")
     p.add_argument("--table", help="insert-rows: the BigQuery table.")
+    p.add_argument("--item-keys", default="{}", help="decide-prep: memory field -> path inside each item, as JSON.")
+    p.add_argument("--memory", action="store_true", help="decide-prep: recall past cases for each item.")
+    p.add_argument("--paths", help="decide-collect: the Branch's path names, in order, as JSON.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
     a = p.parse_args()
@@ -393,6 +462,16 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation in ("decide-prep", "decide-collect"):
+        try:
+            out = (decide_prep(data, json.loads(a.item_keys), a.for_step, a.memory, a.max_cases) if a.operation == "decide-prep"
+                   else decide_collect(data, json.loads(a.paths)))
+        except ScriptError as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            sys.exit(str(exc))
+    elif a.operation == "memory-recall":
+        from .memory import recall
+        out = recall(a.for_step, data, a.max_cases)
     elif a.operation in ("bigquery", "insert-rows"):
         import base64
         try:

@@ -12,7 +12,7 @@ function caption(s: Json): string {
     case 'built-in': return Object.keys(s.operation ?? {})[0] ?? ''
     case 'approve': return `${s.approver}, by ${(s.notify ?? []).join(' or ')}`
     case 'act': return s.create_events ? 'create events' : s.add_row ? `add a row to ${s.add_row.sheet || '…'}` : ''
-    case 'branch': return `${(s.paths ?? []).length} paths`
+    case 'branch': return s.decide === 'model' ? `${(s.paths ?? []).length} paths · decided by ${String(s.model ?? 'claude-sonnet-5').replace('claude-', '')}${s.for_each ? ` for each ${s.for_each.as ?? 'item'}` : ''}${s.memory ? ' · memory' : ''}` : `${(s.paths ?? []).length} paths`
     default: return ''
   }
 }

@@ -165,6 +165,7 @@ class FreeFormBlock(Step):
     steps: list[Annotated[Union[AskStep, BuiltInStep], Field(discriminator="kind")]]
     before_finishing: list[Rule] = Field(default_factory=list)
     returns: dict[str, str]                  # name -> CEL
+    memory: Memory | None = None             # past confirmed investigations, shown to the planner
 
     @model_validator(mode="after")
     def _inside(self) -> FreeFormBlock:
@@ -174,20 +175,76 @@ class FreeFormBlock(Step):
         return self
 
 
+class Memory(Strict):
+    """Past cases a person confirmed, shown to a judgment (a model-decided Branch, a Free-form planner) before it decides."""
+    match_on: dict[str, str] = Field(default_factory=dict)   # name -> reference: what makes two cases similar
+    max_cases: int = 5
+
+
 class BranchPath(Strict):
     name: str
-    when: str | None = None                  # CEL; the last path has none (Otherwise)
-    then: str                                # end | next | a step id
+    when: str | None = None                  # rules: CEL; the last path has none (Otherwise)
+    when_true: str | None = None             # model: when this path applies, in words; the last path is the safe default
+    then: str = "next"                       # end | next | a step id; deciding for each item, every path goes on
+
+
+class HardRule(Strict):
+    when: str                                # CEL, checked before the model is asked
+    then: str
+
+
+class ForEach(Strict):
+    """A model-decided Branch that decides once per item of a list, in parallel, instead of once per run."""
+    over: str                                # a reference to a list, e.g. list_issues.issues
+    as_: str = Field("item", alias="as")     # what one item is called: in the question, and in memory's fields
+    at_once: int = 5                         # how many items are decided at the same time
+
+    @field_validator("as_")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not v.isidentifier() or v in {"run", "trigger", "steps", "planner", "collected", "each"}:
+            raise ValueError(f"{v!r} can't name an item: use a plain word such as issue or invoice")
+        return v
 
 
 class BranchBlock(Step):
     kind: Literal["branch"]
     paths: list[BranchPath]
+    decide: Literal["rules", "model"] = "rules"
+    model: str | None = None                 # model: which one decides
+    question: str | None = None              # model: the question it answers
+    takes: Takes = Field(default_factory=dict)          # model: what it decides on
+    rules_first: list[HardRule] = Field(default_factory=list)   # model: outcomes that aren't up to judgment
+    memory: Memory | None = None             # model: past confirmed decisions to learn from
+    uses: Uses | None = None                 # model: what it may read to decide (read-only actions)
+    for_each: ForEach | None = None          # model: decide once per item of a list
 
     @model_validator(mode="after")
     def _otherwise_last(self) -> BranchBlock:
-        if not self.paths or self.paths[-1].when is not None or any(p.when is None for p in self.paths[:-1]):
-            raise ValueError(f"{self.name}: every path but the last needs a condition, and the last (Otherwise) none")
+        if not self.paths:
+            raise ValueError(f"{self.name}: a Branch needs at least one path")
+        if self.decide == "rules":
+            if self.paths[-1].when is not None or any(p.when is None for p in self.paths[:-1]):
+                raise ValueError(f"{self.name}: every path but the last needs a condition, and the last (Otherwise) none")
+            if self.memory is not None:
+                raise ValueError(f"{self.name}: memory informs a judgment; a rule-based Branch makes none. Decide with a model to use memory.")
+            if self.for_each is not None or self.uses is not None:
+                raise ValueError(f"{self.name}: only a Branch decided by a model can decide for each item, or read to decide")
+        else:
+            if len(self.paths) < 2:
+                raise ValueError(f"{self.name}: a model needs at least two paths to choose between")
+            missing = [p.name for p in self.paths[:-1] if not (p.when_true or "").strip()]
+            if missing:
+                raise ValueError(f"{self.name}: say when each path applies: {', '.join(missing)}")
+            if not (self.question or "").strip():
+                raise ValueError(f"{self.name}: write the question the model decides")
+            names = [p.name for p in self.paths]
+            if len(set(names)) != len(names):
+                raise ValueError(f"{self.name}: path names must be different")
+            if self.for_each is not None and self.rules_first:
+                raise ValueError(f"{self.name}: hard rules can't be used yet when deciding for each item; filter the list first")
+            if self.for_each is not None and not 1 <= self.for_each.at_once <= 20:
+                raise ValueError(f"{self.name}: decide 1 to 20 items at the same time")
         return self
 
 
@@ -254,9 +311,9 @@ class Agent(Strict):
                 raise ValueError(f"{s.name}: uses connection {uses.connection!r}, which this agent hasn't connected")
             # Built-in services: Ask steps only read. An MCP connector's tools are read or act by its admin's choice,
             # checked against the workspace's connectors when the agent is saved.
-            if (isinstance(s, AskStep) and uses and self.connections[uses.connection].service != "mcp"
+            if (isinstance(s, (AskStep, BranchBlock)) and uses and self.connections[uses.connection].service != "mcp"
                     and set(uses.actions) - {"search", "open", "read", "query", "list_tables", "get_schema"}):
-                raise ValueError(f"{s.name}: Ask steps can only read; move {uses.actions} to an Act step")
+                raise ValueError(f"{s.name}: {'Ask steps' if isinstance(s, AskStep) else 'a Branch'} can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")
         if sum(isinstance(s, FreeFormBlock) for s in self.steps) > 1:

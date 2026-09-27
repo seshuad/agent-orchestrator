@@ -139,7 +139,7 @@ def check_accounts(raw: dict[str, Any], accounts: dict[str, dict[str, Any]],
                             f"whose actions are its tools. Pick this step's tools again." if builtin and tool is None
                             else f"{connector['name']} doesn't offer {action}" + (": an admin marks it Read or Act under Connectors." if tool else "."))})
                         continue
-                    if step.get("kind") == "ask" and treat != "read":
+                    if step.get("kind") in ("ask", "branch") and treat != "read":
                         errors.append({"path": f"{path}.uses.actions", "message": f"{action} changes things in {connector['name']}: "
                                        "only Act steps can use it."})
                         continue

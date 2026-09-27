@@ -228,6 +228,59 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
   )
 }
 
+/** A connection a model step may only read with: the read actions its service offers, and their limits. */
+export function ReadsEditor() {
+  const { step, draft } = useStep()
+  const service = step.uses ? draft.connections?.[step.uses.connection]?.service : null
+  const mcpTools = useMcpTools(service === 'mcp' ? step.uses?.connection : undefined)
+  return (
+    <UsesEditor mcpTools={service === 'mcp' ? mcpTools : undefined}
+      actions={service === 'mcp' ? mcpTools.filter((t) => t.treat === 'read').map((t) => t.name)
+        : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read']
+        : service === 'bigquery' ? ['query', 'list_tables', 'get_schema'] : ['search', 'open']}
+      limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
+        : service === 'github' ? ['repos', 'lookback_days'] : service === 'bigquery' ? ['datasets', 'max_bytes', 'max_rows'] : []} />
+  )
+}
+
 export function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return <Block title={title} aside={aside}>{children}</Block>
+}
+
+
+/** Memory for a judgment (a model-decided Branch, a Free-form planner): which fields make two cases similar, how many to recall. */
+export function MemoryEditor({ where }: { where: 'branch' | 'free-form' }) {
+  const { step, set, refs } = useStep()
+  const memory: Json | undefined = step.memory
+  if (!memory) {
+    return (
+      <div className="stack" style={{ gap: 6 }}>
+        <span className="muted">{where === 'branch' ? 'The model decides each run on its own.' : 'The planner starts each run from scratch.'}</span>
+        <button className="link" onClick={() => set(['memory'], { match_on: {}, max_cases: 5 })}><Icon name="plus" size={13} width={2} />Remember confirmed decisions</button>
+      </div>
+    )
+  }
+  const match: Json = memory.match_on ?? {}
+  const setMatch = (m: Json) => set(['memory', 'match_on'], m)
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <span className="muted">Before {where === 'branch' ? 'deciding' : 'planning'}, it's shown past {where === 'branch' ? 'decisions' : 'investigations and outcomes'} a person
+        confirmed or corrected, most similar first. Each run's {where === 'branch' ? 'decision' : 'outcome'} waits on its run page for someone to confirm it.</span>
+      <span className="eyebrow">Similar when these match</span>
+      {Object.entries(match).map(([k, v]) => (
+        <span key={k} className="row" style={{ flexWrap: 'nowrap' }}>
+          <code className="mono" style={{ width: 120, flex: 'none' }}>{k}</code>
+          <RefPicker value={v as string} refs={refs} onChange={(x) => setMatch({ ...match, [k]: x })} />
+          <button className="icon-btn" aria-label={`Remove ${k}`} onClick={() => { const c = { ...match }; delete c[k]; setMatch(c) }}><Icon name="x" size={12} /></button>
+        </span>
+      ))}
+      <span className="row"><input className="input" placeholder="name, e.g. sender_domain" aria-label="Match on name"
+        onKeyDown={(e) => { const v = (e.target as HTMLInputElement).value.trim().replace(/\s+/g, '_'); if (e.key === 'Enter' && v) { setMatch({ ...match, [v]: '' }); (e.target as HTMLInputElement).value = '' } }} />
+        <span className="faint">Enter adds a field; pick its value from the trigger, run options or earlier steps.</span></span>
+      {!Object.keys(match).length && <span className="faint">With no fields, it recalls the most recent confirmed cases.</span>}
+      <span className="row"><span className="muted">Recall at most</span>
+        <Text width={50} value={memory.max_cases ?? 5} onChange={(v) => set(['memory', 'max_cases'], Number(v) || 5)} label="Max cases" /><span className="muted">cases</span></span>
+      <button className="link" style={{ color: 'var(--faint)', alignSelf: 'flex-start' }} onClick={() => set(['memory'], undefined)}>Don't use memory</button>
+    </div>
+  )
 }

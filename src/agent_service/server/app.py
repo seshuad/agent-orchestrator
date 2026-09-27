@@ -100,6 +100,12 @@ class TestIn(BaseModel):
     expect: list[dict[str, str]] | None = None
 
 
+class MemoryVerdict(BaseModel):
+    verdict: str                               # confirm | correct | reject | forget
+    decision: str | None = None                # correct: the right path or outcome
+    note: str = ""
+
+
 class Rename(BaseModel):
     name: str
 
@@ -714,6 +720,47 @@ def create_app(home: Path | None = None) -> FastAPI:
             raise fail(exc, 409)
         store.delete(name)
         return {"deleted": name, "runs_deleted": removed}
+
+    # -------------------------------------------------------------- memory
+
+    @app.get("/api/agents/{name}/memory")
+    def list_memory(name: str) -> list[dict[str, Any]]:
+        try:
+            return sorted(store.memory(name), key=lambda c: c.get("at", 0), reverse=True)
+        except NotFound as exc:
+            raise fail(exc, 404)
+
+    @app.get("/api/runs/{run_id}/memory")
+    def run_memory(run_id: str) -> list[dict[str, Any]]:
+        """This run's judgments, as remembered: candidates to confirm or correct."""
+        rec = runs.record(run_id)
+        return [c for c in store.memory(rec["agent"]) if c.get("run") == run_id]
+
+    @app.post("/api/agents/{name}/memory/{case_id}")
+    def judge_memory(name: str, case_id: str, body: MemoryVerdict) -> dict[str, Any]:
+        """A person's verdict on a remembered case. Only confirmed and corrected cases are recalled."""
+        cases = store.memory(name)
+        case = next((c for c in cases if c["id"] == case_id), None)
+        if case is None:
+            raise fail(NotFound(f"No remembered case {case_id!r}."), 404)
+        who = store.workspace()["user"]["name"]
+        if body.verdict == "forget":
+            store.save_memory(name, [c for c in cases if c["id"] != case_id])
+            return {"forgotten": case_id}
+        if body.verdict == "confirm":
+            case.update(status="confirmed", confirm_note=body.note.strip() or None, confirmed_by=who, confirmed_at=time.time(), correction=None)
+        elif body.verdict == "correct":
+            if not body.decision or body.decision == case.get("decision"):
+                raise fail(ValueError("Pick the path or outcome that would have been right."), 422)
+            if case.get("choices") and body.decision not in case["choices"]:
+                raise fail(ValueError(f"{body.decision!r} isn't one of {', '.join(case['choices'])}."), 422)
+            case.update(status="corrected", correction={"decision": body.decision, "note": body.note.strip()}, confirmed_by=who, confirmed_at=time.time())
+        elif body.verdict == "reject":
+            case.update(status="rejected", confirmed_by=who, confirmed_at=time.time(), confirm_note=body.note.strip() or None)
+        else:
+            raise fail(ValueError("The verdict is confirm, correct, reject or forget."), 422)
+        store.save_memory(name, cases)
+        return case
 
     @app.post("/api/agents/{name}/rename")
     def rename_agent(name: str, body: Rename) -> dict[str, Any]:

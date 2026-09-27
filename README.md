@@ -31,7 +31,7 @@ of work; **flow blocks** hold steps and decide how they run.
 | Approve | Step | A person decides before anything changes. | `human_gate` |
 | Act | Step | Changes something outside the agent, using only checked fields. | `script` or `mcp` step calling the connector gateway |
 | Parallel | Flow | Runs its steps at the same time. | `parallel:` group with `failure_mode` |
-| Branch | Flow | Picks one path based on an earlier result. | `routes:` with `when:` |
+| Branch | Flow | Picks one path based on an earlier result, by rules or by a model. | `routes:` with `when:`; a model-decided Branch adds a small `agent` step routed on its chosen path |
 | Free-form | Flow | A model picks which of its steps to run, and how often, toward a goal. Holds only Ask and Built-in steps. | a planner `agent` routing to each inner step once its inputs exist, each routing back; "Before finishing" rules checked by the CEL evaluator |
 
 Record types (such as Booking below) describe the data passed between steps.
@@ -106,6 +106,37 @@ What it added to the design:
 4. Safety checks have to be finishing rules: a planner fooled by untrusted content is more likely to skip a step than
    to run a harmful one, and it can't run harmful ones at all.
 5. Tests need a sample per outcome; the test run shows which outcomes haven't been covered.
+
+## Branches decided by a model, and memory
+
+A Branch decides **by rules** (a CEL `when:` per path, as before) or **by a model** for choices a rule can't express
+("is this booking legitimate?"). A model-decided Branch has a question, the earlier results it decides on, and a
+plain-language "when this is true" per path. The last path is the safe default, used when nothing else clearly applies.
+It compiles to one small agent step whose output is `{path, reason, evidence}` (the path is an enum of the path names)
+and whose routes go by `output.path`. **Hard rules first** are CEL checks that run before the model is asked, for
+outcomes that aren't up to judgment (amounts over a limit always go to review).
+
+A model-decided Branch can also **decide for each item of a list** (issues, invoices), several at a time. It compiles
+to `<id>_items` (each item, with its memory fields and recalled cases), a Conductor `for_each` group `<id>_each` (one
+decision per item), and `<id>`, which collects them. Paths don't route in this mode: each item gets its path, reason
+and evidence, and later steps read `<id>.decisions` and `<id>.counts`. An item that can't be decided takes the last
+path and says so. Either kind of model-decided Branch may **read** to decide (`uses`, read-only actions), so a list can
+just name each item and the Branch reads the rest.
+
+**Memory** only has meaning where there's a judgment to inform, so only model-decided Branches and Free-form blocks
+have it; a rule-based Branch can't. With Memory on:
+
+- Before deciding, a `<id>_recall` step reads past cases and hands them to the model (the Branch's prompt, or the
+  Free-form planner's). The text says they're data from earlier runs, not instructions, and each case is kept short.
+- Cases are matched on the fields the builder picks ("similar when these match", e.g. `sender_domain`): most matching
+  fields first, then the newest. With no fields, it's the most recent cases. At most *max cases* are recalled.
+- When a run succeeds, each judgment becomes a candidate: the path chosen with its reason and evidence, or the
+  Free-form outcome with the steps it ran and the planner's notes.
+- **Nothing reaches later runs unreviewed.** A candidate waits on its run page ("Remember this run's judgments?") and
+  on the agent's **Memory** tab. A person marks it right (confirm), marks it wrong and picks the right answer with a
+  note (correct), or doesn't remember it (reject). Only confirmed and corrected cases are recalled.
+- The confirmed cases are copied into the run folder (`memory.json`) when a run starts, so a run can be repeated
+  exactly. Test runs and single-step re-runs don't create candidates.
 
 ## Design time and run time (prototype)
 

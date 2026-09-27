@@ -135,6 +135,28 @@ branch: pick one path from earlier results.
     name: Any trips found?
     paths: [{name: Trips found, when: "size(steps.find_and_check.trips) > 0", then: next}, {name: Otherwise, then: end}]
   then: next | end | a later top-level step id. The last path has no `when`.
+  A model can decide instead, for judgments a rule can't express ("is this legitimate?"):
+  - id: verify_booking
+    kind: branch
+    name: Is this a legitimate booking?
+    decide: model
+    model: claude-sonnet-5
+    question: Is this email a genuine booking for the traveler?
+    takes: {booking: read.booking}
+    paths: [{name: Legitimate, when_true: "...", then: next}, {name: Suspicious, when_true: "...", then: review}, {name: Not sure, then: review}]
+    rules_first: [{when: "<CEL>", then: review}]      # optional: outcomes not up to judgment
+    memory: {match_on: {sender_domain: trigger.sender_domain}, max_cases: 5}   # optional: past confirmed decisions
+  The last path is the safe default. Later steps read <id>.path and <id>.reason.
+  A model-decided Branch may read to decide: `uses` with read-only actions, like an Ask step.
+  To judge every item of a list (issues, invoices...), decide for each item instead of once per run; items are
+  decided in parallel. Paths then don't route: omit `then` and `rules_first`; later steps read <id>.decisions
+  (a list of {label, item, path, reason, evidence, decided}) and <id>.counts. Inside, <as> is one item:
+    for_each: {over: list_issues.issues, as: issue, at_once: 5}
+    uses: {connection: github, actions: [issue_read], repos: [owner/name]}   # read each item's details itself
+    memory: {match_on: {author: issue.author}}
+  Prefer this to one Ask step that copies every item's full text into its answer: long lists overflow its output.
+  Free-form blocks can have `memory` too (match_on: values known when the block starts, e.g. trigger or run fields).
+  Memory only recalls decisions a person confirmed or corrected.
 
 approve: a person decides before anything changes. The first choice must pass nothing.
   - id: approve_trips

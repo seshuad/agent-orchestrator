@@ -5,10 +5,10 @@ import { api, when, type Expectation, type TestCase } from '../api'
 import { Icon, Pill } from '../ui'
 import { ExpectationsEditor } from './SaveAsTest'
 
-export function AgentTabs({ name, tab }: { name: string; tab: 'Design' | 'Runs' | 'Tests' }) {
+export function AgentTabs({ name, tab }: { name: string; tab: 'Design' | 'Runs' | 'Tests' | 'Memory' }) {
   return (
     <nav className="row" style={{ gap: 4, marginLeft: 12 }}>
-      {(['Design', 'Runs', 'Tests'] as const).map((t) => t === tab
+      {(['Design', 'Runs', 'Tests', 'Memory'] as const).map((t) => t === tab
         ? <span key={t} className="btn small" style={{ border: 'none', background: 'var(--acc-soft)' }}>{t}</span>
         : <Link key={t} to={t === 'Design' ? `/agents/${name}` : `/agents/${name}/${t.toLowerCase()}`} className="btn small" style={{ border: 'none' }}>{t}</Link>)}
     </nav>

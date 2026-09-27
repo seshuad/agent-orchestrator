@@ -111,7 +111,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             email_id: str | None = None, replay: Path | None = None, replay_gates: bool = True,
             run_id: str | None = None, vault: Path | None = None, trigger_email: dict[str, Any] | None = None,
             live: bool | None = None, accounts: dict[str, dict[str, Any]] | None = None,
-            connectors: dict[str, dict[str, Any]] | None = None, transform: Any = None) -> Prepared:
+            connectors: dict[str, dict[str, Any]] | None = None, transform: Any = None,
+            memory: list[dict[str, Any]] | None = None) -> Prepared:
     """With `live` (default: when there's a `vault`), Gmail and GitHub steps use the real accounts their connections
     name; the rest stay on sample data. MCP steps always use the real system: `accounts` and `connectors` say which
     server, how it signs in and which tools its admin approved, and all of that goes into the signed limits token.
@@ -124,6 +125,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
     run_dir.mkdir(parents=True, exist_ok=False)
     workflow = run_dir / "workflow.yaml"
     workflow.write_text(compiled.yaml(HEADER))
+    # Confirmed past cases, as they stand when the run starts: recall reads this copy, so a run is repeatable.
+    (run_dir / "memory.json").write_text(json.dumps([c for c in memory or [] if c.get("status") in ("confirmed", "corrected")], default=str))
 
     inputs = dict(inputs or {})
     if agent.trigger.kind == "email":

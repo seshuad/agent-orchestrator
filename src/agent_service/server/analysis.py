@@ -46,6 +46,8 @@ def _cel_sites(raw: dict[str, Any]) -> list[tuple[str, str]]:
         for j, p in enumerate(s.get("paths") or []):
             if p.get("when"):
                 sites.append((f"{path}.paths.{j}.when", p["when"]))
+        for j, r in enumerate(s.get("rules_first") or []):
+            sites.append((f"{path}.rules_first.{j}.when", r.get("when", "")))
         if s.get("pre_select"):
             sites.append((f"{path}.pre_select", s["pre_select"]))
         for j, op in enumerate((s.get("operation") or {}).get("tidy") or []):
@@ -170,6 +172,8 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
                  {"ref": "trigger.sender_domain", "label": "Trigger › its sender's domain", "type": "text"}]
     for s in agent.steps:
         if s.id == step_id:
+            if isinstance(s, BranchBlock) and s.for_each:
+                refs += _item_refs(agent, s, refs)
             break
         if isinstance(s, FreeFormBlock):
             if any(i.id == step_id for i in s.steps):
@@ -184,9 +188,26 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
             refs += [{"ref": f"{s.id}.{n}", "label": f"{s.name} › {n}", "type": "value"} for n in s.returns]
         elif isinstance(s, ApproveStep):
             refs.append({"ref": f"{s.id}.approved", "label": f"{s.name} › approved items", "type": "list"})
+        elif isinstance(s, BranchBlock) and s.decide == "model" and s.for_each:
+            refs += [{"ref": f"{s.id}.decisions", "label": f"{s.name} › every {s.for_each.as_}'s decision", "type": "list of decisions"},
+                     {"ref": f"{s.id}.counts", "label": f"{s.name} › how many took each path", "type": "record"}]
+        elif isinstance(s, BranchBlock) and s.decide == "model":
+            refs += [{"ref": f"{s.id}.path", "label": f"{s.name} › the path chosen", "type": "text"},
+                     {"ref": f"{s.id}.reason", "label": f"{s.name} › why", "type": "text"}]
         else:
             refs += [{"ref": f"{s.id}.{n}", "label": f"{s.name} › {n}", "type": t} for n, t in _type_of_returns(s)]
     return refs
+
+
+def _item_refs(agent: definition.Agent, step: BranchBlock, refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Inside a Branch that decides for each item: the item, and its fields when the list's record type is known."""
+    name = step.for_each.as_
+    listed = next((r for r in refs if r["ref"] == step.for_each.over.rstrip("?")), None)
+    kind = (listed or {}).get("type", "")
+    record = agent.records.get(kind.removeprefix("list of ")) if kind.startswith("list of ") else None
+    out = [{"ref": name, "label": f"Each {name}", "type": kind.removeprefix("list of ") or "value"}]
+    out += [{"ref": f"{name}.{f}", "label": f"Each {name} › {f}", "type": fd.type} for f, fd in (record.fields.items() if record else [])]
+    return out
 
 
 # ------------------------------------------------------------------ the Free-form graph

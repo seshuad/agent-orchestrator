@@ -11,6 +11,7 @@ import ConnectionForm from './pages/ConnectionForm'
 import Connectors from './pages/Connectors'
 import McpConnector from './pages/McpConnector'
 import Tests from './pages/Tests'
+import Memory from './pages/Memory'
 import Editor from './editor/Editor'
 
 export default function App() {
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/agents/:name" element={<Editor />} />
             <Route path="/agents/:name/runs" element={<RunsPage />} />
             <Route path="/agents/:name/tests" element={<Tests />} />
+            <Route path="/agents/:name/memory" element={<Memory />} />
             <Route path="/agents/:name/runs/:runId" element={<RunsPage />} />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/:runId" element={<RunsPage />} />

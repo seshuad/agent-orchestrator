@@ -257,6 +257,14 @@ class Store:
     def can_undo_ai(self, name: str) -> bool:
         return (self._dir(name) / "draft.before-ai.agent.yaml").exists()
 
+    def memory(self, name: str) -> list[dict[str, Any]]:
+        """The agent's remembered cases: agents/<name>/memory.json (candidates, confirmed, corrected, rejected)."""
+        path = self._dir(name) / "memory.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def save_memory(self, name: str, cases: list[dict[str, Any]]) -> None:
+        (self._dir(name) / "memory.json").write_text(json.dumps(cases, indent=1, default=str))
+
     def tests(self, name: str) -> list[dict[str, Any]]:
         """The agent's test cases: agents/<name>/tests.yaml."""
         path = self._dir(name) / "tests.yaml"

@@ -1,16 +1,14 @@
 // Ask step: a model reads and extracts. It can never change anything.
 import { Area, Block, Check, FieldErrors, Select, Text } from '../../ui'
 import { MODELS, MODEL_LABEL } from '../model'
-import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useMcpTools, useStep } from './common'
+import { FieldsEditor, ReadsEditor, StepHeader, TakesEditor, useStep } from './common'
 import { WritingHelp } from './WritingHelp'
 
 export default function Ask() {
   const { step, set, draft, p, inside, block } = useStep()
-  const service = step.uses ? draft.connections?.[step.uses.connection]?.service : null
   const shared = Object.keys(draft.shared_instructions ?? {})
   const usesShared = typeof step.instructions === 'object' && step.instructions !== null
   const others = (block?.steps ?? []).filter((s: any) => s.id !== step.id)
-  const mcpTools = useMcpTools(service === 'mcp' ? step.uses?.connection : undefined)
   return (
     <>
       <StepHeader note={inside ? 'Runs when the planner picks it and what it needs exists.' : undefined} />
@@ -22,12 +20,7 @@ export default function Ask() {
         <TakesEditor />
       </Block>
       <Block title="Can use">
-        <UsesEditor mcpTools={service === 'mcp' ? mcpTools : undefined}
-          actions={service === 'mcp' ? mcpTools.filter((t) => t.treat === 'read').map((t) => t.name)
-            : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read']
-            : service === 'bigquery' ? ['query', 'list_tables', 'get_schema'] : ['search', 'open']}
-          limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
-            : service === 'github' ? ['repos', 'lookback_days'] : service === 'bigquery' ? ['datasets', 'max_bytes', 'max_rows'] : []} />
+        <ReadsEditor />
         <span className="faint">Ask steps can only read: send, delete and change actions aren't offered.</span>
       </Block>
       <Block title="Instructions">

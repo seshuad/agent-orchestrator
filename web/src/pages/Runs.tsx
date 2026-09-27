@@ -5,6 +5,8 @@ import { api, duration, followRun, when, STATUS_LABEL, type Run, type RunDetail 
 import { Block, Guarantees, Icon, Pill, Segmented, Check } from '../ui'
 import RunNow from './RunNow'
 import SaveAsTest from './SaveAsTest'
+import { CaseCard } from './Memory'
+import type { MemoryCase } from '../api'
 import { AgentTabs } from './Tests'
 import StepInspector from './StepInspector'
 
@@ -91,6 +93,7 @@ function RunView({ id }: { id: string }) {
   const [opening, setOpening] = useState(false)
   const [inspecting, setInspecting] = useState<{ step: string; n: number; label: string } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [judgments, setJudgments] = useState<MemoryCase[]>([])
   const openConductor = async () => {
     const tab = window.open('about:blank', '_blank')       // open now, so the browser doesn't block it as a pop-up
     setOpening(true)
@@ -103,6 +106,7 @@ function RunView({ id }: { id: string }) {
 
   const isLive = d !== null && ['running', 'waiting'].includes(d.status)
   useEffect(() => { api.run(id).then(setD).catch((e) => setError(e.message)) }, [id])
+  useEffect(() => { if (d && !['running', 'waiting'].includes(d.status)) api.runMemory(id).then(setJudgments).catch(() => {}) }, [id, d?.status])
   useEffect(() => (isLive ? followRun(id, setD) : undefined), [id, isLive])
 
   if (error) return <div className="page"><div className="notice bad">{error}</div></div>
@@ -170,6 +174,15 @@ function RunView({ id }: { id: string }) {
               {!r.passed && <span className="field-error">{r.error ?? `was ${JSON.stringify(r.value)}`}</span>}
             </span>
           ))}
+        </div>
+      )}
+
+      {judgments.length > 0 && (
+        <div className="stack" style={{ gap: 8 }}>
+          <span className="row" style={{ gap: 8 }}><Icon name="spark" size={14} color="var(--flow)" /><strong>Remember this run's judgments?</strong>
+            <span className="faint">Later runs recall only the ones a person confirms or corrects.</span></span>
+          {judgments.map((c) => <CaseCard key={c.id} agent={d.agent} c={c} showRun={false}
+            onChange={(n) => setJudgments(judgments.flatMap((x) => (x.id === c.id ? (n ? [n] : []) : [x])))} />)}
         </div>
       )}
 
