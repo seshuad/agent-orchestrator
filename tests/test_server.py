@@ -514,8 +514,12 @@ def test_describe_it_drafts_checks_and_fixes_an_agent(api, monkeypatch):
     d = wait_job(api, job)
     assert d["status"] == "done", d["error"]
     assert d["attempts"] == 2 and d["result"]["errors"] == [] and d["result"]["agent"] == "leak-log"
-    assert "can only read" in fake.asked[1]["messages"][-1]["content"]          # the check's error went back to Claude
-    assert "seshu-gmail" in fake.asked[0]["messages"][0]["content"]            # it was told the workspace's accounts
+    text = lambda m: m["content"] if isinstance(m["content"], str) else "".join(b.get("text", "") for b in m["content"])
+    assert "can only read" in text(fake.asked[1]["messages"][-1])              # the check's error went back to Claude
+    assert "seshu-gmail" in text(fake.asked[0]["messages"][0])                 # it was told the workspace's accounts
+    marked = [i for i, m in enumerate(fake.asked[1]["messages"]) if not isinstance(m["content"], str)
+              and any(isinstance(b, dict) and b.get("cache_control") for b in m["content"])]
+    assert marked == [len(fake.asked[1]["messages"]) - 1]                    # the next round reads the rest from the cache
     agent = api.get("/api/agents/leak-log").json()
     assert agent["feedback"]["ok"] and agent["meta"]["sample_set"] == "Water alerts" and not agent["meta"]["published"]
     assert agent["meta"]["ai"]["assumptions"] == ["The Leaks sheet already exists."] and agent["meta"]["ai"]["questions"] == []
@@ -904,3 +908,89 @@ def test_a_branch_decides_for_each_item_and_remembers_each(api, tmp_path):
     items = next(e for e in again["log"] if e["id"] == "triage_items")
     assert items["detail"] == "3 to decide, with 3 past cases recalled"          # the correction: same author for ana's, the newest for bo's
     assert api.get(f"/api/runs/{again['id']}/memory").json() == []             # sure of all three, and nothing sampled
+
+
+@needs_conductor
+def test_a_parallel_block_runs_steps_for_each_item_with_routing(api, tmp_path):
+    import yaml as _yaml
+    from agent_service.server.store import Store
+    api.post("/api/agents", json={"name": "triage2", "sample_set": "GitHub issues"})
+    draft = api.get("/api/agents/triage2").json()["draft"]
+    draft["records"] = {"Issue": {"fields": {"number": {"type": "number"}, "title": {"type": "text"}, "author": {"type": "text"}}}}
+    code = ("return {issues: [{number: 7, title: 'Crash on save', author: 'ana'}, {number: 8, title: 'Slow', author: 'bo'},"
+            " {number: 9, title: 'Idea', author: 'ana'}]};")
+    classify = {"id": "classify", "kind": "branch", "name": "Enough to act on?", "decide": "model", "model": "claude-sonnet-5",
+                "question": "Can a maintainer act on it now?", "takes": {"issue": "issue"},
+                "memory": {"match_on": {"author": "issue.author"}, "ask_sample": 0},
+                "paths": [{"name": "Actionable", "when_true": "Clear steps", "then": "end"},
+                          {"name": "Needs more information", "when_true": "Missing details", "then": "ask_author"},
+                          {"name": "Other or unclear", "then": "end"}]}
+    ask_author = {"id": "ask_author", "kind": "built-in", "name": "Draft a question", "takes": {"issue": "issue", "why": "classify.reason"},
+                  "operation": {"javascript": {"code": "return {question: 'Could you add details to #' + inputs.issue.number + '? ' + inputs.why};"}},
+                  "returns": {"question": {"type": "text"}}}
+    draft["steps"] = [
+        {"id": "issues", "kind": "built-in", "name": "The issues", "operation": {"javascript": {"code": code}}, "returns": {"issues": {"type": "list of Issue"}}},
+        {"id": "each_issue", "kind": "parallel", "name": "Triage each issue", "for_each": {"over": "issues.issues", "as": "issue", "at_once": 3},
+         "failure": "continue", "steps": [classify, ask_author]},
+        {"id": "show", "kind": "built-in", "name": "Show", "operation": {"show": {}}, "takes": {"value": "each_issue.results"}},
+        {"id": "show_more", "kind": "built-in", "name": "Show questions", "operation": {"show": {}},
+         "takes": {"value": "each_issue.classify.by_path.needs_more_information"}}]
+    fb = api.put("/api/agents/triage2", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert "each_issue.item.yaml" in fb["compiled"] and "type: for_each" in fb["compiled"]
+    refs = {r["ref"] for r in api.get("/api/agents/triage2/references?step=ask_author").json()}
+    assert {"issue", "issue.author", "classify.path", "classify.reason"} <= refs                   # the item and earlier steps inside
+    refs = {r["ref"] for r in api.get("/api/agents/triage2/references?step=show").json()}
+    assert {"each_issue.results", "each_issue.classify.by_path.needs_more_information"} <= refs
+    script = {"classify": [{"path": "Actionable", "reason": "Steps given.", "evidence": [], "confidence": "sure"},
+                           {"path": "Needs more information", "reason": "No repo size.", "evidence": [], "confidence": "unsure", "runner_up": "Actionable"},
+                           {"path": "Needs more information", "reason": "No use case.", "evidence": [], "confidence": "sure"}]}
+    replay = tmp_path / "replay.yaml"
+    replay.write_text(_yaml.safe_dump(script))
+    store = Store(tmp_path)
+    store.set_test_data("triage2", store.meta("triage2")["sample_data"], str(replay))
+    d = run_scripted(api, "triage2", {})
+    assert d["status"] == "succeeded", d.get("error")
+    results = json.loads(next(e for e in d["log"] if e["id"] == "show")["value"])
+    assert [r["classify"]["path"] for r in results] == ["Actionable", "Needs more information", "Needs more information"]
+    assert results[0]["ask_author"] is None and results[1]["ask_author"]["question"].startswith("Could you add details to #8? No repo size")
+    more = json.loads(next(e for e in d["log"] if e["id"] == "show_more")["value"])
+    assert [m["label"] for m in more] == ["#8 Slow", "#9 Idea"]
+    lines = [(e["step"], e["detail"]) for e in d["log"] if e.get("item")]
+    assert ("#7 Crash on save › Enough to act on?", "Chose: Actionable") in lines
+    assert ("#8 Slow › Draft a question", "question: Could you add details to #8? No repo size.") in lines
+    assert any(step == "#9 Idea › Draft a question" for step, _ in lines) and not any(step == "#7 Crash on save › Draft a question" for step, _ in lines)
+    asked = api.get(f"/api/runs/{d['id']}/memory").json()
+    assert [(c["subject"], c["asked_because"], c["ref"]) for c in asked] == [("#8 Slow", "unsure", "classify#1")]
+    row = next(e for e in d["log"] if e["step"] == "#9 Idea › Enough to act on?")
+    fixed = api.post(f"/api/runs/{d['id']}/judgments", json={"ref": row["ref"], "decision": "Other or unclear", "note": "An idea, not a task."}).json()
+    assert fixed["status"] == "corrected" and fixed["keys"] == {"author": "ana"} and fixed["subject"] == "#9 Idea"
+
+
+@needs_conductor
+def test_a_parallel_block_runs_ask_steps_together(api, tmp_path):
+    import yaml as _yaml
+    from agent_service.server.store import Store
+    api.post("/api/agents", json={"name": "two-reads", "sample_set": "GitHub issues"})
+    draft = api.get("/api/agents/two-reads").json()["draft"]
+    ask = lambda i: {"id": f"read_{i}", "kind": "ask", "name": f"Read {i}", "model": "claude-haiku-4-5", "instructions": "Read.",
+                     "task": "Count.", "returns": {"count": {"type": "number"}}}
+    draft["steps"] = [{"id": "reads", "kind": "parallel", "name": "Read both", "steps": [ask("a"), ask("b")]},
+                      {"id": "total", "kind": "built-in", "name": "Add up", "takes": {"a": "read_a.count", "b": "read_b.count"},
+                       "operation": {"javascript": {"code": "return {total: inputs.a + inputs.b};"}}, "returns": {"total": {"type": "number"}}}]
+    fb = api.put("/api/agents/two-reads", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    wf = _yaml.safe_load(fb["compiled"])
+    assert wf["parallel"][0]["agents"] == ["read_a", "read_b"] and "reads.outputs.get(" in fb["compiled"]
+    bad = dict(draft, steps=[{**draft["steps"][0], "steps": [ask("a"), draft["steps"][1]]}])
+    fb = api.put("/api/agents/two-reads", json={"draft": bad}).json()["feedback"]
+    assert any("only Ask steps run together" in e["message"] for e in fb["errors"])
+    api.put("/api/agents/two-reads", json={"draft": draft})
+    replay = tmp_path / "replay.yaml"
+    replay.write_text(_yaml.safe_dump({"read_a": [{"count": 2}], "read_b": [{"count": 3}]}))
+    store = Store(tmp_path)
+    store.set_test_data("two-reads", store.meta("two-reads")["sample_data"], str(replay))
+    d = run_scripted(api, "two-reads", {})
+    assert d["status"] == "succeeded", d.get("error")
+    assert next(e for e in d["log"] if e["id"] == "total")["detail"] == "total: 5"
+    assert any(e["kind"] == "group" and "Read a, Read b at the same time" in e["detail"] for e in d["log"])

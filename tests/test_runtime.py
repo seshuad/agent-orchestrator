@@ -485,3 +485,22 @@ def test_bigquery_budget_counts_this_months_queries(tmp_path):
     (tmp_path / "r1" / "gateway.jsonl").write_text(json.dumps({"ts": __import__("time").time(), "connector": "bq",
                                                                "bytes_billed": 1024 ** 4}) + "\n")      # 1 TiB = $6.25
     assert round(runner.month_spend("bq", tmp_path), 2) == 6.25 and runner.month_spend("other", tmp_path) == 0
+
+
+def test_runs_start_conductor_with_prompt_caching_on(monkeypatch):
+    """Conductor's Claude steps get Pydantic AI's automatic prompt caching through conductor_cached.py."""
+    import shutil
+    import subprocess
+    from agent_service import runner
+    if shutil.which("conductor") is None:
+        pytest.skip("conductor is not installed")
+    command = runner.conductor_command()
+    assert command[-1].endswith("conductor_cached.py")
+    probe = ("import runpy, sys; m = runpy.run_path(sys.argv[1]); assert m['enable_prompt_caching']();"
+             "from conductor.providers._pydantic_ai import agent_builder as ab; from conductor.config.schema import AgentDef;"
+             "s = ab._build_anthropic_model_settings(AgentDef(name='a', model='claude-sonnet-5', prompt='x'), None, None, None);"
+             "print(s.get('anthropic_cache'))")
+    out = subprocess.run([command[0], "-c", probe, command[1]], capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "True", out.stderr
+    monkeypatch.setenv("AGENT_SERVICE_PROMPT_CACHE", "0")
+    assert runner.conductor_command() == ["conductor"]

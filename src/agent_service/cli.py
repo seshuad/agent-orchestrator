@@ -35,9 +35,11 @@ def cmd_compile(a: argparse.Namespace) -> None:
     if a.output:
         Path(a.output).write_text(text)
         Path(a.output).with_suffix(".limits.json").write_text(json.dumps(compiled.limits, indent=1) + "\n")
-        print(f"Wrote {a.output} and {Path(a.output).with_suffix('.limits.json')}")
+        for name in compiled.files:
+            (Path(a.output).parent / name).write_text(compiled.file_yaml(name, _header(a.agent)))
+        print(f"Wrote {a.output}, {Path(a.output).with_suffix('.limits.json')}" + "".join(f", {n}" for n in compiled.files))
     else:
-        sys.stdout.write(text)
+        sys.stdout.write(compiled.all_yaml() if compiled.files else text)
 
 
 def cmd_run(a: argparse.Namespace) -> int:

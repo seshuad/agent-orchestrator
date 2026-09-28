@@ -733,7 +733,6 @@ agents:
   server: cel-evaluator
   tool: evaluate
   input:
-  - find_and_check.output?
   - finish_check.output?
   - workflow.input.dry_run
   - workflow.input.my_name
@@ -770,7 +769,6 @@ agents:
   server: cel-evaluator
   tool: evaluate
   input:
-  - find_and_check.output?
   - finish_check.output?
   - workflow.input.dry_run
   - workflow.input.my_name

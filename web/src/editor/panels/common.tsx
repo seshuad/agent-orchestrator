@@ -13,7 +13,9 @@ export function useStep() {
   const p = (...sub: Path) => pathStr([...path, ...sub])     // error path for a field
   const inside = path.length === 4
   const block: Json | null = inside ? getIn(ed.draft, path.slice(0, 2)) : null
-  return { ...ed, path, step, set, p, inside, block }
+  const inFreeForm = block?.kind === 'free-form'            // the planner decides when it runs
+  const inEach = block?.kind === 'parallel' && !!block.for_each   // it runs once for each item
+  return { ...ed, path, step, set, p, inside, block, inFreeForm, inEach }
 }
 
 let workspaceCache: Promise<[Connection[], Connector[]]> | null = null
@@ -68,7 +70,7 @@ export function StepHeader({ note }: { note?: ReactNode }) {
     update(path.slice(0, -1), list)
     select({ type: 'step', path: [...path.slice(0, -1), to] })
   }
-  const flow = step.kind === 'branch' || step.kind === 'free-form'
+  const flow = step.kind === 'branch' || step.kind === 'free-form' || step.kind === 'parallel'
   return (
     <>
       <div className="stack" style={{ gap: 2 }}>

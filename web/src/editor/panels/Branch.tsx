@@ -6,11 +6,13 @@ import { MODELS, MODEL_LABEL } from '../model'
 import { MemoryEditor, ReadsEditor, StepHeader, TakesEditor, useStep } from './common'
 
 export default function Branch() {
-  const { step, set, p, draft, refs } = useStep()
+  const { step, set, p, draft, refs, inEach, block } = useStep()
   const paths: Json[] = step.paths ?? []
   const byModel = step.decide === 'model'
-  const targets = ['next', 'end', ...(draft.steps ?? []).map((s: Json) => s.id).filter((id: string) => id !== step.id)]
-  const labels = { next: 'The next step', end: 'End the run', ...Object.fromEntries((draft.steps ?? []).map((s: Json) => [s.id, s.name])) }
+  const among: Json[] = inEach ? block?.steps ?? [] : draft.steps ?? []        // inside a block for each item: its own steps
+  const itemName = block?.for_each?.as ?? 'item'
+  const targets = ['next', 'end', ...among.map((s: Json) => s.id).filter((id: string) => id !== step.id)]
+  const labels = { next: 'The next step', end: inEach ? `The end, for this ${itemName}` : 'End the run', ...Object.fromEntries(among.map((s: Json) => [s.id, s.name])) }
   const hard: Json[] = step.rules_first ?? []
   const each: Json | undefined = step.for_each
   const lists = refs.filter((r) => r.type.startsWith('list'))
@@ -32,13 +34,17 @@ export default function Branch() {
   }
   return (
     <>
-      <StepHeader note={each ? `A model picks one path for each ${each.as || 'item'} of a list.` : byModel ? 'A model reads the inputs and picks exactly one path.' : 'Paths are checked in order and the first match runs.'} />
+      <StepHeader note={inEach ? `Decides once for each ${itemName}; its paths lead to the block\u2019s steps for that ${itemName}.` : each ? `A model picks one path for each ${each.as || 'item'} of a list.` : byModel ? 'A model reads the inputs and picks exactly one path.' : 'Paths are checked in order and the first match runs.'} />
       <Block title="Decide">
         <Segmented options={['rules', 'model']} value={byModel ? 'model' : 'rules'} onChange={(v) => (v === 'model' ? toModel() : toRules())}
           labels={{ rules: 'By rules (CEL)', model: 'By a model (a judgment)' }} />
-        <span className="faint">{byModel ? `For decisions a rule can\u2019t express, like "is this legitimate?". One small model call ${each ? `per ${each.as || 'item'}` : 'per run'}.` : 'Free, instant and exact. No model.'}</span>
+        <span className="faint">{byModel ? `For decisions a rule can\u2019t express, like "is this legitimate?". One small model call ${each ? `per ${each.as || 'item'}` : inEach ? `per ${itemName}` : 'per run'}.` : 'Free, instant and exact. No model.'}</span>
       </Block>
-      {byModel && (
+      {byModel && each && (
+        <div className="notice warn"><Icon name="alert" size={15} /><span>Deciding for each item now lives in the <strong>Parallel</strong> block: add one that
+          runs for each item, and put this Branch inside it. Its paths can then lead to steps for that item.</span></div>
+      )}
+      {byModel && each && (
         <Block title="Decide for">
           <Segmented options={['run', 'each']} value={each ? 'each' : 'run'} onChange={(v) => toEach(v === 'each')}
             labels={{ run: 'The run, once', each: 'Each item in a list' }} />

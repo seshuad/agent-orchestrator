@@ -9,10 +9,11 @@ import Ask from './Ask'
 import Branch from './Branch'
 import BuiltIn from './BuiltIn'
 import FreeForm from './FreeForm'
+import Parallel from './Parallel'
 import Record from './Record'
 import Settings from './Settings'
 
-const PANELS: Record<string, () => React.JSX.Element> = { ask: Ask, 'built-in': BuiltIn, 'free-form': FreeForm, branch: Branch, approve: Approve, act: Act }
+const PANELS: Record<string, () => React.JSX.Element> = { ask: Ask, 'built-in': BuiltIn, 'free-form': FreeForm, branch: Branch, approve: Approve, act: Act, parallel: Parallel }
 
 export default function Panel() {
   const { selection, draft, hidePanel } = useEditor()

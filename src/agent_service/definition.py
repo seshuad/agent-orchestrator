@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 FORMAT = "agent-service/v1"
 SCALAR_TYPES = {"text", "number", "yes/no", "date & time with time zone"}
@@ -296,7 +296,45 @@ class ActStep(Step):
         return self
 
 
-AnyStep = Annotated[Union[AskStep, BuiltInStep, FreeFormBlock, BranchBlock, ApproveStep, ActStep], Field(discriminator="kind")]
+InParallel = Annotated[Union[AskStep, BuiltInStep, BranchBlock, ActStep], Field(discriminator="kind")]
+
+
+class ParallelBlock(Step):
+    """Steps that run at the same time. Together: its Ask steps, all at once. For each: its steps, in order (with
+    Branches routing between them), once for every item of a list, several items at a time."""
+    kind: Literal["parallel"]
+    steps: list[InParallel]
+    for_each: ForEach | None = None
+    failure: Literal["stop", "continue"] = "stop"   # one step (or item) fails: stop everything, or keep the others going
+
+    @model_validator(mode="after")
+    def _shape(self) -> ParallelBlock:
+        ids = [s.id for s in self.steps]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"{self.name}: two steps inside have the same id")
+        if self.for_each is None:
+            if len(self.steps) < 2:
+                raise ValueError(f"{self.name}: add at least two steps to run together")
+            others = [s.name for s in self.steps if not isinstance(s, AskStep)]
+            if others:
+                raise ValueError(f"{self.name}: only Ask steps run together; put {', '.join(others)} before or after the block, "
+                                 "or run the block for each item of a list")
+            return self
+        if not self.steps:
+            raise ValueError(f"{self.name}: add the steps to run for each {self.for_each.as_}")
+        for s in self.steps:
+            if isinstance(s, BranchBlock):
+                if s.for_each is not None:
+                    raise ValueError(f"{s.name}: it already runs for each {self.for_each.as_}, inside {self.name}")
+                targets = [p.then for p in s.paths] + [r.then for r in s.rules_first]
+                wrong = [t for t in targets if t not in ("next", "end") and t not in ids]
+                if wrong:
+                    raise ValueError(f"{s.name}: inside {self.name}, a path can go to its steps, the next step or the end "
+                                     f"(of this {self.for_each.as_}); not {', '.join(wrong)}")
+        return self
+
+
+AnyStep = Annotated[Union[AskStep, BuiltInStep, FreeFormBlock, BranchBlock, ApproveStep, ActStep, ParallelBlock], Field(discriminator="kind")]
 
 
 class Agent(Strict):
@@ -310,6 +348,7 @@ class Agent(Strict):
     records: dict[str, RecordType] = Field(default_factory=dict)
     shared_instructions: dict[str, str] = Field(default_factory=dict)
     steps: list[AnyStep]
+    _each: dict[str, Any] | None = PrivateAttr(default=None)    # compiling a block's steps for one item: {as, outer}
 
     @model_validator(mode="after")
     def _references(self) -> Agent:
@@ -324,6 +363,9 @@ class Agent(Strict):
                 raise ValueError(f"{s.name}: {'Ask steps' if isinstance(s, AskStep) else 'a Branch'} can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")
+        ids = [s.id for s in self.all_steps()]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"two steps are called {next(i for i in ids if ids.count(i) > 1)!r}: step ids must be different")
         if sum(isinstance(s, FreeFormBlock) for s in self.steps) > 1:
             raise ValueError("this prototype compiles at most one Free-form block per agent")
         return self
@@ -332,7 +374,7 @@ class Agent(Strict):
         out: list[Any] = []
         for s in self.steps:
             out.append(s)
-            if isinstance(s, FreeFormBlock):
+            if isinstance(s, (FreeFormBlock, ParallelBlock)):
                 out.extend(s.steps)
         return out
 

@@ -129,6 +129,32 @@ on what is found (follow-up searches, verification); otherwise use plain sequent
   Ask steps inside can have repeat: {planner_sets: focus, usually_after: tidy_up, when: "gap found"}.
   Built-in steps inside can have reruns_by_itself: true.
 
+parallel: run steps at the same time. Two ways:
+  Together: its Ask steps all at once (reads that don't depend on each other). Later steps read <step>.<field> as usual.
+  - id: reads
+    kind: parallel
+    name: Read the three mailboxes
+    steps: [<ask step>, <ask step>, <ask step>]        # only Ask steps run together
+    failure: stop | continue                           # one fails: stop the run, or keep the others
+  For each item of a list: its steps run in order for every item, several items at a time. Inside, <as> is one item;
+  a Branch's `then` can be one of the block's steps, next, or end (the end of that item only). Steps inside: Ask,
+  Built-in, Act and Branch (no Approve: approvals happen once, after the block).
+  - id: each_issue
+    kind: parallel
+    name: Triage each issue
+    for_each: {over: list_issues.issues, as: issue, at_once: 5}
+    failure: continue
+    steps:
+    - {id: classify, kind: branch, decide: model, question: "...", takes: {issue: issue},
+       uses: {connection: github, actions: [issue_read], repos: [owner/name]},   # read each item's details itself
+       memory: {match_on: {author: issue.author}},
+       paths: [{name: Actionable, when_true: "...", then: end}, {name: Needs more information, when_true: "...", then: ask_author},
+               {name: Not sure, then: end}]}
+    - {id: ask_author, kind: built-in, ...}            # runs only for the items sent to it
+  Later steps read <id>.results (each item: label, item, and one field per step, empty if it didn't run) and, for each
+  model-decided Branch inside, <id>.<branch>.decisions, <id>.<branch>.counts and <id>.<branch>.by_path.<path, snake_case>.
+  Prefer this to one Ask step that copies every item's full text into its answer: long lists overflow its output.
+
 branch: pick one path from earlier results.
   - id: any_trips
     kind: branch
@@ -148,14 +174,7 @@ branch: pick one path from earlier results.
     memory: {match_on: {sender_domain: trigger.sender_domain}, max_cases: 5}   # optional: past confirmed decisions
   The last path is the safe default. Later steps read <id>.path and <id>.reason.
   A model-decided Branch may read to decide: `uses` with read-only actions, like an Ask step.
-  To judge every item of a list (issues, invoices...), decide for each item instead of once per run; items are
-  decided in parallel. Paths then don't route: omit `then` and `rules_first`; later steps read <id>.decisions
-  (a list of {label, item, path, reason, evidence, decided}), <id>.counts, and <id>.by_path.<path, snake_case>: the items
-  that took one path, for steps that should handle only those (e.g. draft a question for each issue needing more information). Inside, <as> is one item:
-    for_each: {over: list_issues.issues, as: issue, at_once: 5}
-    uses: {connection: github, actions: [issue_read], repos: [owner/name]}   # read each item's details itself
-    memory: {match_on: {author: issue.author}}
-  Prefer this to one Ask step that copies every item's full text into its answer: long lists overflow its output.
+  To judge every item of a list, put the Branch inside a Parallel block that runs for each item (below).
   Free-form blocks can have `memory` too (match_on: values known when the block starts, e.g. trigger or run fields).
   Memory only recalls decisions a person confirmed or corrected. Decisions say how sure they were; a person is asked
   about the unsure ones plus a random share of the rest (memory.ask_sample, default 0.05), and can correct any from the log.
@@ -362,7 +381,7 @@ class Drafts:
         for attempt in range(MAX_FIXES + 1):
             job["attempts"] = attempt + 1
             job["stage"] = "Drafting the agent" if attempt == 0 else f"Fixing {len(errors)} problem{'s' if len(errors) != 1 else ''} (round {attempt})"
-            with client.messages.stream(model=MODEL, max_tokens=32000, system=system_blocks(), messages=messages,
+            with client.messages.stream(model=MODEL, max_tokens=32000, system=system_blocks(), messages=cached(messages),
                                         output_config={"effort": "high"}) as stream:
                 message = stream.get_final_message()
             job["cost_usd"] = round(job["cost_usd"] + cost(message.usage), 4)
@@ -392,6 +411,17 @@ class Drafts:
         if result is None:
             raise DraftError("Claude's answer never contained a readable agent definition.")
         return {**result, "errors": errors, "model": MODEL}
+
+
+def cached(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The conversation with a cache breakpoint on its newest message, beside the system prompt's. A fix round re-sends
+    the workspace, the request and every earlier draft: this way the next round reads all of it from the cache."""
+    out = list(messages)
+    content = out[-1]["content"]
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    out[-1] = {**out[-1], "content": blocks}
+    return out
 
 
 def _friendly(exc: Exception) -> str:

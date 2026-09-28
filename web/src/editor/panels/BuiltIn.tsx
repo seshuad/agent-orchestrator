@@ -195,7 +195,7 @@ function Tidy() {
 }
 
 export default function BuiltIn() {
-  const { step, set, p, inside, draft } = useStep()
+  const { step, set, p, inFreeForm: inside, draft } = useStep()
   const op = Object.keys(step.operation ?? {})[0] ?? 'lookup'
   const conf = step.operation?.[op] ?? {}
   const setOp = (next: string) => {

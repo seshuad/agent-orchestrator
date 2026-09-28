@@ -30,6 +30,7 @@ export const STEP_KINDS = [
   { kind: 'act', name: 'Act', text: 'Changes something outside the agent, using only checked fields.' },
 ] as const
 export const FLOW_KINDS = [
+  { kind: 'parallel', name: 'Parallel', text: 'Run Ask steps at the same time, or a set of steps for each item of a list.' },
   { kind: 'branch', name: 'Branch', text: 'Pick one path based on an earlier result.' },
   { kind: 'free-form', name: 'Free-form', text: 'A model picks which of these steps to run, and how often, toward a goal.' },
 ] as const
@@ -71,6 +72,8 @@ export function newStep(kind: string, draft: Json): Json {
         add_row: { sheet: '', row: {} }, follows_dry_run: 'run.dry_run' }
     case 'branch':
       return { id: uniqueId(draft, 'branch'), kind, name: 'New Branch', paths: [{ name: 'First path', when: 'true', then: 'next' }, { name: 'Otherwise', then: 'next' }] }
+    case 'parallel':
+      return { id: uniqueId(draft, 'together'), kind, name: 'New Parallel block', steps: [], failure: 'stop' }
     case 'free-form':
       return { id: uniqueId(draft, 'find'), kind, name: 'New Free-form block', goal: '', planning_model: 'claude-opus-5',
         limits: { ask_runs: 6, turns: 12 }, steps: [], before_finishing: [], returns: {} }
@@ -79,7 +82,13 @@ export function newStep(kind: string, draft: Json): Json {
 }
 
 export const KIND_LABEL: Record<string, string> = {
-  ask: 'Ask', 'built-in': 'Built-in', approve: 'Approve', act: 'Act', branch: 'Branch', 'free-form': 'Free-form',
+  ask: 'Ask', 'built-in': 'Built-in', approve: 'Approve', act: 'Act', branch: 'Branch', 'free-form': 'Free-form', parallel: 'Parallel',
 }
 
 export const TYPES = ['text', 'number', 'yes/no', 'choice', 'date & time with time zone', 'list of text']
+
+/** Which steps a block can hold: Free-form, Ask and Built-in; Parallel together, Ask; Parallel for each item, any step but Approve. */
+export function allowedInside(block: Json): string[] {
+  if (block.kind === 'parallel') return block.for_each ? ['ask', 'built-in', 'act', 'branch'] : ['ask']
+  return ['ask', 'built-in']
+}

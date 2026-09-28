@@ -5,13 +5,13 @@ import { FieldsEditor, ReadsEditor, StepHeader, TakesEditor, useStep } from './c
 import { WritingHelp } from './WritingHelp'
 
 export default function Ask() {
-  const { step, set, draft, p, inside, block } = useStep()
+  const { step, set, draft, p, inFreeForm, inEach, block } = useStep()
   const shared = Object.keys(draft.shared_instructions ?? {})
   const usesShared = typeof step.instructions === 'object' && step.instructions !== null
   const others = (block?.steps ?? []).filter((s: any) => s.id !== step.id)
   return (
     <>
-      <StepHeader note={inside ? 'Runs when the planner picks it and what it needs exists.' : undefined} />
+      <StepHeader note={inFreeForm ? 'Runs when the planner picks it and what it needs exists.' : inEach ? `Runs once for each ${block?.for_each?.as ?? 'item'}, in order with the block\u2019s other steps.` : undefined} />
       <Block title="Model">
         <Select value={step.model} options={MODELS} labels={MODEL_LABEL} onChange={(v) => set(['model'], v)} label="Model" />
         <FieldErrors path={p('model')} />
@@ -39,7 +39,7 @@ export default function Ask() {
         <WritingHelp field="task" value={step.task ?? ''} onChange={(v) => set(['task'], v)} />
       </Block>
       <Block title="Returns"><FieldsEditor fields={step.returns ?? {}} path={[...p().split('.'), 'returns']} onChange={(f) => set(['returns'], f)} /></Block>
-      {inside && (
+      {inFreeForm && (
         <Block title="Run again">
           <Check checked={!!step.repeat} onChange={(on) => set(['repeat'], on ? { planner_sets: 'focus', usually_after: others[0]?.id, when: 'gap found' } : undefined)}
             detail="Draws a dotted line in the block: where the planner can loop back.">The planner can run this again, with a focus</Check>

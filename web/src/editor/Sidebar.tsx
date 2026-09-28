@@ -3,9 +3,9 @@ import { useState } from 'react'
 import type { Json } from '../api'
 import { Icon, KIND_ICON, Pill } from '../ui'
 import { useEditor } from './Editor'
-import { FLOW_KINDS, KIND_LABEL, STEP_KINDS, newStep, pathStr, type Path } from './model'
+import { FLOW_KINDS, KIND_LABEL, STEP_KINDS, allowedInside, newStep, pathStr, type Path } from './model'
 
-export function AddMenu({ inside, onPick, onClose, style }: { inside?: boolean; onPick: (kind: string) => void; onClose: () => void; style?: React.CSSProperties }) {
+export function AddMenu({ inside, allow, onPick, onClose, style }: { inside?: boolean; allow?: string[]; onPick: (kind: string) => void; onClose: () => void; style?: React.CSSProperties }) {
   const item = (k: { kind: string; name: string; text: string }) => (
     <button key={k.kind} type="button" onClick={() => { onPick(k.kind); onClose() }}>
       <span style={{ paddingTop: 1 }}><Icon name={KIND_ICON[k.kind]} size={16} color="var(--muted)" /></span>
@@ -17,9 +17,13 @@ export function AddMenu({ inside, onPick, onClose, style }: { inside?: boolean; 
       <div style={{ position: 'fixed', inset: 0, zIndex: 14 }} onClick={onClose} />
       <div className="menu" role="menu" style={style}>
         <span className="eyebrow" style={{ padding: '6px 10px 2px' }}>Steps</span>
-        {STEP_KINDS.filter((k) => !inside || k.kind === 'ask' || k.kind === 'built-in').map(item)}
+        {STEP_KINDS.filter((k) => !inside || (allow ?? ['ask', 'built-in']).includes(k.kind)).map(item)}
         {!inside && <><div style={{ margin: '6px 10px', borderTop: '1px solid var(--line-2)' }} /><span className="eyebrow" style={{ padding: '2px 10px' }}>Flow</span>{FLOW_KINDS.map(item)}</>}
-        {inside && <span className="faint" style={{ padding: '4px 10px' }}>Approve and Act steps run after the block, in a fixed order.</span>}
+        {inside && (allow ?? []).includes('branch') && <><div style={{ margin: '6px 10px', borderTop: '1px solid var(--line-2)' }} /><span className="eyebrow" style={{ padding: '2px 10px' }}>Flow</span>{FLOW_KINDS.filter((k) => k.kind === 'branch').map(item)}</>}
+        {inside && <span className="faint" style={{ padding: '4px 10px' }}>{
+          (allow ?? []).includes('branch') ? 'Approve steps run after the block: a person approves once, not per item.'
+            : (allow ?? []).length === 1 ? 'Only Ask steps run together. To run other steps, run the block for each item of a list.'
+            : 'Approve and Act steps run after the block, in a fixed order.'}</span>}
       </div>
     </>
   )
@@ -40,7 +44,7 @@ function Row({ label, kind, icon, selected, onClick, pill, errPath }: {
 
 export default function Sidebar() {
   const { draft, selection, select, insert, update } = useEditor()
-  const [menu, setMenu] = useState<{ path: Path; index: number; inside: boolean; top: number } | null>(null)
+  const [menu, setMenu] = useState<{ path: Path; index: number; inside: boolean; allow?: string[]; top: number } | null>(null)
   const isSel = (p: Path) => selection.type === 'step' && pathStr(selection.path) === pathStr(p)
   const steps: Json[] = draft.steps ?? []
 
@@ -63,14 +67,14 @@ export default function Sidebar() {
         <button className="icon-btn" aria-label="Add step" onClick={(e) => setMenu({ path: ['steps'], index: Math.min(topIndex, steps.length), inside: false, top: e.currentTarget.getBoundingClientRect().top })}><Icon name="plus" size={14} width={2} /></button>
       </div>
       {steps.length === 0 && <div className="side-group"><strong className="muted">No steps yet</strong><span className="muted">Use + to add the first step.</span></div>}
-      {steps.map((s, i) => s.kind === 'free-form' ? (
+      {steps.map((s, i) => s.kind === 'free-form' || s.kind === 'parallel' ? (
         <div key={s.id + i} className={`side-group${isSel(['steps', i]) ? ' sel' : ''}`}>
-          <Row label={s.name} kind="free-form" icon="free-form" selected={isSel(['steps', i])} onClick={() => select({ type: 'step', path: ['steps', i] })} errPath={`steps.${i}`} />
+          <Row label={s.name} kind={s.kind} icon={KIND_ICON[s.kind]} selected={isSel(['steps', i])} onClick={() => select({ type: 'step', path: ['steps', i] })} errPath={`steps.${i}`} />
           {(s.steps ?? []).map((inner: Json, j: number) => (
             <Row key={inner.id + j} label={inner.name} kind={inner.kind} icon={KIND_ICON[inner.kind]} selected={isSel(['steps', i, 'steps', j])}
               onClick={() => select({ type: 'step', path: ['steps', i, 'steps', j] })} errPath={`steps.${i}.steps.${j}`} />
           ))}
-          <button className="link" style={{ paddingLeft: 4 }} onClick={(e) => setMenu({ path: ['steps', i, 'steps'], index: (s.steps ?? []).length, inside: true, top: e.currentTarget.getBoundingClientRect().top })}>
+          <button className="link" style={{ paddingLeft: 4 }} onClick={(e) => setMenu({ path: ['steps', i, 'steps'], index: (s.steps ?? []).length, inside: true, allow: allowedInside(s), top: e.currentTarget.getBoundingClientRect().top })}>
             <Icon name="plus" size={13} width={2} />Add a step to this block</button>
         </div>
       ) : (
@@ -89,7 +93,7 @@ export default function Sidebar() {
         <Row key={r} label={r} kind="record" icon="record" pill={`${Object.keys(draft.records[r].fields ?? {}).length} fields`}
           selected={selection.type === 'record' && selection.name === r} onClick={() => select({ type: 'record', name: r })} errPath={`records.${r}`} />
       ))}
-      {menu && <AddMenu inside={menu.inside} onPick={add} onClose={() => setMenu(null)} style={{ left: 240, top: Math.min(menu.top, window.innerHeight - 420) }} />}
+      {menu && <AddMenu inside={menu.inside} allow={menu.allow} onPick={add} onClose={() => setMenu(null)} style={{ left: 240, top: Math.min(menu.top, window.innerHeight - 420) }} />}
     </div>
   )
 }

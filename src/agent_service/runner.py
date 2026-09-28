@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,24 @@ def _upstream(account_id: str, accounts: dict[str, dict[str, Any]], connectors: 
                       for t in connector.get("tools") or [] if t.get("treat") in ("read", "act")}}
 
 
+CACHED = Path(__file__).parent / "runtime" / "conductor_cached.py"
+
+
+def conductor_command() -> list[str]:
+    """How to start Conductor: through conductor_cached.py (prompt caching on for Claude steps) in Conductor's own
+    Python, found from the `conductor` script's first line; plain `conductor` if that can't be found, or if
+    AGENT_SERVICE_PROMPT_CACHE=0."""
+    script = shutil.which("conductor")
+    if os.environ.get("AGENT_SERVICE_PROMPT_CACHE", "1") == "0" or not script:
+        return ["conductor"]
+    try:
+        first = Path(script).read_text(errors="ignore").splitlines()[0]
+    except (OSError, IndexError):
+        return ["conductor"]
+    python = first[2:].strip() if first.startswith("#!") else ""
+    return [python, str(CACHED)] if python and Path(python).exists() and "python" in Path(python).name else ["conductor"]
+
+
 LIVE_SERVICES = {"gmail", "github", "bigquery"}    # services a run can use for real so far; the rest stay on sample data
 ALWAYS_LIVE = {"mcp"}                  # an MCP connector has no sample data: its steps always reach the real system
 
@@ -125,6 +144,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
     run_dir.mkdir(parents=True, exist_ok=False)
     workflow = run_dir / "workflow.yaml"
     workflow.write_text(compiled.yaml(HEADER))
+    for name in compiled.files:                     # a Parallel block's steps, run once for each item
+        (run_dir / name).write_text(compiled.file_yaml(name, HEADER))
     # Confirmed past cases, as they stand when the run starts: recall reads this copy, so a run is repeatable.
     (run_dir / "memory.json").write_text(json.dumps([c for c in memory or [] if c.get("status") in ("confirmed", "corrected")], default=str))
 
@@ -162,5 +183,5 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
     if "started" in (compiled.workflow.get("workflow") or {}).get("input", {}) and "started" not in inputs:
         from datetime import datetime, timezone
         inputs["started"] = datetime.now(timezone.utc).isoformat(timespec="seconds")    # run.started
-    command = ["conductor", "run", str(workflow)] + [x for k, v in inputs.items() for x in ("--input", f"{k}={v}")]
+    command = conductor_command() + ["run", str(workflow)] + [x for k, v in inputs.items() for x in ("--input", f"{k}={v}")]
     return Prepared(run_dir, workflow, env, inputs, command)

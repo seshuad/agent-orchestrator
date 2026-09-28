@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from .. import definition
 from ..compiler import CompileError, _slug, compile_agent, data_rows, output_fields, parallel_groups
-from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep, FreeFormBlock
+from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep, FreeFormBlock, ParallelBlock
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
 
@@ -129,7 +129,7 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
         errors += check_accounts(raw, accounts, connectors)
     compiled = None
     try:
-        compiled = compile_agent(agent).yaml()
+        compiled = compile_agent(agent).all_yaml()
     except CompileError as exc:
         if not str(exc).startswith("Unknown run option"):      # that one is already pinned to its field above
             errors.append({"path": "", "message": str(exc)})
@@ -175,6 +175,28 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
             if isinstance(s, BranchBlock) and s.for_each:
                 refs += _item_refs(agent, s, refs)
             break
+        if isinstance(s, ParallelBlock):
+            if any(i.id == step_id for i in s.steps):    # inside: the item, and the block's steps before this one
+                if s.for_each:
+                    refs += _item_refs(agent, s, refs)
+                    for i in s.steps:
+                        if i.id == step_id:
+                            break
+                        refs += _step_refs(i)
+                break
+            if s.for_each:
+                each = s.for_each.as_
+                refs += [{"ref": f"{s.id}.results", "label": f"{s.name} › every {each}'s results", "type": "list of results"},
+                         {"ref": f"{s.id}.count", "label": f"{s.name} › how many {each}s", "type": "number"}]
+                for b in (i for i in s.steps if isinstance(i, BranchBlock) and i.decide == "model"):
+                    refs += [{"ref": f"{s.id}.{b.id}.decisions", "label": f"{s.name} › {b.name} › every {each}'s decision", "type": "list of decisions"},
+                             {"ref": f"{s.id}.{b.id}.counts", "label": f"{s.name} › {b.name} › how many took each path", "type": "record"}]
+                    refs += [{"ref": f"{s.id}.{b.id}.by_path.{_slug(p.name)}", "label": f"{s.name} › {b.name} › the {each}s that took {p.name}",
+                              "type": "list of decisions"} for p in b.paths]
+            else:
+                for i in s.steps:
+                    refs += _step_refs(i)
+            continue
         if isinstance(s, FreeFormBlock):
             if any(i.id == step_id for i in s.steps):
                 refs += [{"ref": f"planner.{n}", "label": f"Planner › {n}", "type": f.type} for n, f in s.planner_returns.items()]
@@ -186,23 +208,28 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
                         refs += [{"ref": f"{i.id}.{n}", "label": f"{i.name} › {n}", "type": t} for n, t in _type_of_returns(i)]
                 break
             refs += [{"ref": f"{s.id}.{n}", "label": f"{s.name} › {n}", "type": "value"} for n in s.returns]
-        elif isinstance(s, ApproveStep):
-            refs.append({"ref": f"{s.id}.approved", "label": f"{s.name} › approved items", "type": "list"})
-        elif isinstance(s, BranchBlock) and s.decide == "model" and s.for_each:
-            refs += [{"ref": f"{s.id}.decisions", "label": f"{s.name} › every {s.for_each.as_}'s decision", "type": "list of decisions"},
-                     {"ref": f"{s.id}.counts", "label": f"{s.name} › how many took each path", "type": "record"}]
-            refs += [{"ref": f"{s.id}.by_path.{_slug(p.name)}", "label": f"{s.name} › the {s.for_each.as_}s that took {p.name}",
-                      "type": "list of decisions"} for p in s.paths]
-        elif isinstance(s, BranchBlock) and s.decide == "model":
-            refs += [{"ref": f"{s.id}.path", "label": f"{s.name} › the path chosen", "type": "text"},
-                     {"ref": f"{s.id}.reason", "label": f"{s.name} › why", "type": "text"}]
         else:
-            refs += [{"ref": f"{s.id}.{n}", "label": f"{s.name} › {n}", "type": t} for n, t in _type_of_returns(s)]
+            refs += _step_refs(s)
     return refs
 
 
-def _item_refs(agent: definition.Agent, step: BranchBlock, refs: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Inside a Branch that decides for each item: the item, and its fields when the list's record type is known."""
+def _step_refs(s: Any) -> list[dict[str, str]]:
+    """What one step hands on, for the steps after it."""
+    if isinstance(s, ApproveStep):
+        return [{"ref": f"{s.id}.approved", "label": f"{s.name} › approved items", "type": "list"}]
+    if isinstance(s, BranchBlock) and s.decide == "model" and s.for_each:
+        return ([{"ref": f"{s.id}.decisions", "label": f"{s.name} › every {s.for_each.as_}'s decision", "type": "list of decisions"},
+                 {"ref": f"{s.id}.counts", "label": f"{s.name} › how many took each path", "type": "record"}]
+                + [{"ref": f"{s.id}.by_path.{_slug(p.name)}", "label": f"{s.name} › the {s.for_each.as_}s that took {p.name}",
+                    "type": "list of decisions"} for p in s.paths])
+    if isinstance(s, BranchBlock) and s.decide == "model":
+        return [{"ref": f"{s.id}.path", "label": f"{s.name} › the path chosen", "type": "text"},
+                {"ref": f"{s.id}.reason", "label": f"{s.name} › why", "type": "text"}]
+    return [{"ref": f"{s.id}.{n}", "label": f"{s.name} › {n}", "type": t} for n, t in _type_of_returns(s)]
+
+
+def _item_refs(agent: definition.Agent, step: Any, refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Inside a block that runs for each item: the item, and its fields when the list's record type is known."""
     name = step.for_each.as_
     listed = next((r for r in refs if r["ref"] == step.for_each.over.rstrip("?")), None)
     kind = (listed or {}).get("type", "")

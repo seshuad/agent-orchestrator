@@ -26,7 +26,7 @@ from typing import Any
 import yaml
 
 from .definition import (ActStep, Agent, ApproveStep, AskStep, BranchBlock, BuiltInStep, FieldDef, FreeFormBlock,
-                         Instructions, Uses)
+                         Instructions, ParallelBlock, Uses)
 
 TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?[+-]\d{2}:\d{2}$"
 RUNTIME_ENV = ["AGENT_SERVICE_RUN_DIR", "AGENT_SERVICE_SAMPLE_DATA", "AGENT_SERVICE_SIGNING_KEY"]
@@ -50,9 +50,17 @@ class CompileError(Exception):
 class Compiled:
     workflow: dict[str, Any]
     limits: dict[str, dict[str, Any]]
+    files: dict[str, dict[str, Any]] = field(default_factory=dict)    # per-item workflows, written next to it
 
     def yaml(self, header: str = "") -> str:
         return header + yaml.dump(self.workflow, Dumper=_Dumper, sort_keys=False, width=110, allow_unicode=True)
+
+    def file_yaml(self, name: str, header: str = "") -> str:
+        return header + yaml.dump(self.files[name], Dumper=_Dumper, sort_keys=False, width=110, allow_unicode=True)
+
+    def all_yaml(self) -> str:
+        """The workflow and its per-item workflows, for reading."""
+        return self.yaml() + "".join(f"\n# ---- {n}: runs once for each item\n" + self.file_yaml(n) for n in self.files)
 
 
 class _Dumper(yaml.SafeDumper):
@@ -75,13 +83,21 @@ class Scope:
     agent: Agent
     block: FreeFormBlock | None
     reads: set[str] = field(default_factory=set)
+    wf_inputs: set[str] = field(default_factory=set)     # workflow inputs it read: one item's value, outer results
 
     def step_ids(self) -> set[str]:
         return {s.id for s in self.agent.all_steps()}
 
     @property
     def groups(self) -> set[str]:
-        return {g["name"] for g in parallel_groups(self.block, self.agent)} if self.block else set()
+        free = {g["name"] for g in parallel_groups(self.block, self.agent)} if self.block else set()
+        return free | {s.id for s in self.agent.steps if isinstance(s, ParallelBlock) and s.for_each is None}
+
+
+def together_block(agent: Agent, step_id: str) -> ParallelBlock | None:
+    """The Parallel block (running its steps together) a step is in, if any."""
+    return next((s for s in agent.steps if isinstance(s, ParallelBlock) and s.for_each is None
+                 and any(i.id == step_id for i in s.steps)), None)
 
 
 def _guard(step: str, scope: Scope) -> str:
@@ -95,6 +111,17 @@ def jref(ref: str, scope: Scope) -> str:
     ref = ref.rstrip("?")
     head, *path = ref.split(".")
     top = {s.id: s for s in scope.agent.steps}
+    each = scope.agent._each
+    if each and head == each["as"]:                       # one item, inside a block that runs for each
+        scope.wf_inputs.add("workflow.input.item")
+        return _walk("workflow.input.item", path)
+    if each and head in each["outer"]:                    # a result from before the block, handed to each item
+        scope.wf_inputs.add(f"workflow.input.outer_{head}?")
+        return _walk(f"workflow.input.outer_{head}", path)
+    group = together_block(scope.agent, head)
+    if group is not None:
+        scope.reads.add(group.id)
+        return _walk(f"(({group.id}.outputs.get('{head}')) if {group.id} is defined else none)", path)
     if head == "run" or (head == "trigger" and path):
         if head == "run" and path and path[0] not in scope.agent.run_options and path[0] not in RUN_BUILT_INS and not optional:
             raise CompileError(f"Unknown run option {path[0]!r}: add it in Settings, or pick another value.")
@@ -145,7 +172,7 @@ def tojson_dict(items: dict[str, str]) -> str:
 
 def inputs_of(scope: Scope, extra: list[str] = ()) -> list[str]:
     groups = scope.groups
-    return sorted({f"{s}.outputs?" if s in groups else f"{s}.output?" for s in scope.reads} | set(extra))
+    return sorted({f"{s}.outputs?" if s in groups else f"{s}.output?" for s in scope.reads} | set(extra) | scope.wf_inputs)
 
 
 def data_rows(block: FreeFormBlock) -> tuple[dict[str, int], dict[str, set[str]]]:
@@ -274,6 +301,7 @@ class Compiler:
         self.tools: list[str] = []
         self.parallel: list[dict[str, Any]] = []
         self.for_each: list[dict[str, Any]] = []
+        self.files: dict[str, dict[str, Any]] = {}          # per-item workflows
         self.grouped: set[str] = set()              # steps that are members of a parallel group
 
     # -------------------------------------------------------------- whole agent
@@ -319,7 +347,10 @@ class Compiler:
             doc["parallel"] = self.parallel
         if self.for_each:
             doc["for_each"] = self.for_each
-        return Compiled(doc, self.limits)
+        each = a._each
+        if each:                                            # one item's run: it hands back every step's result
+            doc["output"] = {sid: f"{{{{ ({sid}.output if {sid} is defined else none) | tojson }}}}" for sid in each["returns"]}
+        return Compiled(doc, self.limits, self.files)
 
     def _entry(self, step: Any) -> str:
         """The Conductor step a top-level step starts at: a block's planner, an approval's pre-selection."""
@@ -327,6 +358,8 @@ class Compiler:
             return f"{step.id}_recall" if step.memory else PLAN
         if isinstance(step, BranchBlock) and step.decide == "model" and step.for_each:
             return f"{step.id}_items"
+        if isinstance(step, ParallelBlock):
+            return f"{step.id}_items" if step.for_each else step.id
         if isinstance(step, BranchBlock) and step.decide == "model":
             return f"{step.id}_recall" if step.memory else f"{step.id}_rules" if step.rules_first else step.id
         if isinstance(step, ApproveStep) and step.pre_select:
@@ -348,11 +381,19 @@ class Compiler:
         if uses_started(self.agent) and "started" not in out:
             out["started"] = {"type": "string", "required": False, "default": "",
                               "description": "When the run started (UTC, ISO 8601), set by the service."}
+        each = self.agent._each
+        if each:
+            out["item"] = {"type": "object", "description": f"The {each['as']} this run is for."}
+            out["key"] = {"type": "string", "required": False, "description": "Its place in the list."}
+            for h in each["outer"]:
+                out[f"outer_{h}"] = {"type": "object", "required": False, "description": f"What {h} returned, before the block."}
         return out
 
     def _top_level(self, step: Any, after: str) -> None:
         if isinstance(step, FreeFormBlock):
             self._free_form(step, after)
+        elif isinstance(step, ParallelBlock):
+            self._parallel_each(step, after) if step.for_each else self._together(step, after)
         elif isinstance(step, BranchBlock):
             self._branch(step, after)
         elif isinstance(step, ApproveStep):
@@ -740,13 +781,17 @@ class Compiler:
     def _data(self, cel: list[str], scope: Scope, block: FreeFormBlock | None = None, extra: dict[str, str] | None = None) -> str:
         """The `data` for a CEL evaluation: every step, planner and collected value its rules read."""
         text = " ".join(cel)
-        steps = {sid: _guard(sid, scope) for sid in sorted(scope.step_ids()) if re.search(rf"\bsteps\.{sid}\b", text)}
+        each = self.agent._each
+        ids = scope.step_ids() | (set(each["outer"]) if each else set())
+        steps = {sid: jref(sid, scope) for sid in sorted(ids) if re.search(rf"\bsteps\.{sid}\b", text)}
         for s in self.agent.steps:
             if isinstance(s, FreeFormBlock) and re.search(rf"\bsteps\.{s.id}\b", text):
                 steps[s.id] = f"(({_guard(FINISH, scope)} or {{}}).get('results'))"
         parts = {"steps": "{" + ", ".join(f"{json.dumps(k)}: {v}" for k, v in steps.items()) + "}",
                  "run": "{" + ", ".join([f"{json.dumps(n)}: workflow.input.{n}" for n in self.agent.run_options]
                                         + (['"started": workflow.input.started'] if uses_started(self.agent) else [])) + "}"}
+        if each and re.search(rf"\b{each['as']}\b", text):
+            parts[each["as"]] = jref(each["as"], scope)
         if block is not None:
             parts["planner"] = _guard(PLAN, scope)
             empty = "{" + ", ".join(f"{json.dumps(n)}: []" for n in block.collect) + "}"
@@ -928,6 +973,85 @@ class Compiler:
         paths = [p.name for p in step.paths]
         self.agents.append({"name": step.id, "description": f"{step.name}: every {fe.as_}'s decision", "type": "script",
                             "command": "agent-service-steps", "args": ["decide-collect", "--step", step.id, "--paths", json.dumps(paths)],
+                            "input": [f"{items_step}.output", f"{group}.outputs?"],
+                            "stdin": ("{{ {\"items\": (" + items_step + ".output.items if " + items_step + " is defined else []), "
+                                      "\"outputs\": (" + group + ".outputs if " + group + " is defined else {})} | tojson }}"),
+                            "routes": self._script_routes([{"to": after}])})
+
+    # -------------------------------------------------------------- Parallel
+
+    def _together(self, block: ParallelBlock, after: str) -> None:
+        """Its Ask steps at the same time: a Conductor parallel group. Each answer is recorded for the run log, and later
+        steps read them as usual (<step>.<field>)."""
+        ids = [s.id for s in block.steps]
+        for s in block.steps:
+            self.grouped.add(s.id)
+            self._ask(s, Scope(self.agent, None), [])
+            self.agents[-1].pop("routes", None)             # members of a group don't route; the group does
+        record = f"{block.id}_record"
+        self.parallel.append({"name": block.id, "description": block.name, "agents": ids,
+                              "failure_mode": "fail_fast" if block.failure == "stop" else "continue_on_error",
+                              "routes": [{"to": record}]})
+        if self.replay:                                      # scripted answers record themselves
+            self.agents.append({"name": record, "type": "set", "description": "Scripted answers record themselves.",
+                                "input": [], "values": {"recorded": "true"}, "routes": [{"to": after}]})
+            return
+        self.servers.setdefault("cel-evaluator", {"command": "agent-service-cel", "env": {v: "${" + v + "}" for v in RUNTIME_ENV}})
+        self.agents.append({"name": record, "type": "mcp", "server": "cel-evaluator", "tool": "record",
+                            "description": "Keeps each answer for the run log.", "input": [f"{block.id}.outputs"],
+                            "arguments": {"outputs": "{{ {" + ", ".join(f"{json.dumps(m)}: {block.id}.outputs.get('{m}')" for m in ids) + "} | tojson }}"},
+                            "output": {"recorded": {"type": "array", "items": {"type": "string"}}}, "routes": [{"to": after}]})
+
+    def _parallel_each(self, block: ParallelBlock, after: str) -> None:
+        """Its steps, once for each item of a list, several items at a time. The steps compile to a workflow of their own
+        (<id>.item.yaml), in which Branches route as usual and "end" ends that item. Steps:
+            <id>_items    each item, with a key and a label
+            <id>_each     a Conductor for-each group running the item workflow
+            <id>          collects every item's results, and each model-decided Branch's decisions"""
+        fe = block.for_each
+        scope = Scope(self.agent, None)
+        items_step, group, file = f"{block.id}_items", f"{block.id}_each", f"{block.id}.item.yaml"
+        head = fe.over.rstrip("?").split(".")[0]
+        if head not in {s.id for s in self.agent.all_steps()} and head != "run":
+            raise CompileError(f"{block.name}: pick the list to run for from an earlier step.")
+        inner_ids = {s.id for s in block.steps}
+        text = json.dumps([s.model_dump(mode="json", by_alias=True) for s in block.steps])
+        earlier = [s.id for s in self.agent.all_steps() if s.id not in inner_ids and s.id != block.id]
+        outer = [h for h in earlier if re.search(rf"(?<![\w.])(steps\.)?{h}\b(?=[.?\]\"' ]|$)", text)]
+        returns = [s.id for s in block.steps] + [f"{s.id}_recall" for s in block.steps if isinstance(s, BranchBlock) and s.memory]
+        child = self.agent.model_copy(update={"steps": list(block.steps), "name": f"{self.agent.name}-{block.id}",
+                                              "description": f"{block.name}, for one {fe.as_}"})
+        child._each = {"as": fe.as_, "outer": outer, "returns": returns}
+        inner = Compiler(child, self.replay, self.replay_gates).compile()
+        inner.workflow["workflow"]["limits"]["max_iterations"] = 40
+        self.files[file] = inner.workflow
+        self.files.update(inner.files)
+        self.limits.update(inner.limits)
+
+        stdin = tojson_dict({"items": jinja_value(fe.over, scope), "fixed": "{}"})     # before `input`: it records what's read
+        self.agents.append({"name": items_step, "description": f"{block.name}: the {fe.as_}s", "type": "script",
+                            "command": "agent-service-steps", "args": ["decide-prep", "--step", items_step, "--as", fe.as_],
+                            "input": inputs_of(scope, [f"workflow.input.{fe.over.split('.', 1)[1].rstrip('?')}"] if head == "run" else []),
+                            "stdin": stdin, "routes": self._script_routes([{"to": group}])})
+        passed = {n: f"{{{{ workflow.input.{n} | tojson }}}}" for n in inner.workflow["workflow"]["input"]
+                  if n not in ("item", "key") and not n.startswith("outer_")}
+        pscope = Scope(self.agent, None)
+        mapping = {"item": "{{ each.item | tojson }}", "key": "{{ each.key }}", **passed,
+                   **{f"outer_{h}": f"{{{{ {jref(h, pscope)} | tojson }}}}" for h in outer}}
+        self.for_each.append({
+            "name": group, "description": f"{block.name}, for each {fe.as_}", "type": "for_each",
+            "source": f"{items_step}.output.items", "as": "each", "key_by": "each.key",
+            "max_concurrent": 1 if self.replay else fe.at_once,       # scripted answers are used in order
+            "failure_mode": "fail_fast" if block.failure == "stop" else "continue_on_error",
+            "agent": {"name": f"{block.id}_item", "description": f"{block.name}, for one {fe.as_}", "type": "workflow",
+                      "workflow": file, "input": inputs_of(pscope, [f"workflow.input.{n}" for n in passed]),
+                      "input_mapping": mapping},
+            "routes": [{"to": block.id}]})
+        branches = {s.id: [p.name for p in s.paths] for s in block.steps if isinstance(s, BranchBlock) and s.decide == "model"}
+        self.agents.append({"name": block.id, "description": f"{block.name}: every {fe.as_}'s results", "type": "script",
+                            "command": "agent-service-steps",
+                            "args": ["each-collect", "--step", block.id, "--steps", json.dumps([s.id for s in block.steps]),
+                                     "--paths", json.dumps(branches)],
                             "input": [f"{items_step}.output", f"{group}.outputs?"],
                             "stdin": ("{{ {\"items\": (" + items_step + ".output.items if " + items_step + " is defined else []), "
                                       "\"outputs\": (" + group + ".outputs if " + group + " is defined else {})} | tojson }}"),

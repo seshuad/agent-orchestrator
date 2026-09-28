@@ -415,6 +415,53 @@ def decide_collect(data: dict, paths: list[str]) -> dict:
     return {"decisions": decisions, "counts": counts, "by_path": by_path, "undecided": sum(not d["decided"] for d in decisions)}
 
 
+def _parsed(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def each_collect(data: dict, steps: list[str], paths: dict[str, list[str]]) -> dict:
+    """After a Parallel block ran its steps for each item: every item's results (one field per step, empty for a step
+    that didn't run for it), and for each model-decided Branch inside, its decisions, counts and items by path. An item
+    that failed takes each Branch's last path (the safe default) and says so."""
+    outputs = data.get("outputs") or {}
+    slug = lambda name: re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    decided = {b: {"decisions": [], "counts": {p: 0 for p in ps}, "by_path": {slug(p): [] for p in ps}, "undecided": 0}
+               for b, ps in paths.items()}
+    results, failed = [], 0
+    for it in data.get("items") or []:
+        out = _parsed(outputs.get(it["key"]) if isinstance(outputs, dict) else None)
+        ok = isinstance(out, dict)
+        failed += not ok
+        row = {"label": it.get("label"), "item": it.get("item"), "ran": ok,
+               **{sid: _parsed(out.get(sid)) if ok else None for sid in steps}}
+        results.append(row)
+        for b, ps in paths.items():
+            d = row.get(b)
+            if ok and d is None:
+                continue                                    # a path before it ended this item, or went round it
+            d = d if isinstance(d, dict) else {}
+            good = d.get("path") in ps
+            path = d["path"] if good else ps[-1]
+            confidence = d.get("confidence") if good and d.get("confidence") in ("sure", "leaning", "unsure") else "sure" if good else "unsure"
+            recall = _parsed(out.get(f"{b}_recall")) if ok else None
+            dec = {"label": it.get("label"), "item": it.get("item"), "path": path, "decided": good,
+                   "reason": d.get("reason") if good else ("It couldn't decide this one, so it took the safe default." if not d
+                                                           else f"Its answer {d.get('path')!r} isn't one of the paths, so it took the safe default."),
+                   "evidence": d.get("evidence") or [], "keys": (recall or {}).get("keys") or {} if isinstance(recall, dict) else {},
+                   "confidence": confidence, "runner_up": d.get("runner_up") if d.get("runner_up") in ps and d.get("runner_up") != path else "",
+                   "index": len(results) - 1}
+            decided[b]["decisions"].append(dec)
+            decided[b]["counts"][path] += 1
+            decided[b]["by_path"][slug(path)].append(dec)
+            decided[b]["undecided"] += not good
+    return {"results": results, "count": len(results), "failed": failed, **decided}
+
+
 # ------------------------------------------------------------------ debugging
 
 def show(data: dict) -> dict:
@@ -426,7 +473,7 @@ def show(data: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -445,7 +492,8 @@ def main() -> None:
     p.add_argument("--table", help="insert-rows: the BigQuery table.")
     p.add_argument("--item-keys", default="{}", help="decide-prep: memory field -> path inside each item, as JSON.")
     p.add_argument("--memory", action="store_true", help="decide-prep: recall past cases for each item.")
-    p.add_argument("--paths", help="decide-collect: the Branch's path names, in order, as JSON.")
+    p.add_argument("--paths", help="decide-collect: the Branch's path names, in order; each-collect: each model Branch's, as JSON.")
+    p.add_argument("--steps", help="each-collect: the block's step ids, as JSON.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
     a = p.parse_args()
@@ -467,6 +515,8 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation == "each-collect":
+        out = each_collect(data, json.loads(a.steps), json.loads(a.paths or "{}"))
     elif a.operation in ("decide-prep", "decide-collect"):
         try:
             out = (decide_prep(data, json.loads(a.item_keys), a.for_step, a.memory, a.max_cases) if a.operation == "decide-prep"

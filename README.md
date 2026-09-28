@@ -1,341 +1,360 @@
-# agent-orchestrator
+# Agent Orchestrator
 
-A service for building, running and debugging multi-step agents without writing
-code: a guided designer, a restricted agent format, and Microsoft Conductor as the
-execution engine. Builders put an agent together from a small set of building
-blocks; the service checks it against safety rules, compiles it to a Conductor
-workflow and runs it.
+**A designer canvas for [Microsoft Conductor](https://github.com/microsoft/conductor).** You build a multi-step agent
+by placing steps on a canvas and filling in a form for each one, instead of hand-tuning one large prompt. The canvas
+saves a restricted, declarative agent format. The service checks it against safety rules, compiles it to a Conductor
+workflow, runs it, and shows you what happened, step by step.
 
-## What's here
+Every design choice follows from one goal: **let a non-programmer build something reliable**, without the
+prompt-engineering skill a single mega-prompt would need to handle every case correctly. A step's type says what it
+may do; the service, not the prompt, holds it to that.
 
-| Path | What it is |
-|---|---|
-| `docs/agent-service-design.md` | Snapshot of the design doc: architecture, agent format, connections, safety model, runs, debugging, phasing. The [live doc](https://claude.ai/code/artifact/8dd90b77-a44b-454a-a27b-1e1dda2c1a95) is the source of truth. |
-| `designer/build.py` | Generates the designer's screens from shared pieces (top bar, step list, flow graph), so every screen stays consistent. |
-| `designer/canvas/project/` | The screens, mirroring the [Agent Step Designer canvas](https://claude.ai/artifact/YRmM5ZjXFjmFxPjzk3GpnB): one `.dc.html` per screen plus `canvas.json` (layout). |
-| `src/agent_service/` | The service prototype: the agent format (`definition.py`), the compiler to Conductor YAML (`compiler.py`), the command line (`cli.py`), and what a run worker ships (`runtime/`). |
-| `examples/<agent>/` | Each example agent: its definition (`*.agent.yaml`, what the designer saves), the compiled workflow (`*.yaml`) and limits spec (`*.limits.json`), sample data, and a replay script. |
-| `src/agent_service/server/` | The designer's back end (FastAPI): workspace store with draft and published versions, design-time analysis, runs with live logs and approvals. |
-| `web/` | The designer (React, TypeScript, Vite): Home, New agent, the agent editor, Run now, runs and logs, approvals, connections. |
-| `tests/` | The run-time programs, the compiler, the API, whole runs in Conductor with scripted model steps, and the designer in a real browser. |
+```mermaid
+flowchart LR
+  canvas["Designer canvas<br/>(web/)"] -- saves --> def["Agent definition<br/>*.agent.yaml"]
+  def -- "checks + compile" --> wf["Conductor workflow<br/>+ limits spec"]
+  wf -- "conductor run" --> run["Run<br/>events, log, results"]
+  run -- "inspect, test, remember" --> canvas
+```
 
-## Building blocks
+The examples in `examples/` are **travel-sync** (read travel confirmation emails, verify them, add approved trips to a
+calendar) and **invoice-check** (match an invoice against its purchase order and receipts, then queue payment after
+finance approves). Agents built on the canvas since include **issue-triage**, which classifies each open GitHub issue
+by type and component, and **monthly-revenue-watch**, which flags weak months in BigQuery sales data.
 
-Every agent is made from the same blocks, whatever it does. **Steps** do one piece
-of work; **flow blocks** hold steps and decide how they run.
+## Contents
 
-| Block | Kind | What it does | Compiles to (Conductor) |
+- [Core concepts](#core-concepts)
+  - [Step types](#step-types)
+  - [Deterministic computation tiers](#deterministic-computation-tiers)
+  - [Data flow between steps](#data-flow-between-steps)
+  - [Sandboxing and security boundaries](#sandboxing-and-security-boundaries)
+  - [State vs. memory](#state-vs-memory)
+- [How the canvas maps onto Conductor](#how-the-canvas-maps-onto-conductor)
+- [The designer](#the-designer)
+- [Connections](#connections)
+- [Debugging and testing](#debugging-and-testing)
+- [Getting started](#getting-started)
+- [Path to enterprise-ready](#path-to-enterprise-ready)
+- [Operating it in production](#operating-it-in-production)
+- [Repository layout](#repository-layout)
+
+## Core concepts
+
+### Step types
+
+Every step declares an explicit type, and the type decides its form fields and its guarantees. A step's type is
+never inferred from which fields happen to be filled in.
+
+| Concept | On the canvas | What it does | Guarantee |
 |---|---|---|---|
-| Ask | Step | A model reads and extracts. It can never change anything. | `agent` with an explicit `tools:` list and output schema |
-| Built-in | Step | Fixed rules, no model: remove duplicates, filter, group. | `script` step from our step library |
-| Approve | Step | A person decides before anything changes. | `human_gate` |
-| Act | Step | Changes something outside the agent, using only checked fields. | `script` or `mcp` step calling the connector gateway |
-| Parallel | Flow | Runs its steps at the same time. | `parallel:` group with `failure_mode` |
-| Branch | Flow | Picks one path based on an earlier result, by rules or by a model. | `routes:` with `when:`; a model-decided Branch adds a small `agent` step routed on its chosen path |
-| Free-form | Flow | A model picks which of its steps to run, and how often, toward a goal. Holds only Ask and Built-in steps. | a planner `agent` routing to each inner step once its inputs exist, each routing back; "Before finishing" rules checked by the CEL evaluator |
+| **Linear** | **Ask** | A model reads and extracts: one call, typed output | It can only read. Its tools are an explicit list; its output must match the record type |
+| | **Built-in** | Fixed operations, no model: tidy up, look up, compare, match, BigQuery query, JavaScript | Same input, same output; costs nothing to re-run |
+| | **Approve** | A person decides before anything changes | The first choice passes nothing, so a timeout or an unattended run changes nothing |
+| | **Act** | Changes something outside the agent, using only checked fields | Only here can anything change; it follows the run's dry run |
+| **Branch** | **Branch** | One decision with named paths, each leading to a fixed next step. Decided by rules (CEL) or by a model | One bounded decision; every path's downstream is fixed at design time. A model's answer that isn't a path takes the last, safe one |
+| **Map** | **Parallel** | Ask steps at the same time; or a set of steps once for each item of a list | Each item runs on its own; concurrency and failure handling are explicit settings |
+| **Free-form** | **Free-form** | A planning model picks which of its steps to run, how often, and when to stop | No fixed path, but bounded: data order, "Before finishing" rules the service enforces, and turn and Ask-run limits |
 
-Record types (such as Booking below) describe the data passed between steps.
-`AddStep.dc.html` shows the Add menu with steps and flow blocks.
+**Linear is the default.** Use a Branch only where a single judgment genuinely decides what happens next. Use
+Parallel when the same work repeats over a list, or independent reads can overlap. Keep Free-form for work whose
+sequence can't be set in advance: resolving an exception, or a search that depends on what the last search found.
 
-## Example: travel-sync
+A few properties of each flow block:
 
-The screens show the designer with [travel-sync](https://github.com/seshuad/travel-sync)
-filled in: a working prototype that reads travel bookings from Gmail, verifies them and
-adds approved trips to Google Calendar. It is one example, not the target. Every
-control on the screens is general-purpose; the travel-sync values are what a builder
-would enter to build it from scratch.
+- **Branch.** *By rules*: CEL conditions checked in order, the first match wins, and the last path is Otherwise. *By a
+  model*: a question, what it decides on, and a plain-language "when this is true" per path. The answer is a path
+  name (an enum), a reason and evidence. **Hard rules first** are CEL checks that settle outcomes before the model is
+  asked, e.g. amounts over a limit always go to review. A model-decided Branch may read to decide (read-only actions).
+- **Parallel.** *Together*: Ask steps run at once, e.g. three mailboxes; later steps read their answers as usual.
+  *For each item*: the block's steps run in order for every item of a list, several items at a time. A Branch inside
+  routes per item: to one of the block's steps, on to the next, or to "the end, for this item". Approve stays
+  outside, so a person approves once per run, not per item.
+- **Free-form.** Free only within the order its data sets. A step runs once its inputs exist; "Before finishing"
+  rules must hold before the block may finish; the planner decides the rest, and its reason for every step is in the
+  run log. Ask steps in the same row of the data order can run together as a group the planner can pick. It holds
+  only Ask and Built-in steps: Approve and Act run after the block, in a fixed order, so a planner fooled by
+  untrusted content can skip a step but can't run a harmful one.
 
-The starting page (`Home`) shows the signed-in user, their workspace and its agents, with Run now on each and New agent at the top. `RunNow` is the manual-run dialog; `Runs` and `RunFailed` show an agent's run history with a successful and a failed run, each with its outcome, the service's checks and a readable log. Both runs are real prototype runs.
+### Deterministic computation tiers
 
-Screens for building an agent, in the order a builder would work:
+When a step's job is computation rather than judgment, use a deterministic engine instead of a model. There are
+three tiers. Each gives more capability for a weaker guarantee:
 
-| # | Screen | What the builder does | travel-sync equivalent |
-|---|---|---|---|
-| 1 | New agent (`Start`) | Names the agent and starts blank (or from a description or template) | — |
-| 2 | Trigger (`Trigger`) | Schedule, run options (dry run, my name), budget and time limits | `workflow.input`, `limits` |
-| 3 | Connections | Connects Gmail (read) and Google Calendar (create events) once | OAuth in `google_auth.py` |
-| 4 | Record type: Booking | Defines fields, types, hints for the model, and the identity used for duplicates | `Booking` in `models.py` |
-| 5 | Read emails | Parallel block; keep going if one reader fails | `parallel:` with `continue_on_error` |
-| 6 | Read airline emails (`Main`) | Ask step: model, Gmail actions with sender and date limits, shared instructions, outputs, quality checks | reader agents + one MCP server per scope |
-| 7 | Tidy up | Built-in step: a stack of operations (check, remove duplicates, filter, group into Trip, flag rules) | `reconcile.py` |
-| 8 | Any trips found? | Branch: end the run when there are no trips | reconcile's route to `$end` |
-| 9 | Double-check bookings (`Verify`) | Ask step that can open only the emails named in its input | verifier + read-only mail server |
-| 10 | Approve trips | Approve step: what the approver reviews, pre-selection, choices and timeout | `review` script + `human_gate` |
-| 11 | Add to calendar (`Calendar`) | Act step: map fields to the event, never add twice, follow dry run | `writer.py` + `calendar.py` |
+| Tier | Can do | Can't do | Guarantee | Here |
+|---|---|---|---|---|
+| **CEL** | Filter, count, check existence, map fields | Sum, average, sort, date math | Not Turing-complete: always terminates; type-checked before it runs | Branch conditions, hard rules, Tidy up, pre-selection, "Before finishing", test expectations |
+| **Script** (JavaScript in QuickJS) | Sum, average, sort, group, date math | Use arbitrary libraries | Deterministic and sandboxed: no files, network or other programs; 2 seconds and 64 MB per run | Built-in → JavaScript |
+| **Free-form code execution** (Python) | Anything, including reading current library docs (e.g. via Context7) and iterating on errors | — | Agentic; bounded only by a step limit; needs a real sandbox | Not built yet |
 
-`AddStep.dc.html` shows the Add menu. `FreeForm.dc.html` shows a variant of travel-sync built with a Free-form
-block, modeled on its `--mode free`: one block, *Find and check bookings*, holds the three readers, Tidy up and
-Double-check. Branch, Approve and Add to calendar still run after it in fixed order, so the planner cannot change
-anything outside the agent. The design doc still lists model-chosen order as a non-goal for v1.
+**Use the narrowest tier that can do the job.** "Top N", "most / least", "ranked by" or any real numeric aggregation
+is a clean signal to skip CEL and use a script. Reach for code execution only when a task needs an external, changing
+API surface, or can't be bounded to one deterministic pass.
 
-## Free-form blocks
+**Try it** runs a JavaScript step on sample inputs in the editor, or on the inputs it had in the latest run. A thrown
+error, a timeout or a missing return field fails the step and says why.
 
-A Free-form block is free only within the order its data sets. Three layers decide what runs:
+### Data flow between steps
 
-| Layer | Decided by | Example |
+A step's **typed output** is the only channel data moves through. Record types (Booking, Issue, Invoice) describe
+the shape; a step's **Takes** are picked references to earlier outputs, never typed free text:
+
+```
+read_invoice.invoice.po_number        an earlier step's field
+tidy_up.trips[*].bookings             every item's field, flattened into one list
+run.dry_run · trigger.sender_domain   a run option · the email that started the run
+[a.x, b.x]  ·  a.x?                   any of these · optional
+```
+
+There is no second, informal channel. A step that needs an earlier step's reasoning gets it as an explicit field
+(e.g. `classify.reason`), never as shared context. Two patterns follow:
+
+- **Branch with a shared core.** When a Branch's paths produce different shapes (a flight, a hotel, a portal booking),
+  every path should still emit the same core fields (sender, booking reference, travel date) plus a details object
+  with the type-specific extras. Later steps reason only about the core, and don't care how many paths feed them.
+- **Map.** Some sources return a fixed field set per item and need a second call per item for the rest. GitHub's list
+  of pull requests, for example, omits `changed_files`, which only the single-PR call returns. A Parallel block for
+  each item runs that call once per item and collects the results as `<block>.results`. Each model-decided Branch
+  inside also hands on `<block>.<branch>.decisions` and `.by_path.<path>`: the items that took each path. Its cost
+  grows with the list, so concurrency is an explicit setting.
+
+### Sandboxing and security boundaries
+
+Every step reaches the outside world only through a **connection**, and every connection call goes through the
+**connector gateway**:
+
+- **Least-privilege tools.** A step's tools are an explicit checklist. An unticked action is absent from the step's
+  tool list entirely, not just discouraged in its instructions: the request shape enforces it, not the model's
+  compliance.
+- **Signed limits.** At run start the service mints one HMAC-signed limits token per connection use: which actions,
+  which senders and date range, which repositories, sheets or datasets, which argument values. The gateway checks
+  every call against it and logs it, allowed or refused. Some limits only exist mid-run: Double-check may open only
+  the emails Tidy up cited.
+- **Read vs. act.** Ask steps and Branches can only read. Only Act steps change anything, only with checked fields,
+  and only after an Approve step if the builder puts one first. An Act step that runs after reading content other
+  people wrote, with no Approve step first, is a warning on the canvas.
+- **Untrusted text is data.** Email, issue and tool text is labelled as data written by other people, never
+  instructions, in every prompt that sees it. Safety checks are "Before finishing" rules and hard rules, not prompt
+  wording.
+- **Pinned MCP tools.** An admin marks each MCP tool *read*, *act* or *not offered*. Approved tools are pinned: if a
+  server changes a tool's description or arguments, the gateway refuses it until an admin reviews it.
+- **Secrets stay in the vault.** OAuth tokens, API keys and service-account keys live in the workspace vault. They are
+  never sent to the browser, and no model sees them.
+
+CEL's guarantees are stronger than a sandbox's because they're structural, not environmental. CEL has no syntax for
+I/O and no unbounded loops, so "can't reach the network" and "always terminates" are properties of the language, not
+of what's around it. The same discipline carries to code execution: dependencies are baked into the image at build
+time, nothing is installed at run time, and code reads and writes only through connections.
+
+### State vs. memory
+
+These are two different mechanisms, deliberately separate, and each attaches to different step types.
+
+| | State (a checkpoint) | Memory (learned precedent) |
 |---|---|---|
-| Data order | Worked out from what each step needs and returns; a step can run once its inputs exist | Tidy up needs bookings, so it can't run before a reader has returned some |
-| Before finishing | The builder: rules the service enforces, not the prompt | Double-check every booking in the proposed trips; always check bank details |
-| Everything else | The planning model, while the agent runs | Which follow-up searches, with what focus, what to verify, when to stop |
+| Lives in | The orchestrator | A reviewable store: the agent's **Memory** tab |
+| Used by | The orchestrator, to parameterize the next call | The model, shown past cases before it decides |
+| Applies to | Ask steps with a filterable or pollable source | Model-decided Branches and Free-form blocks only |
+| Update rule | Fixed and mechanical, e.g. watermark = max(seen ids) | The agent proposes; a person answers or corrects before it counts |
+| Risk | None: no reasoning surface, nothing to audit | Real: it can silently drift a step's behavior, hence the review |
+| Status | Not built yet | Built |
 
-Limits count only Ask steps (the ones with a model); Built-in steps are free and re-run by themselves when their
-inputs change.
+Temporal and Netflix Conductor both draw the same line. Their durable persistence exists to survive a crash *within*
+one execution, never to carry state *across* executions implicitly. Cross-run continuity is always an explicit act.
+State here should take the same shape: an explicit checkpoint, read at the start of a run and written at the end, held
+outside Conductor's own within-run durability.
 
-**Running steps at the same time.** Ask steps in the same row of the data order whose results all go into
-`collected`, and that nothing else reads directly, can run together: the compiler makes them a Conductor `parallel`
-group, and the planner can choose the group instead of one step (in travel-sync, `find_and_check_together` runs the
-three readers at once). The planner still decides: it can run a reader on its own, for example again with a focus. A
-group counts each of its steps against the Ask limit, runs with `continue_on_error` (the planner is told which step
-failed), and each answer is recorded for the run log. Conductor doesn't allow routes inside a group, so each member
-runs there as a route-less copy (`read_airline__together`) with the same tools and limits.
+**Memory never applies to Linear or Act steps.** Their value is the promise that the same input produces the same
+output. Memory would be a second, undeclared input, breaking the guarantee that tests and step composability depend
+on. How memory works where it applies:
 
-### Second example: invoice-check
+- **Recall.** Before deciding, a `<id>_recall` step finds the most similar confirmed cases. They're matched on the
+  fields the builder picks (e.g. `sender_domain`, `issue.author`), most matching fields first, then the newest. The
+  model is told they are data from earlier runs, not instructions.
+- **Asking by exception.** Every decision says how sure it was (sure, leaning, unsure) and, when unsure, the other
+  answer it would pick. A person is asked only about the unsure ones, and about a random 5% of the rest (adjustable)
+  so confident mistakes surface too. With 300 issues that's the borderline dozen, not 300.
+- **Correcting anything.** Any other decision can be corrected from its line in the run log. Nothing waits on it.
+- **Nothing reaches a later run unreviewed.** Only answers and corrections a person gave are recalled. A run works
+  from a snapshot of memory taken when it starts (`memory.json` in its folder), so it can be repeated exactly.
+- **Staying small.** A newer answer about the same item replaces older ones. Each step keeps at most 200 remembered
+  cases (corrections outlast confirmations), 100 waiting and 50 skipped.
 
-To pressure-test the block on something other than travel-sync, `InvoiceBlock.dc.html` and `InvoiceTest.dc.html`
-show **invoice-check**: an invoice email arrives, a Free-form block (*Match invoice*) reads it, looks up the vendor,
-checks bank details, finds the purchase order (searching earlier vendor emails if the PO number is missing), finds
-receipts and runs a three-way match, then finance approves and a row is added to a payment queue sheet. The test-run
-screen shows three sample invoices taking three different paths, and the planner's reason for each step.
+## How the canvas maps onto Conductor
 
-What it added to the design:
+Nobody edits the Conductor YAML. The compiler (`src/agent_service/compiler.py`) turns a definition into a workflow
+plus a **limits spec** (one entry per connection use). The compiled YAML is one click away in the editor, and
+`tests/` fails if a checked-in example drifts from its definition.
 
-1. A record can come from more than one step (a PO number from the invoice, or from vendor emails).
-2. Inputs can be optional (services have no delivery receipts).
-3. A block finishes with a named outcome, and finishing rules can depend on it ("to finish as matched, the three-way
-   match must have passed").
-4. Safety checks have to be finishing rules: a planner fooled by untrusted content is more likely to skip a step than
-   to run a harmful one, and it can't run harmful ones at all.
-5. Tests need a sample per outcome; the test run shows which outcomes haven't been covered.
+| On the canvas | In Conductor |
+|---|---|
+| Ask | an `agent` step with an explicit `tools:` list and an output schema |
+| Built-in | a `script` step running the step library (`agent-service-steps`) |
+| Approve | a `human_gate` |
+| Act | a `script` or `mcp` step calling the connector gateway |
+| Branch, by rules | an `mcp` step on the CEL evaluator, with `routes:` on its results |
+| Branch, by a model | an `agent` step whose output is `{path, reason, evidence, confidence, runner_up}`, routed on `output.path`; hard rules and recall run before it |
+| Parallel, together | a `parallel:` group, then a step that records each answer for the run log |
+| Parallel, for each item | a `for_each` group running a per-item workflow (`<id>.item.yaml`, written next to `workflow.yaml`), in which Branches route as usual; then a step that collects every item's results |
+| Free-form | a planner `agent` routing to each inner step once its inputs exist, each routing back; `parallel:` groups for rows that run together; "Before finishing" checked by the CEL evaluator |
 
-## Branches decided by a model, and memory
-
-A Branch decides **by rules** (a CEL `when:` per path, as before) or **by a model** for choices a rule can't express
-("is this booking legitimate?"). A model-decided Branch has a question, the earlier results it decides on, and a
-plain-language "when this is true" per path. The last path is the safe default, used when nothing else clearly applies.
-It compiles to one small agent step whose output is `{path, reason, evidence}` (the path is an enum of the path names)
-and whose routes go by `output.path`. **Hard rules first** are CEL checks that run before the model is asked, for
-outcomes that aren't up to judgment (amounts over a limit always go to review).
-
-A model-decided Branch can also **decide for each item of a list** (issues, invoices), several at a time. It compiles
-to `<id>_items` (each item, with its memory fields and recalled cases), a Conductor `for_each` group `<id>_each` (one
-decision per item), and `<id>`, which collects them. Paths don't route in this mode: each item gets its path, reason
-and evidence, and later steps read `<id>.decisions` and `<id>.counts`. An item that can't be decided takes the last
-path and says so. Either kind of model-decided Branch may **read** to decide (`uses`, read-only actions), so a list can
-just name each item and the Branch reads the rest.
-
-**Memory** only has meaning where there's a judgment to inform, so only model-decided Branches and Free-form blocks
-have it; a rule-based Branch can't. With Memory on:
-
-- Before deciding, a `<id>_recall` step reads past cases and hands them to the model (the Branch's prompt, or the
-  Free-form planner's). The text says they're data from earlier runs, not instructions, and each case is kept short.
-- Cases are matched on the fields the builder picks ("similar when these match", e.g. `sender_domain`): most matching
-  fields first, then the newest. With no fields, it's the most recent cases. At most *max cases* are recalled.
-- Every decision says how sure it was (sure, leaning, unsure) and, when not sure, the other answer it would pick.
-- **A person is asked only about the exceptions.** When a run succeeds, the decisions it wasn't sure of (or couldn't
-  make) wait on its run page and the agent's **Memory** tab, with a button per answer. So does a small random sample
-  of the rest (5% by default, *Also ask about* in Memory), so confident mistakes get noticed too. With 300 issues,
-  that is the borderline dozen or so, not 300.
-- Any other decision can be corrected from its line in the run's log ("Wrong? Correct it"): nothing waits on it.
-- **Nothing reaches later runs unreviewed.** Only answers and corrections a person gave are recalled; skipped
-  questions and decisions nobody looked at are not.
-- Memory stays small: a newer answer about the same item replaces older ones, and each step keeps its newest 200
-  remembered cases (corrections outlast confirmations), 100 waiting and 50 skipped.
-- The confirmed cases are copied into the run folder (`memory.json`) when a run starts, so a run can be repeated
-  exactly. Test runs and single-step re-runs don't create candidates.
-
-## Design time and run time (prototype)
-
-The service's path from designer to a finished run, runnable on one machine with sample data:
-
-```
-agent definition (*.agent.yaml)  ──compile──>  Conductor YAML + limits spec  ──run──>  conductor run
-   what the designer saves           agent-service compile                     agent-service run
-```
-
-**Design time.** The designer saves an **agent definition** in our format (`src/agent_service/definition.py`):
-trigger, run options, limits, connections, record types and steps. Inputs are picked references
-(`read_invoice.invoice.po_number`; a list means "any of these", a trailing `?` optional), and every rule is
-[CEL](https://github.com/google/cel-spec). Loading a definition checks the format's safety rules: Ask steps can only
-read, an approval's first choice passes nothing, every connection used is connected. Human approval is the builder's
-choice: an Act step that runs after reading email, with no Approve step first, is a warning, not an error. The **compiler** turns a
-definition into Conductor YAML plus a **limits spec**: one entry per connection use (Gmail for Read airline emails:
-search and open, these 10 senders, 180 days). Nobody edits the YAML; `tests/` fails if a checked-in workflow drifts
-from its definition.
-
-**Run time.** `agent-service run` does what the control plane and a run worker do between them: make a run directory,
-fill in trigger values (for an email trigger, the email's id and its sender's domain, from the headers), mint one
-HMAC-signed **limits token** per connection use, and start Conductor. Every `command:` in the YAML is one of four
-programs the worker ships:
+Every `command:` in a compiled workflow is one of the service's own programs:
 
 | Program | What it is |
 |---|---|
-| `agent-service-gateway` | The connector gateway's stdio shim. Every limit comes from the signed token (flags can only narrow it); every call is checked and logged, allowed or refused. Serves sample data here; in the service it forwards to the gateway, which holds the credentials. |
-| `agent-service-steps` | The Built-in step library: `tidy` (check, remove duplicates, filter, group, flag, all configured in CEL), `lookup`, `filter-rows`, `compare`, `three-way-match`, `create-events`. |
-| `agent-service-cel` | The CEL evaluator, called from Conductor `mcp` steps for Branch, pre-selection and "Before finishing". Returns `passed`, `failed`, `results`, and `error` (the run stops and names the rule, rather than guess). |
-| `agent-service-replay` | For tests: stands in for model steps and approvals with scripted answers. |
+| `agent-service-gateway` | The connector gateway's stdio shim. Every limit comes from the signed token; every call is checked and logged. Serves sample data for test runs; forwards to the real system (Gmail, GitHub, BigQuery, MCP servers) for runs on real accounts |
+| `agent-service-steps` | The Built-in step library: `tidy`, `lookup`, `filter-rows`, `compare`, `three-way-match`, `javascript`, `bigquery`, the Act operations, memory recall and the Parallel item and collect steps |
+| `agent-service-cel` | The CEL evaluator (MCP). Returns `passed`, `failed`, `results` and `error`; on an error the run stops and names the rule, rather than guess |
+| `agent-service-replay` | For tests: stands in for model steps and approvals with scripted answers |
 
-Each run's directory is the prototype's event store: `steps/` holds every Built-in and CEL step's output,
-`gateway.jsonl` every connection call, and `calendar.json` or `sheets/` anything written.
+A run is `conductor run` in web mode on its own port. The service follows its event log, answers approvals with
+`conductor gate respond`, and keeps everything in the run's folder: `events.jsonl`, `history.jsonl` (each step's
+inputs and outputs), `gateway.jsonl` (every connection call) and anything written.
 
-Things the compilation showed:
+What compiling to Conductor taught us:
 
-- **Results collected across runs.** Conductor keeps only a step's latest output, so a reader run again with a focus
-  would drop what it found first. A Free-form block's `collect` keeps running lists.
-- **Limits that only exist mid-run.** Double-check may open only emails Tidy up cited; the gateway checks each request
-  against the run's recorded outputs.
-- **Portable CEL.** A step that hasn't run is absent from the rules' data and tested with `has(steps.<id>)`, which every
-  CEL implementation supports (cel-python can't compare a record to `null`).
-- **Rules must cover every outcome.** The first replay let the planner finish as "amounts differ" without running the
+- **Results collected across runs of a step.** Conductor keeps only a step's latest output, so a reader run again with
+  a focus would drop what it found first. A Free-form block's `collect` keeps running lists.
+- **Group members can't route.** Conductor won't put routes on a parallel group's members, so inside Free-form each
+  member runs as a route-less copy (`read_airline__together`).
+- **Only model, `set` and MCP steps run in a group.** That's why a *together* Parallel block holds Ask steps only, and
+  why *for each item* compiles its steps to a per-item workflow instead.
+- **Portable CEL.** A step that hasn't run is absent from the rules' data and tested with `has(steps.<id>)`, which
+  every CEL implementation supports.
+- **Rules must cover every outcome.** An early replay let the planner finish as "amounts differ" without running the
   three-way match; the rule now requires it for any outcome that claims a match result.
-
-### Running it
-
-```bash
-uv sync
-uv run --group dev pytest                  # run-time programs, compiler, and both agents end to end in Conductor
-
-uv run agent-service compile examples/invoice-check/invoice-check.agent.yaml -o examples/invoice-check/invoice-check.yaml
-
-# A whole run with scripted model steps: no API key, no person needed.
-uv run agent-service run examples/invoice-check/invoice-check.agent.yaml \
-  --sample-data examples/invoice-check/sample-data --email-id inv-northwind-2208 \
-  --replay examples/invoice-check/replay-northwind.yaml
-
-# A real run: model steps call the Claude API (ANTHROPIC_API_KEY), and you answer the approval in the terminal.
-uv run agent-service run examples/travel-sync-free/travel-sync-free.agent.yaml \
-  --sample-data examples/travel-sync-free/sample-data
-```
-
-Runs use sample data only (travel-sync's fixture emails; three invoices with their Vendors, Purchase orders and
-Receiving log sheets) and default to dry run. Not built yet: the control plane, run queue and containers, the approval
-service (Conductor gates have no timeout, so the 24-hour default is the service's job), real connections, and the
-designer as a working app. The prototype compiles at most one Free-form block per agent.
+- **Outputs can't be optional at the top level**, so fields such as `confidence` are required, and old scripted
+  answers without them count as "sure".
 
 ## The designer
 
-The mocks, built: a web app over the agent format, the compiler and the run environment.
+| Screen | What it does |
+|---|---|
+| Home | Your workspace's agents: status, trigger, last run, Run now, New agent |
+| New agent | Start blank, from a template, or **Describe it** and let Claude draft it; pick the test data |
+| Editor | The step list, the canvas (Free-form blocks drawn by data order, with their loops; Parallel blocks with their steps; Branch paths), and a panel for everything. Autosaves; every save returns the service's errors pinned to fields, and publishing is blocked until there are none. **Refine with AI** changes a draft as asked; **Write with AI** helps with instructions and tasks |
+| Run now / Test run | The version (or the draft), run options, the email for an email trigger, sample data or real accounts, Claude or scripted answers |
+| Runs | Every run, live while it runs: outcome, what an Act step did or would do, the service's checks, the decisions it wants a person to answer, and a readable log with the planner's reasons, per-item lines, tool calls and costs |
+| Tests | Saved test cases, run against the draft before publishing |
+| Memory | The decisions waiting for an answer, and what's remembered |
+| Approvals | Runs waiting for a person |
+| Connections | Accounts (builders) and connectors (admins) |
+
+**Describe it** and **Refine with AI** use Claude with the format reference, the example agents, and the workspace as
+it is: accounts and permissions, each MCP connector's approved tools, the sample sets. Every draft goes through the
+same checks as a saved agent; failures go back to Claude to fix, up to three rounds. The result is only ever a draft:
+you see Claude's summary, its assumptions and questions, a refine can be undone, and nothing runs until you run it.
+
+## Connections
+
+Connections have three layers:
+
+| Layer | Who | What |
+|---|---|---|
+| Connector | A workspace admin, once | The system's app settings (OAuth client, API URL, shared token or key), the most any account may be granted, who may connect accounts, and a **Test** |
+| Account | Any builder (or only admins) | Connected through a connector and signed in, so its name comes from the system; permissions within what the connector offers |
+| Step | The builder, on the canvas | Actions and limits within the account's permissions, checked by the gateway on every call |
+
+| Connector | What steps can do |
+|---|---|
+| **Google Workspace** | Gmail: search and open (real mail after an admin sets up the OAuth client and a builder signs in). Sheets and Calendar use sample data for now |
+| **GitHub** | Read only: search issues and pull requests, open one with its comments, read files, in the repositories each step names. Real runs use a fine-grained read-only token |
+| **BigQuery** | Built-in "BigQuery query" (fixed SQL with `@parameters`), `run_query` / `list_tables` / `get_schema` for Ask steps, append-only inserts for Act steps. A dry run first checks every query: a single SELECT, only the step's data, under its byte cap and within the monthly budget. Test runs query sample tables in DuckDB |
+| **Any MCP server** | A remote URL or a local command, signing in with OAuth, a bearer token, a header or nothing. Each tool is marked read, act or not offered, with argument limits; approved tools are pinned |
+
+## Debugging and testing
+
+- **Step inspector.** Click a step in a run's log to see everything about that run of it: the prompts with inputs
+  filled in, each tool call with its result and the gateway's decision, and what the step returned.
+- **Re-run one step** with the current draft, on exactly the inputs it had, and compare the outputs side by side.
+- **Test cases.** Save any finished run as a test: the same inputs, approvals answered the same way, and expectations
+  as CEL rules over the results, suggested from the run. The Tests tab runs them against the draft; Publish shows
+  whether they pass.
+- **Scripted answers.** Every example has a replay script, so whole runs work in real Conductor with no API key and no
+  person.
+
+## Getting started
 
 ```bash
 uv sync
 (cd web && npm install && npm run build)
-ANTHROPIC_API_KEY=... uv run agent-service serve        # http://127.0.0.1:8700
+ANTHROPIC_API_KEY=... uv run agent-service serve        # the designer: http://127.0.0.1:8700
 ```
 
-Without an API key everything works except running model steps for real: runs can use scripted answers instead
-(both example agents have them). For front-end work, run `npm run dev` in `web/` (port 5173, proxying `/api` to the
-service on 8700).
+Without an API key everything works except running model steps for real; runs can use scripted answers instead. For
+front-end work, run `npm run dev` in `web/` (port 5173, proxying `/api` to 8700). The workspace lives in
+`.workspace/`: agents with their drafts and published versions, runs, memory, and the vault.
 
-| Screen | What it does |
-|---|---|
-| Home | The signed-in user, the workspace and its agents: status, trigger, last run, recent runs, Run now, New agent |
-| New agent | Name, what it should do, start blank or from a template, pick test data |
-| Editor | Step list, flow graph (Free-form blocks drawn by data order, with loops) and a panel for everything: settings, connections, record types, Ask, Built-in (Tidy up's pipeline), Free-form, Branch, Approve, Act. Autosaves; every save returns the service's errors pinned to fields, and publishing is blocked until there are none. Compiled YAML is one click away. |
-| Run now / Test run | Pick the version (or the draft), run options, the email for an email trigger, Claude API or scripted answers |
-| Runs | Every run, live while it runs: outcome, what an Act step did or would do, the service's checks, and a readable log with the planner's reasons, tool calls, costs, and plain-language failures |
-| Approvals | Runs waiting for a person; the choices are on the run's page and go to Conductor's gate |
-
-### BigQuery
-
-A built-in connector (Connections → Connectors → Add connector → BigQuery). The admin sets how it signs in (a service
-account key, the gcloud account on the service's machine, or its default credentials), the billing project and
-location, the data agents may read (`dataset`, `project.dataset` or `project.dataset.table`), a byte cap per query and
-a monthly budget. Steps use it three ways:
-
-- **Built-in "BigQuery query"**: fixed SQL with the step's Takes as `@parameters`. No model writes the SQL. Estimate
-  cost does a free dry run on the real data.
-- **Ask steps** get `run_query`, `list_tables` and `get_schema` for questions that can't be written ahead.
-- **Act steps** can insert rows into tables they name (append only).
-
-Every query is checked before it runs: a dry run must show a single SELECT, reading only the step's data (within the
-connector's), scanning under its byte cap and within the budget left. It then runs with BigQuery's own
-`maximum_bytes_billed` and labels for the agent, run and step. Results are capped at the step's `max_rows`. Test runs
-query sample tables (`<sample set>/bigquery/<dataset>/<table>.json`) in DuckDB, with the same checks.
-
-### JavaScript steps
-
-A Built-in step can run your own JavaScript: the body of a function that gets `inputs` (the step's Takes, by name)
-and returns an object with the fields listed under Returns, which later steps pick like any output. It runs in QuickJS
-with nothing but its inputs: no files, network or other programs, 2 seconds and 64 MB per run. Use it for exact,
-repeatable work a model shouldn't do: sorting and ranking, date arithmetic, counting, reshaping. **Try it** runs the
-code on sample inputs in the editor, or on the inputs the step had in the latest run. A JavaScript error, a timeout
-or a missing return field fails the step with the reason.
-
-### Debugging and testing agents
-
-- **Step inspector.** Click a step in a run's log to see everything about that run of it: the system prompt and the
-  prompt with its inputs filled in, each tool call with its arguments, its full result and the gateway's decision,
-  schema repairs, what a Built-in or rule step was given, and what the step returned (`server/inspect.py`). Runs keep
-  their event log in their run folder (`events.jsonl`), and every gateway call is recorded against its step.
-- **Re-run one step.** From the inspector, run a model step or Built-in step again with the current draft, on exactly
-  the inputs it had: a one-step workflow whose prompt is the recorded one with the draft's task swapped in. The new
-  output shows side by side with the original.
-- **Test cases.** Save any finished run as a test (Runs → a run → Save as test): the same inputs, approvals answered
-  the same way, and expectations as CEL rules over `status`, `steps.<id>.<field>` and `calls`, suggested from the
-  run. The agent's Tests tab runs them against the draft; Publish shows whether they pass.
-
-### Drafting agents with Claude
-
-**Describe it** (New agent) drafts a whole agent from a description, and **Refine with AI** (in the editor) changes a
-draft as asked. Claude (`claude-opus-5`, via the service's `ANTHROPIC_API_KEY`) gets the format reference, the two
-example agents, and the workspace as it is: its accounts with their permissions, each MCP connector's approved tools,
-and the sample sets. Every draft goes through the same checks as a saved agent; if any fail, the errors go back to
-Claude to fix, up to three rounds (`server/author.py`). The result is only ever a draft: the editor shows Claude's
-summary, the assumptions to check and its questions, a refine can be undone, and nothing runs or publishes until you do.
-
-### Connectors and accounts
-
-Connections have three layers, each set up in the designer (Connections):
-
-| Layer | Who | What |
-|---|---|---|
-| Connector | A workspace admin, once | The system's app settings (an OAuth client, an API URL, a shared token), the most any account may be granted, who may connect accounts, and a **Test** |
-| Account | Any builder (or only admins) | Connected through a connector and signed in, so the account name comes from the system; permissions within what the connector offers |
-| Step | The builder, in the editor | Actions and limits within the account's permissions, checked by the gateway on every call |
-
-Secrets (OAuth client secrets, shared tokens, each account's tokens) go to `.workspace/vault/` (mode 0600) and are
-never sent back to the browser. A new workspace has two connectors: **Google Workspace** and **GitHub**. An older
-workspace's Google client file (`~/.config/agent-service/client_secret.json`) is imported into the Google Workspace
-connector once.
-
-**Real Gmail.** An admin enters the Google OAuth client (Web application, Gmail API enabled) on the Google Workspace
-connector, adds the redirect URI it shows to the client in Google Cloud, and tests it. A builder then connects a Gmail
-account, signs in with Google (only in the admin's domains, if set), and runs with Data: **Real accounts**. Sheets and
-Calendar stay on sample data for now.
-
-**MCP servers.** Any system with an MCP server can be a connector: a remote URL (Streamable HTTP) or a local command,
-signing in with OAuth (each builder signs in; the admin signs in once to list the tools), a shared bearer token, a
-custom header, or nothing. The admin lists the server's tools and marks each **read** (Ask steps), **act** (Act steps)
-or **not offered**, and which arguments steps may limit (`uses.arg_limits`: `team is one of ENG, OPS`). New tools start
-as not offered, and each approved tool is pinned: if the server changes its description or arguments, the gateway
-refuses it and the connector pauses until an admin reviews it. MCP connectors have no sample data, so their steps
-always reach the real system; act tools (an Act step's `call_tool`, once per item) follow the dry run.
-`tests/fixtures/issues_server.py` is a small issue tracker to try it with.
-
-### GitHub
-
-GitHub connections are read only: Ask steps can search issues and pull requests (`search`), open one with its comments
-(`open`) and read files (`read`), in the repositories each step names (`uses.repos`, `owner/name`), optionally only
-those updated in the last N days. Opening, commenting, labelling, closing or merging isn't offered. Test runs use the
-**GitHub issues** sample set (`examples/github-issues/sample-data/github.json`).
-
-For runs on **Real accounts**, create a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
-with read-only access to Issues, Pull requests and Contents for the repositories agents should read, and paste it on
-the connection's card in Connections. The service checks it with GitHub and keeps it in `.workspace/vault/`; it is
-never shown again, and no model sees it.
-
-The service keeps its workspace in `.workspace/` (agents, versions, runs). Each run is `conductor run` in web mode on
-its own port; the service follows its event log, answers approvals with `conductor gate respond`, and stops it when
-it ends.
-
-Not built yet: sign-in and more than one user, schedules and email triggers firing on their own, notifications for approvals, the Parallel block, real connections (sample data only),
-and more than one Free-form block per agent.
-
-## Working on the screens
+From the command line:
 
 ```bash
-uv run --no-project --python 3.13 python designer/build.py   # regenerate designer/canvas/project/*.dc.html
+uv run --group dev pytest        # the step library, compiler, API, whole runs in Conductor, the designer in a browser
+
+uv run agent-service compile examples/invoice-check/invoice-check.agent.yaml -o examples/invoice-check/invoice-check.yaml
+
+# A whole run with scripted model steps: no API key, no person.
+uv run agent-service run examples/invoice-check/invoice-check.agent.yaml \
+  --sample-data examples/invoice-check/sample-data --email-id inv-northwind-2208 \
+  --replay examples/invoice-check/replay-northwind.yaml
 ```
 
-Publishing to the canvas is done from Claude Code (the Artifact tool), with
-`root` = `designer/canvas` and the changed `project/…` files. Edit `build.py`
-rather than the generated HTML, or the next build overwrites the change.
+## Path to enterprise-ready
+
+This is a personal prototype. Most of the step-type and sandboxing decisions above already assume a multi-tenant
+service, so what remains is mostly a storage-layer swap, not a redesign:
+
+| Area | Now | Open design question |
+|---|---|---|
+| Workspace state | Files on one machine (`.workspace/`) | Per-tenant schemas vs. a database per tenant; which state is transactional (step config) and which eventually consistent (run logs) |
+| AuthN / AuthZ | One signed-in user with an Admin role; connector-level "who may connect" | Real identity (OIDC / SAML); authorization scoped to connections: who may attach a Gmail account to a step someone else built |
+| Deployment | Local; one `conductor run` process per run | The code-execution sandbox as ephemeral per-run pods vs. a warm pool, on GKE |
+| Observability | Per-run event log, gateway log and step inspector | A span per step for Linear and Branch; a span per turn, with retries and tool calls, for Free-form |
+
+Tenant isolation and connection-scoped authorization have the most open design surface. Kubernetes deployment is
+familiar ground.
+
+Not built yet:
+
+- Schedules and email triggers that fire on their own
+- Notifications for approvals
+- The state checkpoint
+- Free-form code execution
+- Sheets and Calendar on real accounts
+- More than one Free-form block per agent
+
+## Operating it in production
+
+The step types exist partly for incident response. A failing Linear step is a contained problem, bad output for a
+known input, and can be reverted on its own without touching the rest of the agent. A single mega-prompt offers no such
+isolation.
+
+An AI assistant can triage fast when the observability is there: correlating an error spike with a recent publish,
+reading a stack trace, spotting a timing-out connection. It is least reliable exactly where confidence doesn't signal
+correctness: a generated fix reads as fluent and certain whether or not it's right. The mitigations, in order:
+
+1. **Roll back before fixing live.** Going back to the last good version is faster and safer than diagnosing under
+   pressure, for a person or an AI. Published versions never change, and Run now can pick any of them.
+2. **A real code owner, even part-time**, who reviews changes closely enough to build real understanding over time.
+3. **Rehearsed reviews, not only reactive ones.** Break a step in staging now and then, and have the code owner judge
+   whether a proposed fix would have been right. That calibrates trust with evidence.
+4. **Review by blast radius, not by reading everything.** A fix that touches only one step's declared inputs and
+   outputs is a small, checkable claim, even for a reviewer who couldn't have written it. This is what the step-type
+   contracts are for.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `src/agent_service/definition.py` | The agent format and its safety rules |
+| `src/agent_service/compiler.py` | Agent definition → Conductor workflow + limits spec |
+| `src/agent_service/runner.py`, `cli.py` | Preparing and starting a run; `agent-service compile / run / serve` |
+| `src/agent_service/runtime/` | What a run worker ships: the gateway and its connectors, the step library, the CEL evaluator, memory recall, replay |
+| `src/agent_service/server/` | The designer's back end (FastAPI): workspace store, design-time analysis, runs, connectors, memory, tests, AI drafting |
+| `web/` | The designer (React, TypeScript, Vite) |
+| `examples/` | Example agents (definition, compiled workflow, limits spec, replay scripts) and sample data sets: travel emails, invoices, GitHub issues, BigQuery sales tables, water-utility alerts |
+| `tests/` | The step library, compiler, API, whole runs in Conductor with scripted model steps, and the designer in a real browser |
+| `docs/agent-service-design.md` | A snapshot of the original design doc |
+| `designer/` | The original screen mocks (`canvas/project/*.dc.html`), generated by `designer/build.py`: edit `build.py`, not the HTML, then run `uv run --no-project --python 3.13 python designer/build.py` |
+
+The design rationale behind the core concepts is in [Agent Service — Architecture & Design
+Rationale](https://claude.ai/artifact/GyVUqEEixzToawAWo3vcf4).

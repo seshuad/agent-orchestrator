@@ -12,6 +12,7 @@ function caption(s: Json): string {
     case 'built-in': return Object.keys(s.operation ?? {})[0] ?? ''
     case 'approve': return `${s.approver}, by ${(s.notify ?? []).join(' or ')}`
     case 'act': return s.create_events ? 'create events' : s.add_row ? `add a row to ${s.add_row.sheet || '…'}` : ''
+    case 'parallel': return s.for_each ? `for each ${s.for_each.as ?? 'item'} in ${s.for_each.over || '…'}, ${s.for_each.at_once ?? 5} at a time` : `${(s.steps ?? []).length} steps at the same time`
     case 'branch': return s.decide === 'model' ? `${(s.paths ?? []).length} paths · decided by ${String(s.model ?? 'claude-sonnet-5').replace('claude-', '')}${s.for_each ? ` for each ${s.for_each.as ?? 'item'}` : ''}${s.memory ? ' · memory' : ''}` : `${(s.paths ?? []).length} paths`
     default: return ''
   }
@@ -69,6 +70,56 @@ export default function Flow() {
     </button>
   )
 
+  // A Branch's paths, one line per place they lead: where to, then the paths (or how many). Hover for every name.
+  const paths = (s: Json, among: Json[], inBlock: boolean) => {
+    const groups = new Map<string, string[]>()
+    for (const path of s.paths ?? []) groups.set(path.then ?? 'next', [...(groups.get(path.then ?? 'next') ?? []), path.name])
+    const to = (t: string) => t === 'end' ? (inBlock ? 'End (this item)' : 'End run') : t === 'next' ? 'Next step' : among.find((x) => x.id === t)?.name ?? t
+    return (
+      <div className="stack" style={{ gap: 4, alignItems: 'flex-start' }}>
+        {[...groups].map(([t, names]) => (
+          <span key={t} className="row" style={{ gap: 6, flexWrap: 'nowrap' }} title={names.join('\n')}>
+            <span style={{ width: 14, borderTop: '1.5px dashed #B7B7AC' }} />
+            <span className="chip" style={{ whiteSpace: 'nowrap' }}><Icon name={t === 'end' ? 'stop' : 'down'} size={11} />{to(t)}</span>
+            <span className="faint" style={{ whiteSpace: 'nowrap', maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {names.length > 2 ? `${names.length} paths` : names.join(', ')}</span>
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  const parallel = (s: Json, i: number, p: Path) => {
+    const inner: Json[] = s.steps ?? []
+    const each = s.for_each
+    return (
+      <div className={`group${sel(p) ? ' sel' : ''}`} onClick={() => select({ type: 'step', path: p })} style={{ cursor: 'pointer', borderColor: bad(p) ? '#D98A73' : undefined }}>
+        <span className="row" style={{ gap: 6 }}><Icon name="parallel" size={14} color="var(--acc)" /><strong>{s.name}</strong><Pill kind="parallel">Parallel</Pill></span>
+        <span className="chip"><Icon name="parallel" size={13} color="var(--flow)" /><strong style={{ color: 'var(--ink)' }}>{each
+          ? `For each ${each.as ?? 'item'} in ${each.over || '…'}`
+          : 'All at the same time'}</strong>{each ? ` · ${each.at_once ?? 5} at a time` : ''}{(s.failure ?? 'stop') === 'continue' ? ' · keeps going if one fails' : ''}</span>
+        {inner.length === 0 && <span className="muted">No steps yet: add them from the list on the left.</span>}
+        {each ? (
+          <div className="stack" style={{ gap: 6, alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
+            {inner.map((x, j) => (
+              <div key={x.id + j} className="stack" style={{ gap: 6, alignItems: 'center' }}>
+                {j > 0 && <Arrow />}
+                <div className="row" style={{ gap: 8, flexWrap: 'nowrap', alignItems: 'center' }}>
+                  {node(x, ['steps', i, 'steps', j])}
+                  {x.kind === 'branch' && paths(x, inner, true)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="row" style={{ gap: 8, alignItems: 'stretch', justifyContent: 'center' }} onClick={(e) => e.stopPropagation()}>
+            {inner.map((x, j) => <div key={x.id + j} style={{ width: 200 }}>{node(x, ['steps', i, 'steps', j])}</div>)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="canvas" onClick={(e) => { if (e.target === e.currentTarget) select({ type: 'settings' }) }}>
       <div className="card" style={{ width: '100%', padding: '11px 14px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
@@ -82,7 +133,7 @@ export default function Flow() {
       {steps.map((s, i) => {
         const p: Path = ['steps', i]
         const prev = steps[i - 1]
-        const label = prev?.kind === 'free-form' ? Object.keys(prev.returns ?? {}).join(', ') : prev?.kind === 'branch' ? 'otherwise' : undefined
+        const label = prev?.kind === 'free-form' ? Object.keys(prev.returns ?? {}).join(', ') : prev?.kind === 'branch' ? 'otherwise' : prev?.kind === 'parallel' && prev.for_each ? 'results' : undefined
         return (
           <div key={s.id + i} className="stack" style={{ alignItems: 'center', gap: 7 }}>
             <Arrow label={label} />
@@ -99,17 +150,10 @@ export default function Flow() {
                   <span className="row" style={{ gap: 5 }}><span style={{ width: 22, borderTop: '1.6px dashed #C0527D' }} />planner can loop back</span>
                 </span>
               </div>
-            ) : s.kind === 'branch' ? (
+            ) : s.kind === 'parallel' ? parallel(s, i, p) : s.kind === 'branch' ? (
               <div style={{ position: 'relative' }}>
                 {node(s, p)}
-                <div className="row" style={{ position: 'absolute', left: '100%', top: '50%', transform: 'translateY(-50%)', paddingLeft: 6, flexWrap: 'nowrap', gap: 6 }}>
-                  {(s.paths ?? []).slice(0, -1).map((path: Json, k: number) => (
-                    <span key={k} className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-                      <span style={{ width: 22, borderTop: '1.5px dashed #B7B7AC' }} /><span className="faint" style={{ whiteSpace: 'nowrap' }}>{path.name}</span>
-                      <span className="chip"><Icon name={path.then === 'end' ? 'stop' : 'down'} size={12} />{path.then === 'end' ? 'End run' : path.then === 'next' ? 'next step' : path.then}</span>
-                    </span>
-                  ))}
-                </div>
+                <div style={{ position: 'absolute', left: '100%', top: '50%', transform: 'translateY(-50%)', paddingLeft: 6 }}>{paths(s, steps, false)}</div>
               </div>
             ) : node(s, p)}
           </div>
