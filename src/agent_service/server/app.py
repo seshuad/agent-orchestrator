@@ -28,7 +28,7 @@ from pydantic import BaseModel, ValidationError
 from .. import definition, runner
 from . import analysis
 from .connections import SERVICES, allowed_actions, steps_using
-from .runs import Runs
+from .runs import Runs, prune
 from . import connectors as conn_types
 from . import author, google, mcp_oauth
 from .store import EXAMPLES, SAMPLE_SETS, Conflict, NotFound, Store
@@ -98,6 +98,12 @@ class TestIn(BaseModel):
     from_run: str | None = None                # new tests: the run it copies inputs and approvals from
     name: str = ""
     expect: list[dict[str, str]] | None = None
+
+
+class Judgment(BaseModel):
+    ref: str                                   # the step id, or <step>#<item index>
+    decision: str                              # the right path or outcome
+    note: str = ""
 
 
 class MemoryVerdict(BaseModel):
@@ -736,6 +742,16 @@ def create_app(home: Path | None = None) -> FastAPI:
         rec = runs.record(run_id)
         return [c for c in store.memory(rec["agent"]) if c.get("run") == run_id]
 
+    @app.post("/api/runs/{run_id}/judgments")
+    def correct_judgment(run_id: str, body: Judgment) -> dict[str, Any]:
+        """A person's answer on any judgment a run made, from its log: the right path or outcome, and why."""
+        try:
+            return runs.correct(run_id, body.ref, body.decision, body.note, store.workspace()["user"]["name"])
+        except NotFound as exc:
+            raise fail(exc, 404)
+        except ValueError as exc:
+            raise fail(exc, 422)
+
     @app.post("/api/agents/{name}/memory/{case_id}")
     def judge_memory(name: str, case_id: str, body: MemoryVerdict) -> dict[str, Any]:
         """A person's verdict on a remembered case. Only confirmed and corrected cases are recalled."""
@@ -759,7 +775,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             case.update(status="rejected", confirmed_by=who, confirmed_at=time.time(), confirm_note=body.note.strip() or None)
         else:
             raise fail(ValueError("The verdict is confirm, correct, reject or forget."), 422)
-        store.save_memory(name, cases)
+        store.save_memory(name, prune(cases))
         return case
 
     @app.post("/api/agents/{name}/rename")

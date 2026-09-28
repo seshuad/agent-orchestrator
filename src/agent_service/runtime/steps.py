@@ -405,9 +405,14 @@ def decide_collect(data: dict, paths: list[str]) -> dict:
         reason = out.get("reason") if decided else ("It couldn't decide this one, so it took the safe default." if not out
                                                     else f"Its answer {out.get('path')!r} isn't one of the paths, so it took the safe default.")
         counts[path] += 1
+        confidence = out.get("confidence") if decided and out.get("confidence") in ("sure", "leaning", "unsure") else "unsure"
+        runner_up = out.get("runner_up") if out.get("runner_up") in paths and out.get("runner_up") != path else ""
         decisions.append({"label": it.get("label"), "item": it.get("item"), "path": path, "reason": reason or "",
-                          "evidence": out.get("evidence") or [], "keys": it.get("keys") or {}, "decided": decided})
-    return {"decisions": decisions, "counts": counts, "undecided": sum(not d["decided"] for d in decisions)}
+                          "evidence": out.get("evidence") or [], "keys": it.get("keys") or {}, "decided": decided,
+                          "confidence": confidence if out.get("confidence") or not decided else "sure", "runner_up": runner_up})
+    slug = lambda name: re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    by_path = {slug(p): [d for d in decisions if d["path"] == p] for p in paths}    # for steps that follow one path
+    return {"decisions": decisions, "counts": counts, "by_path": by_path, "undecided": sum(not d["decided"] for d in decisions)}
 
 
 # ------------------------------------------------------------------ debugging

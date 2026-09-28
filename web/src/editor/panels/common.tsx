@@ -265,7 +265,7 @@ export function MemoryEditor({ where }: { where: 'branch' | 'free-form' }) {
   return (
     <div className="stack" style={{ gap: 8 }}>
       <span className="muted">Before {where === 'branch' ? 'deciding' : 'planning'}, it's shown past {where === 'branch' ? 'decisions' : 'investigations and outcomes'} a person
-        confirmed or corrected, most similar first. Each run's {where === 'branch' ? 'decision' : 'outcome'} waits on its run page for someone to confirm it.</span>
+        answered or corrected, most similar first. It asks a person only about the {where === 'branch' ? 'decisions' : 'outcomes'} it wasn't sure of; any other can be corrected from its run's log.</span>
       <span className="eyebrow">Similar when these match</span>
       {Object.entries(match).map(([k, v]) => (
         <span key={k} className="row" style={{ flexWrap: 'nowrap' }}>
@@ -278,6 +278,9 @@ export function MemoryEditor({ where }: { where: 'branch' | 'free-form' }) {
         onKeyDown={(e) => { const v = (e.target as HTMLInputElement).value.trim().replace(/\s+/g, '_'); if (e.key === 'Enter' && v) { setMatch({ ...match, [v]: '' }); (e.target as HTMLInputElement).value = '' } }} />
         <span className="faint">Enter adds a field; pick its value from the trigger, run options or earlier steps.</span></span>
       {!Object.keys(match).length && <span className="faint">With no fields, it recalls the most recent confirmed cases.</span>}
+      <span className="row"><span className="muted">Also ask about</span>
+        <Text width={44} value={Math.round((memory.ask_sample ?? 0.05) * 100)} onChange={(v) => set(['memory', 'ask_sample'], Math.min(100, Math.max(0, Number(v) || 0)) / 100)} label="Sample percent" />
+        <span className="muted">% of the ones it's sure of, picked at random</span></span>
       <span className="row"><span className="muted">Recall at most</span>
         <Text width={50} value={memory.max_cases ?? 5} onChange={(v) => set(['memory', 'max_cases'], Number(v) || 5)} label="Max cases" /><span className="muted">cases</span></span>
       <button className="link" style={{ color: 'var(--faint)', alignSelf: 'flex-start' }} onClick={() => set(['memory'], undefined)}>Don't use memory</button>

@@ -51,8 +51,10 @@ export default function Branch() {
               <span className="row"><span className="muted">Decide</span>
                 <Text width={44} value={each.at_once ?? 5} onChange={(v) => set(['for_each', 'at_once'], Number(v) || 5)} label="At once" />
                 <span className="muted">at the same time</span></span>
-              <span className="faint">Paths don't change which steps run: each {each.as || 'item'} gets its path, reason and evidence, and the next steps get
-                every decision as <code className="mono">{step.id}.decisions</code>. In the question, inputs and memory, <code className="mono">{each.as || 'item'}</code> is one {each.as || 'item'}.</span>
+              <span className="faint">Each {each.as || 'item'} gets its path, reason and evidence, and the run goes on to the next step. A path needs no steps of
+                its own: <code className="mono">{step.id}.decisions</code> has every decision. For steps that should handle only one path, take
+                {' '}<code className="mono">{step.id}.by_path.&lt;path&gt;</code>: the {each.as || 'item'}s that took it. In the question, inputs and memory,
+                {' '}<code className="mono">{each.as || 'item'}</code> is one {each.as || 'item'}.</span>
               <FieldErrors path={p('for_each')} />
             </>
           )}

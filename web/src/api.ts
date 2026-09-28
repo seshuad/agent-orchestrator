@@ -69,6 +69,7 @@ export interface MemoryCase {
   id: string; run: string; at: number; step: string; step_name: string; kind: 'branch' | 'free-form'
   status: 'candidate' | 'confirmed' | 'corrected' | 'rejected'; decision: string; reason?: string | null; evidence?: string[]
   summary?: string; notes?: string[]; keys: Record<string, unknown>; choices: string[]; subject?: string | null
+  ref?: string; asked_because?: 'unsure' | 'sample' | null; confidence?: string; runner_up?: string
   correction?: { decision: string; note: string } | null; confirm_note?: string | null; confirmed_by?: string; confirmed_at?: number
 }
 export interface Catalog { name: string; icon: string; never: string; permissions: Record<string, { label: string; actions: string[]; scope: string; detail: string }> }
@@ -98,6 +99,7 @@ export interface LogEntry {
   at: number; step: string; id: string; n?: number; kind: string; took: number; cost: number | null; detail: string
   why: string | null; tone: string; plumbing: boolean; model?: string | null; tokens?: number
   tools: { tool: string; args: string }[]; options?: { label: string; value: string }[]; value?: string
+  ref?: string; choices?: string[]; decision?: string | null; confidence?: 'sure' | 'leaning' | 'unsure'; runner_up?: string | null
 }
 
 export interface RunError { title: string; why: string; fix: string; raw: string }
@@ -143,6 +145,7 @@ export const api = {
   saveAgent: (name: string, draft: Json) => call<{ feedback: Feedback; has_changes: boolean }>('PUT', `/api/agents/${name}`, { draft }),
   memory: (name: string) => call<MemoryCase[]>('GET', `/api/agents/${name}/memory`),
   runMemory: (run: string) => call<MemoryCase[]>('GET', `/api/runs/${run}/memory`),
+  correctJudgment: (run: string, body: { ref: string; decision: string; note?: string }) => call<MemoryCase>('POST', `/api/runs/${run}/judgments`, body),
   judgeMemory: (name: string, id: string, body: { verdict: string; decision?: string; note?: string }) => call<MemoryCase>('POST', `/api/agents/${name}/memory/${id}`, body),
   renameAgent: (name: string, newName: string) => call<AgentDetail>('POST', `/api/agents/${name}/rename`, { name: newName }),
   deleteAgent: (name: string) => call<Json>('DELETE', `/api/agents/${name}`),

@@ -179,6 +179,14 @@ class Memory(Strict):
     """Past cases a person confirmed, shown to a judgment (a model-decided Branch, a Free-form planner) before it decides."""
     match_on: dict[str, str] = Field(default_factory=dict)   # name -> reference: what makes two cases similar
     max_cases: int = 5
+    ask_sample: float = 0.05                 # besides the unsure ones, the share of decisions a person is asked to check
+
+    @field_validator("ask_sample")
+    @classmethod
+    def _share(cls, v: float) -> float:
+        if not 0 <= v <= 1:
+            raise ValueError("ask about between 0% and 100% of the decisions it's sure of")
+        return v
 
 
 class BranchPath(Strict):

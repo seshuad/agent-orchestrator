@@ -130,11 +130,16 @@ have it; a rule-based Branch can't. With Memory on:
   Free-form planner's). The text says they're data from earlier runs, not instructions, and each case is kept short.
 - Cases are matched on the fields the builder picks ("similar when these match", e.g. `sender_domain`): most matching
   fields first, then the newest. With no fields, it's the most recent cases. At most *max cases* are recalled.
-- When a run succeeds, each judgment becomes a candidate: the path chosen with its reason and evidence, or the
-  Free-form outcome with the steps it ran and the planner's notes.
-- **Nothing reaches later runs unreviewed.** A candidate waits on its run page ("Remember this run's judgments?") and
-  on the agent's **Memory** tab. A person marks it right (confirm), marks it wrong and picks the right answer with a
-  note (correct), or doesn't remember it (reject). Only confirmed and corrected cases are recalled.
+- Every decision says how sure it was (sure, leaning, unsure) and, when not sure, the other answer it would pick.
+- **A person is asked only about the exceptions.** When a run succeeds, the decisions it wasn't sure of (or couldn't
+  make) wait on its run page and the agent's **Memory** tab, with a button per answer. So does a small random sample
+  of the rest (5% by default, *Also ask about* in Memory), so confident mistakes get noticed too. With 300 issues,
+  that is the borderline dozen or so, not 300.
+- Any other decision can be corrected from its line in the run's log ("Wrong? Correct it"): nothing waits on it.
+- **Nothing reaches later runs unreviewed.** Only answers and corrections a person gave are recalled; skipped
+  questions and decisions nobody looked at are not.
+- Memory stays small: a newer answer about the same item replaces older ones, and each step keeps its newest 200
+  remembered cases (corrections outlast confirmations), 100 waiting and 50 skipped.
 - The confirmed cases are copied into the run folder (`memory.json`) when a run starts, so a run can be repeated
   exactly. Test runs and single-step re-runs don't create candidates.
 

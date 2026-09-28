@@ -5,7 +5,7 @@ import { api, duration, followRun, when, STATUS_LABEL, type Run, type RunDetail 
 import { Block, Guarantees, Icon, Pill, Segmented, Check } from '../ui'
 import RunNow from './RunNow'
 import SaveAsTest from './SaveAsTest'
-import { CaseCard } from './Memory'
+import { CaseCard, CorrectRow } from './Memory'
 import type { MemoryCase } from '../api'
 import { AgentTabs } from './Tests'
 import StepInspector from './StepInspector'
@@ -105,6 +105,7 @@ function RunView({ id }: { id: string }) {
   }
 
   const isLive = d !== null && ['running', 'waiting'].includes(d.status)
+  const asked = judgments.filter((c) => c.status === 'candidate')
   useEffect(() => { api.run(id).then(setD).catch((e) => setError(e.message)) }, [id])
   useEffect(() => { if (d && !['running', 'waiting'].includes(d.status)) api.runMemory(id).then(setJudgments).catch(() => {}) }, [id, d?.status])
   useEffect(() => (isLive ? followRun(id, setD) : undefined), [id, isLive])
@@ -177,11 +178,12 @@ function RunView({ id }: { id: string }) {
         </div>
       )}
 
-      {judgments.length > 0 && (
+      {asked.length > 0 && (
         <div className="stack" style={{ gap: 8 }}>
-          <span className="row" style={{ gap: 8 }}><Icon name="spark" size={14} color="var(--flow)" /><strong>Remember this run's judgments?</strong>
-            <span className="faint">Later runs recall only the ones a person confirms or corrects.</span></span>
-          {judgments.map((c) => <CaseCard key={c.id} agent={d.agent} c={c} showRun={false}
+          <span className="row" style={{ gap: 8 }}><Icon name="spark" size={14} color="var(--flow)" />
+            <strong>{asked.length === 1 ? 'One decision needs your call' : `${asked.length} decisions need your call`}</strong>
+            <span className="faint">The ones it wasn't sure of{asked.some((c) => c.asked_because === 'sample') ? ', and a few picked at random' : ''}. Every other decision can be corrected in the log below.</span></span>
+          {asked.map((c) => <CaseCard key={c.id} agent={d.agent} c={c} showRun={false}
             onChange={(n) => setJudgments(judgments.flatMap((x) => (x.id === c.id ? (n ? [n] : []) : [x])))} />)}
         </div>
       )}
@@ -243,6 +245,7 @@ function RunView({ id }: { id: string }) {
               <span className="muted">
                 {e.detail}
                 {e.why && <span className="why"><Icon name="spark" size={12} color="var(--flow)" /><span><strong>Why:</strong> {e.why}</span></span>}
+                {!live && e.ref && <CorrectRow runId={d.id} e={e} cases={judgments} onSaved={(c) => setJudgments([...judgments.filter((x) => x.id !== c.id), c])} />}
                 {e.tools.length > 0 && <span className="faint" style={{ display: 'block' }}>{e.tools.length} connection call{e.tools.length > 1 ? 's' : ''} · inspect to see them</span>}
                 {e.value !== undefined && (
                   <details open onClick={(ev) => ev.stopPropagation()} style={{ marginTop: 4 }}>

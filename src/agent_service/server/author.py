@@ -150,13 +150,15 @@ branch: pick one path from earlier results.
   A model-decided Branch may read to decide: `uses` with read-only actions, like an Ask step.
   To judge every item of a list (issues, invoices...), decide for each item instead of once per run; items are
   decided in parallel. Paths then don't route: omit `then` and `rules_first`; later steps read <id>.decisions
-  (a list of {label, item, path, reason, evidence, decided}) and <id>.counts. Inside, <as> is one item:
+  (a list of {label, item, path, reason, evidence, decided}), <id>.counts, and <id>.by_path.<path, snake_case>: the items
+  that took one path, for steps that should handle only those (e.g. draft a question for each issue needing more information). Inside, <as> is one item:
     for_each: {over: list_issues.issues, as: issue, at_once: 5}
     uses: {connection: github, actions: [issue_read], repos: [owner/name]}   # read each item's details itself
     memory: {match_on: {author: issue.author}}
   Prefer this to one Ask step that copies every item's full text into its answer: long lists overflow its output.
   Free-form blocks can have `memory` too (match_on: values known when the block starts, e.g. trigger or run fields).
-  Memory only recalls decisions a person confirmed or corrected.
+  Memory only recalls decisions a person confirmed or corrected. Decisions say how sure they were; a person is asked
+  about the unsure ones plus a random share of the rest (memory.ask_sample, default 0.05), and can correct any from the log.
 
 approve: a person decides before anything changes. The first choice must pass nothing.
   - id: approve_trips

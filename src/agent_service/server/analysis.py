@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .. import definition
-from ..compiler import CompileError, compile_agent, data_rows, output_fields, parallel_groups
+from ..compiler import CompileError, _slug, compile_agent, data_rows, output_fields, parallel_groups
 from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep, FreeFormBlock
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
@@ -191,6 +191,8 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
         elif isinstance(s, BranchBlock) and s.decide == "model" and s.for_each:
             refs += [{"ref": f"{s.id}.decisions", "label": f"{s.name} › every {s.for_each.as_}'s decision", "type": "list of decisions"},
                      {"ref": f"{s.id}.counts", "label": f"{s.name} › how many took each path", "type": "record"}]
+            refs += [{"ref": f"{s.id}.by_path.{_slug(p.name)}", "label": f"{s.name} › the {s.for_each.as_}s that took {p.name}",
+                      "type": "list of decisions"} for p in s.paths]
         elif isinstance(s, BranchBlock) and s.decide == "model":
             refs += [{"ref": f"{s.id}.path", "label": f"{s.name} › the path chosen", "type": "text"},
                      {"ref": f"{s.id}.reason", "label": f"{s.name} › why", "type": "text"}]

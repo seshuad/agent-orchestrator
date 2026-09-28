@@ -36,8 +36,11 @@ def answer(step: str) -> dict[str, Any]:
     if n >= len(outputs):
         raise NoAnswer(f"The replay script has no output #{n + 1} for {step!r}.")
     counter.write_text(str(n + 1))
-    record_step(step, outputs[n])
-    return outputs[n]
+    out = outputs[n]
+    if isinstance(out, dict) and "path" in out:          # a decision: scripts written before it said how sure it was
+        out = {"confidence": "sure", "runner_up": "", **out}
+    record_step(step, out)
+    return out
 
 
 def main() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 
@@ -766,15 +767,17 @@ def run_scripted(api, agent, body, approve=None, timeout=90):
 @needs_conductor
 def test_free_form_memory_is_recalled_only_once_confirmed(api):
     draft = api.get("/api/agents/invoice-check").json()["draft"]
-    draft["steps"][0]["memory"] = {"match_on": {"sender_domain": "trigger.sender_domain"}, "max_cases": 3}
+    draft["steps"][0]["memory"] = {"match_on": {"sender_domain": "trigger.sender_domain"}, "max_cases": 3, "ask_sample": 1}
     fb = api.put("/api/agents/invoice-check", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
     assert "match_invoice_recall" in fb["compiled"] and "match_invoice_recall.output.text" in fb["compiled"]   # the planner sees it
+    assert "runner_up" in fb["compiled"]                                 # and says how sure it is when it finishes
     first = run_scripted(api, "invoice-check", {"email_id": "inv-northwind-2208"}, approve="all")
     assert first["status"] == "succeeded", first.get("error")
     assert any(e["id"] == "match_invoice_recall" and e["detail"] == "No confirmed past cases yet" for e in first["log"])
     cases = api.get(f"/api/runs/{first['id']}/memory").json()
     assert len(cases) == 1 and cases[0]["status"] == "candidate" and cases[0]["decision"] == "amounts differ"
+    assert cases[0]["asked_because"] == "sample"                          # sure of it, but every decision is sampled here
     assert cases[0]["keys"] == {"sender_domain": "northwindsupply.com"} and "planner turns" in cases[0]["summary"]
     second = run_scripted(api, "invoice-check", {"email_id": "inv-northwind-2208"}, approve="all")      # unconfirmed: not recalled
     assert any(e["id"] == "match_invoice_recall" and e["detail"] == "No confirmed past cases yet" for e in second["log"])
@@ -806,7 +809,8 @@ def test_a_branch_decided_by_a_model_with_memory(api, tmp_path):
     refs = api.get(f"/api/agents/travel-sync/references?step={after}").json()
     assert any(r["ref"] == f"{branch['id']}.path" for r in refs)
     script = _yaml.safe_load((EXAMPLES / "travel-sync-free/replay-sample.yaml").read_text())
-    script[branch["id"]] = [{"path": "Propose them", "reason": "The Chicago trip's bookings were double-checked.", "evidence": ["hotel b0bde9c185"]}]
+    script[branch["id"]] = [{"path": "Propose them", "reason": "The Chicago trip's bookings were double-checked.", "evidence": ["hotel b0bde9c185"],
+                             "confidence": "unsure", "runner_up": "Not sure"}]
     replay = tmp_path / "replay.yaml"
     replay.write_text(_yaml.safe_dump(script))
     store = Store(tmp_path)
@@ -818,6 +822,7 @@ def test_a_branch_decided_by_a_model_with_memory(api, tmp_path):
     assert any(e["id"] == after for e in d["log"])                        # the path it chose ran
     case = api.get(f"/api/runs/{d['id']}/memory").json()[0]
     assert case["kind"] == "branch" and case["decision"] == "Propose them" and case["keys"] == {"traveler": "Alex Rivera"}
+    assert case["asked_because"] == "unsure" and case["runner_up"] == "Not sure" and choice["confidence"] == "unsure"
     bad = api.post(f"/api/agents/travel-sync/memory/{case['id']}", json={"verdict": "correct", "decision": "Maybe"})
     assert bad.status_code == 422
     fixed = api.post(f"/api/agents/travel-sync/memory/{case['id']}", json={"verdict": "correct", "decision": "Not sure",
@@ -848,13 +853,15 @@ def test_a_branch_decides_for_each_item_and_remembers_each(api, tmp_path):
     branch = {"id": "triage", "kind": "branch", "name": "Enough to act on?", "decide": "model", "model": "claude-sonnet-5",
               "question": "Can a maintainer act on it now?", "for_each": {"over": "issues.issues", "as": "issue"},
               "uses": {"connection": "github", "actions": ["open"], "repos": ["northpeak/billing-api"]},
-              "memory": {"match_on": {"author": "issue.author"}},
+              "memory": {"match_on": {"author": "issue.author"}, "ask_sample": 0},
               "paths": [{"name": "Actionable", "when_true": "Clear steps to reproduce"}, {"name": "Question", "when_true": "Asks how"},
                         {"name": "Needs more information"}]}
     draft["steps"] = [{"id": "issues", "kind": "built-in", "name": "The issues", "operation": {"javascript": {"code": code}},
                        "returns": {"issues": {"type": "list of Issue"}}},
                       branch,
-                      {"id": "show", "kind": "built-in", "name": "Show", "operation": {"show": {}}, "takes": {"value": "triage.decisions"}}]
+                      {"id": "show", "kind": "built-in", "name": "Show", "operation": {"show": {}}, "takes": {"value": "triage.decisions"}},
+                      {"id": "show_unclear", "kind": "built-in", "name": "Show the unclear ones", "operation": {"show": {}},
+                       "takes": {"value": "triage.by_path.needs_more_information"}}]
     fb = api.put("/api/agents/triage", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
     wf = _yaml.safe_load(fb["compiled"])
@@ -863,9 +870,9 @@ def test_a_branch_decides_for_each_item_and_remembers_each(api, tmp_path):
     refs = api.get("/api/agents/triage/references?step=triage").json()
     assert {"issue", "issue.author"} <= {r["ref"] for r in refs}                      # memory can match on the item's fields
     refs = api.get("/api/agents/triage/references?step=show").json()
-    assert any(r["ref"] == "triage.decisions" for r in refs)
-    script = {"triage_each": [{"path": "Actionable", "reason": "Steps are given.", "evidence": ["click save"]},
-                              {"path": "Question", "reason": "Asks how to export.", "evidence": []},
+    assert {"triage.decisions", "triage.by_path.needs_more_information"} <= {r["ref"] for r in refs}
+    script = {"triage_each": [{"path": "Actionable", "reason": "Steps are given.", "evidence": ["click save"], "confidence": "sure"},
+                              {"path": "Question", "reason": "Asks how to export.", "evidence": [], "confidence": "unsure", "runner_up": "Actionable"},
                               {"path": "Maybe", "reason": "?", "evidence": []}]}
     replay = tmp_path / "replay.yaml"
     replay.write_text(_yaml.safe_dump(script))
@@ -876,14 +883,24 @@ def test_a_branch_decides_for_each_item_and_remembers_each(api, tmp_path):
     chose = [(e["step"], e["detail"]) for e in d["log"] if e["kind"] == "decision"]
     assert chose[:2] == [("#7 Crash on save", "Chose: Actionable"), ("#8 How do I export?", "Chose: Question")]
     assert chose[2][0] == "#9 Idea" and next(e for e in d["log"] if e["step"] == "#9 Idea")["tone"] == "bad"   # not one of the paths
+    shown = json.loads(next(e for e in d["log"] if e["id"] == "show")["value"])
+    assert [x["label"] for x in shown] == ["#7 Crash on save", "#8 How do I export?", "#9 Idea"]
+    unclear = json.loads(next(e for e in d["log"] if e["id"] == "show_unclear")["value"])
+    assert [x["label"] for x in unclear] == ["#9 Idea"]                   # a step that follows one path gets only its items
     summary = next(e for e in d["log"] if e["id"] == "triage" and e["kind"] == "decisions")
     assert summary["detail"] == "1 Actionable, 1 Question, 1 Needs more information" and "safe default" in summary["why"]
-    cases = api.get(f"/api/runs/{d['id']}/memory").json()
-    assert [(c["subject"], c["decision"], c["keys"]) for c in cases] == [("#7 Crash on save", "Actionable", {"author": "ana"}),
-                                                                        ("#8 How do I export?", "Question", {"author": "bo"})]
-    api.post(f"/api/agents/triage/memory/{cases[0]['id']}", json={"verdict": "confirm"})
+    asked = api.get(f"/api/runs/{d['id']}/memory").json()                  # only what it wasn't sure of, or couldn't decide
+    assert [(c["subject"], c["decision"], c["asked_because"]) for c in asked] == [("#8 How do I export?", "Question", "unsure"),
+                                                                                  ("#9 Idea", "Needs more information", "unsure")]
+    row = next(e for e in d["log"] if e["step"] == "#7 Crash on save")     # sure, not asked: still correctable from the log
+    assert row["ref"] == "triage#0" and row["confidence"] == "sure" and "Question" in row["choices"]
+    fixed = api.post(f"/api/runs/{d['id']}/judgments", json={"ref": row["ref"], "decision": "Needs more information",
+                                                             "note": "No steps to reproduce."}).json()
+    assert fixed["status"] == "corrected" and fixed["subject"] == "#7 Crash on save" and fixed["keys"] == {"author": "ana"}
+    assert api.post(f"/api/runs/{d['id']}/judgments", json={"ref": "triage#0", "decision": "Maybe"}).status_code == 422
     replay.write_text(_yaml.safe_dump({"triage_each": [{"path": "Actionable", "reason": "r", "evidence": []}] * 3}))
     again = run_scripted(api, "triage", {})
     assert again["status"] == "succeeded", again.get("error")
     items = next(e for e in again["log"] if e["id"] == "triage_items")
-    assert items["detail"] == "3 to decide, with 3 past cases recalled"          # the most recent, and for ana's two, the same author
+    assert items["detail"] == "3 to decide, with 3 past cases recalled"          # the correction: same author for ana's, the newest for bo's
+    assert api.get(f"/api/runs/{again['id']}/memory").json() == []             # sure of all three, and nothing sampled
