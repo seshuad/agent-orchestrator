@@ -543,3 +543,34 @@ def test_cel_operators_dedupe_match_group_link():
     assert out["notes"] == ["Remove duplicates: dropped 1.", "Match: 1 of 3 had nothing in people."]
     linked = steps.cel_pipeline([{"link": {"together": "a.conf == b.conf"}}], {"items": [{"conf": "X"}, {"conf": "Y"}, {"conf": "X"}]})
     assert [c["size"] for c in linked["items"]] == [2, 1]
+
+
+def test_gcs_paths_scope_and_formats():
+    from agent_service.runtime import gcs_api as g
+    assert g.allowed(["landing/orders/", "other/x"], ["landing"]) == ["landing/orders/"]     # a step stays within the connector's
+    assert g.within("landing/orders/2026/a.csv", ["landing/orders/"]) and not g.within("landing/ordersX/a.csv", ["landing/orders/"])
+    with pytest.raises(g.StorageRefused):
+        g.split("landing/../secrets/key.json")
+    assert g.format_of("gs://bkt/x/data.parquet", None) == "parquet" and g.format_of("bkt/x/notes", "auto") == "text"
+    rows = g.parse(b"id,amount,region\n1,12.50,West\n2,,East\n", "csv", 10, False)
+    assert rows["rows"] == [{"id": 1, "amount": 12.5, "region": "West"}, {"id": 2, "amount": None, "region": "East"}]
+    assert g.parse(b'{"a":1}\n{"a":2}\n{"a":3}\n', "jsonl", 2, False) == {"rows": [{"a": 1}, {"a": 2}], "row_count": 2, "truncated": True, "text": None}
+    body, kind = g.serialize([{"a": 1, "b": [1, 2]}, {"a": 2, "c": "x"}], "csv")
+    assert kind == "text/csv" and body.decode().splitlines() == ["a,b,c", "1,\"[1, 2]\",", "2,,x"]
+
+
+def test_gcs_parquet_reads_through_duckdb(tmp_path):
+    import duckdb
+    from agent_service.runtime import gcs_api as g
+    out = tmp_path / "t.parquet"
+    duckdb.sql(f"COPY (SELECT 'South' AS region, 146683.71::DECIMAL(12,2) AS revenue, DATE '2026-10-01' AS day) TO '{out}' (FORMAT parquet)")
+    assert g.parse(out.read_bytes(), "parquet", 10, False)["rows"] == [{"region": "South", "revenue": 146683.71, "day": "2026-10-01"}]
+
+
+def test_javascript_dates_read_like_a_browser():
+    code = ('const iso = (t) => isNaN(t) ? null : new Date(t).toISOString().slice(0, 16);'
+            'return {a: iso(Date.parse("May 22, 2021")), b: iso(Date.parse("Sat, May 22, 2021")), c: iso(Date.parse("22 May 2021")),'
+            ' d: iso(Date.parse("05/22/2021")), e: iso(Date.parse("May 22, 2021 10:30 PM")), f: new Date("2021-05-22T10:00:00Z").getUTCHours(),'
+            ' g: iso(Date.parse("not a date")), h: new Date(2021, 0, 5).getMonth()};')
+    assert steps.javascript(code, list("abcdefgh"), {}) == {"a": "2021-05-22T00:00", "b": "2021-05-22T00:00", "c": "2021-05-22T00:00",
+                                                           "d": "2021-05-22T00:00", "e": "2021-05-22T22:30", "f": 10, "g": None, "h": 0}

@@ -1,5 +1,6 @@
 // What Claude did to this agent (drafted it, or changed it as asked), and asking it for the next change.
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, type AgentDetail } from '../api'
 import { Dialog, Icon } from '../ui'
 import DraftProgress, { useDraftJob } from '../pages/DraftProgress'
@@ -16,6 +17,7 @@ export function AiStrip({ name, meta, onUndo, onDismiss }: { name: string; meta:
         <span className="grow"><strong>{ai.kind === 'created' ? 'Drafted by Claude' : 'Changed by Claude'}:</strong> {ai.summary}
           {ai.errors.length > 0 && <span className="field-error"> {ai.errors.length} problem{ai.errors.length > 1 ? 's' : ''} it couldn't fix are marked in the editor.</span>}</span>
         {open_items > 0 && <button className="link" onClick={() => setOpen(!open)}>{open ? 'Hide' : `${ai.assumptions.length} assumptions, ${ai.questions.length} questions`}</button>}
+        {ai.chat && <Link className="btn small" to={`/new/chat/${ai.chat}`}><Icon name="spark" size={12} />Continue the conversation</Link>}
         {meta.can_undo_ai && <button className="btn small" onClick={async () => { await api.undoRefine(name); onUndo() }}>Undo this change</button>}
         <button className="link" style={{ color: 'var(--faint)' }} onClick={onDismiss}>Dismiss</button>
       </span>

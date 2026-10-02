@@ -1214,3 +1214,189 @@ def test_sales_load_check_alerts_when_one_table_cant_be_read(api, tmp_path):
     d = run_scripted(api, "sales-load-check", {"inputs": {"dry_run": "true"}}, approve="all")
     assert d["status"] == "failed" and d["error"]["title"] == "A step failed: products" and "may not read" in d["error"]["why"]
     assert not any(e["id"] == "check_load" for e in d["log"])
+
+
+@needs_conductor
+def test_cloud_storage_lists_reads_checks_and_writes_new_files(api):
+    c = api.post("/api/connectors", json={"type": "gcs", "name": "Landing bucket", "settings": {
+        "auth": {"kind": "gcloud"}, "allowed": ["sales-landing"]}}).json()
+    assert c["reach"] == "Cloud Storage · sales-landing" and c["sign_in"] == "shared"
+    acct = api.post("/api/connections", json={"connector": c["id"], "service": "gcs", "label": "Landing", "permissions": ["read", "write"]}).json()
+    assert acct["allowed"] == ["list_objects", "read_object", "write_object"]
+    api.post("/api/agents", json={"name": "landing-check", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/landing-check").json()["draft"]
+    draft["connections"] = {"gcs": {"service": "gcs", "permission": "read, write", "account": acct["id"]}}
+    draft["run_options"] = {"dry_run": {"type": "yes/no", "default": False}}
+    reads = {"connection": "gcs", "actions": ["list_objects", "read_object"], "paths": ["sales-landing/orders/"], "max_bytes": "1MB"}
+    draft["steps"] = [
+        {"id": "files", "kind": "built-in", "name": "New order files", "uses": dict(reads, actions=["list_objects"]),
+         "operation": {"gcs-list": {"prefix": "sales-landing/orders/", "match": "orders.*"}}},
+        {"id": "orders", "kind": "built-in", "name": "Read them", "uses": dict(reads, actions=["read_object"]),
+         "takes": {"files": "files.files"}, "operation": {"gcs-read": {}}},
+        {"id": "clean", "kind": "built-in", "name": "Clean", "takes": {"items": "orders.rows"},
+         "operation": {"cel": [{"check": [{"rule": "item.amount != null", "message": "no amount", "on_fail": "drop"}]},
+                               {"remove_duplicates": {"key": "item.order_id"}},
+                               {"summarize": {"group_by": {"region": "item.region"}, "totals": {"revenue": "sum(item.amount)", "orders": "count()"}}},
+                               {"sort": {"by": "item.revenue", "descending": True}}]}},
+        {"id": "archive", "kind": "act", "name": "Write the summary", "follows_dry_run": "run.dry_run",
+         "uses": {"connection": "gcs", "actions": ["write_object"], "paths": ["sales-landing/summaries/"]},
+         "takes": {"content": "clean.items", "day": "run.started"},
+         "write_object": {"path": "sales-landing/summaries/by-region.csv", "format": "csv"}}]
+    fb = api.put("/api/agents/landing-check", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    refs = {r["ref"]: r["type"] for r in api.get("/api/agents/landing-check/references?step=clean").json()}
+    assert refs["files.files"] == "list of files" and refs["orders.rows"] == "list of records"
+    d = wait_run(api, api.post("/api/agents/landing-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    read = api.get(f"/api/runs/{d['id']}/steps/orders/0").json()["output"]
+    assert read["row_count"] == 34 and [f["format"] for f in read["files"]] == ["csv", "jsonl"] and read["rows"][0]["_file"].endswith("orders.csv")
+    clean = api.get(f"/api/runs/{d['id']}/steps/clean/0").json()["output"]
+    assert sum(r["orders"] for r in clean["items"]) == 32 and clean["notes"] == ["Check: dropped 1: no amount", "Remove duplicates: dropped 1."]
+    assert d["outcome"]["act"]["created"][0].startswith("sales-landing/summaries/by-region.csv")
+    again = wait_run(api, api.post("/api/agents/landing-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert again["status"] == "succeeded"                         # each run writes into its own folder: nothing to overwrite
+    draft["steps"][3]["write_object"]["path"] = "sales-landing/orders/2026-10-01/orders.jsonl"
+    draft["steps"][3]["uses"]["paths"] = ["sales-landing/orders/"]
+    api.put("/api/agents/landing-check", json={"draft": draft})
+    d = wait_run(api, api.post("/api/agents/landing-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "failed" and "never overwrite" in json.dumps(d["error"])
+    draft["steps"][0]["uses"]["paths"] = ["sales-landing/summaries/"]               # listing outside the step's paths
+    api.put("/api/agents/landing-check", json={"draft": draft})
+    d = wait_run(api, api.post("/api/agents/landing-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "failed" and "may not use sales-landing/orders/" in json.dumps(d["error"])
+
+
+class ScriptedClaude:
+    """Answers with scripted content blocks (text, or tool calls), one list per request; records what it was sent."""
+
+    def __init__(self, turns):
+        self.turns, self.asked = list(turns), []
+        self.messages = self
+
+    def stream(self, **kw):
+        from types import SimpleNamespace as NS
+        self.asked.append({**kw, "messages": json.loads(json.dumps(kw["messages"], default=str))})
+        blocks = [NS(type="text", text=b) if isinstance(b, str) else NS(type="tool_use", id=f"tu{len(self.asked)}{i}", name=b[0], input=b[1])
+                  for i, b in enumerate(self.turns.pop(0))]
+        msg = NS(content=blocks, stop_reason="tool_use" if any(b.type == "tool_use" for b in blocks) else "end_turn",
+                 usage=NS(input_tokens=2000, output_tokens=300, cache_creation_input_tokens=0, cache_read_input_tokens=1500))
+
+        class S:
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def get_final_message(s): return msg
+        return S()
+
+
+def wait_chat(api, cid, timeout=30):
+    for _ in range(timeout * 10):
+        c = api.get(f"/api/build/{cid}").json()
+        if c["status"] != "thinking":
+            return c
+        time.sleep(0.1)
+    raise AssertionError("Claude didn't finish")
+
+
+def test_build_with_claude_explores_then_drafts(api, monkeypatch):
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
+        "auth": {"kind": "gcloud"}, "billing_project": "demo-project", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+    bq = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
+    good = f"""format: agent-service/v1
+name: weak-month-check
+description: Flag weak months.
+trigger: {{kind: manual}}
+limits: {{budget_usd: 1}}
+connections:
+  bq: {{service: bigquery, permission: read, account: {bq['id']}}}
+records:
+  Month: {{fields: {{month: {{type: text}}, total_revenue: {{type: number}}}}}}
+steps:
+- id: months
+  kind: built-in
+  name: Monthly revenue
+  uses: {{connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB}}
+  operation: {{bigquery: {{sql: "SELECT month, total_revenue FROM `demo-project.sales_processed.monthly_trend`"}}}}
+  returns: {{rows: {{type: list of Month}}}}
+"""
+    bad = good.replace("kind: built-in", "kind: built-inn")                          # the checks refuse it; Claude fixes it
+    fake = ScriptedClaude([
+        ["Let me look at the warehouse.", ("bigquery_list_tables", {"account": bq["id"], "dataset": "sales_processed"})],
+        [("bigquery_table", {"account": bq["id"], "table": "demo-project.sales_processed.monthly_trend"})],
+        ["`monthly_trend` has 12 months; August is far below the rest. I'd suggest a weak-month check."],
+        [("save_draft", {"agent_yaml": bad, "summary": "Flags weak months."})],
+        [("save_draft", {"agent_yaml": good, "summary": "Flags weak months.", "assumptions": ["30% is the right threshold"], "sample_set": "Sales (BigQuery)"})],
+        ["Saved weak-month-check as a draft: open it in the editor."],
+    ])
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: fake)
+    chat = api.post("/api/build", json={"message": "What's in my sales warehouse?", "source": "sample", "sample_set": "Sales (BigQuery)"}).json()
+    chat = wait_chat(api, chat["id"])
+    assert chat["status"] == "idle", chat["error"]
+    tools = [t for t in chat["transcript"] if t["role"] == "tool"]
+    assert [t["label"] for t in tools] == ["Listed the tables in sales_processed", "Looked at demo-project.sales_processed.monthly_trend"]
+    assert tools[1]["detail"].startswith("3 columns, 12 rows")
+    sent = fake.asked[2]["messages"][-1]["content"][0]["content"]                 # the tool result Claude got
+    assert '"sample_rows"' in sent and "2025-01" in sent
+    assert {e["name"] for e in chat["explored"]} == {"sales_processed", "demo-project.sales_processed.monthly_trend"}
+    assert "bigquery-2" not in fake.asked[0]["system"][1]["text"] and bq["id"] in fake.asked[0]["system"][1]["text"]    # what it may look at
+    chat = wait_chat(api, api.post(f"/api/build/{chat['id']}/message", json={"text": "Build the weak-month check."}).json()["id"])
+    assert chat["status"] == "idle" and chat["agent"] == "weak-month-check", chat
+    drafts = [t for t in chat["transcript"] if t.get("tool") == "save_draft"]
+    assert [d["ok"] for d in drafts] == [False, True] and "problem" in drafts[0]["detail"]
+    agent = api.get("/api/agents/weak-month-check").json()
+    assert agent["feedback"]["ok"] and agent["meta"]["sample_set"] == "Sales (BigQuery)" and agent["meta"]["ai"]["chat"] == chat["id"]
+    assert api.post(f"/api/build/{chat['id']}/message", json={"text": " "}).status_code == 422
+
+
+def test_build_with_claude_respects_share_samples(api, monkeypatch):
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    c = api.post("/api/connectors", json={"type": "gcs", "name": "Landing", "settings": {
+        "auth": {"kind": "gcloud"}, "allowed": ["sales-landing"], "share_samples": False}}).json()
+    acct = api.post("/api/connections", json={"connector": c["id"], "service": "gcs", "label": "Landing", "permissions": ["read"]}).json()
+    fake = ScriptedClaude([
+        [("storage_list", {"account": acct["id"], "prefix": "sales-landing/"}), ("storage_read", {"account": acct["id"], "path": "sales-landing/orders/2026-09-30/orders.csv"})],
+        ["I can see the folders but not the file contents."]])
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: fake)
+    chat = wait_chat(api, api.post("/api/build", json={"message": "Look at the landing bucket", "source": "sample", "sample_set": "Sales (BigQuery)"}).json()["id"])
+    listed, read = [t for t in chat["transcript"] if t["role"] == "tool"]
+    assert listed["ok"] and listed["detail"] == "2 files in 1 folder" and not read["ok"] and "turned off samples" in read["detail"]
+
+
+def test_build_chat_never_sends_empty_text_blocks():
+    from types import SimpleNamespace as NS
+    from agent_service.server.build_chat import _block, _clean
+
+    class Thinking(NS):
+        def model_dump(self, **kw): return {"type": "thinking", "thinking": self.thinking, "signature": self.signature}
+    assert _block(NS(type="text", text="  ")) is None                                    # the API refuses empty text
+    assert _block(Thinking(type="thinking", thinking="…", signature="sig")) == {"type": "thinking", "thinking": "…", "signature": "sig"}
+    saved = [{"role": "assistant", "content": [{"type": "text", "text": ""}, {"type": "tool_use", "id": "t1", "name": "save_draft", "input": {}}]}]
+    assert _clean(saved)[0]["content"] == [{"type": "tool_use", "id": "t1", "name": "save_draft", "input": {}}]   # older conversations, repaired
+
+
+def test_build_with_claude_can_be_stopped(api, monkeypatch):
+    import threading
+    from agent_service.server import author
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    release = threading.Event()
+    fake = ScriptedClaude([[("storage_list", {"account": "nope", "prefix": "x/"})], ["Fine, what next?"]])
+    original = fake.stream
+
+    def slow(**kw):                                  # the first call waits until the builder has pressed Stop
+        if len(fake.asked) == 0:
+            release.wait(5)
+        return original(**kw)
+    fake.stream = slow
+    monkeypatch.setattr(author.Drafts, "_client", lambda self: fake)
+    chat = api.post("/api/build", json={"message": "Look around", "source": "sample", "sample_set": "Sales (BigQuery)"}).json()
+    assert api.post(f"/api/build/{chat['id']}/stop").json()["status"] == "thinking"
+    release.set()
+    chat = wait_chat(api, chat["id"])
+    assert chat["status"] == "idle" and chat["transcript"][-1]["label"] == "Stopped"
+    assert not any(t.get("tool") == "storage_list" for t in chat["transcript"])           # the look it asked for never ran
+    chat = wait_chat(api, api.post(f"/api/build/{chat['id']}/message", json={"text": "Carry on"}).json()["id"])
+    assert chat["status"] == "idle" and chat["transcript"][-1]["text"] == "Fine, what next?"
+    sent = fake.asked[1]["messages"]
+    assert sent[-2]["content"][0]["content"] == "Stopped by the builder before this ran."      # every tool call got its answer

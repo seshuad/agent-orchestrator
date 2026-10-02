@@ -4,6 +4,7 @@ import { api, type Session } from './api'
 import { AppBar, SessionContext } from './ui'
 import Home from './pages/Home'
 import NewAgent from './pages/NewAgent'
+import BuildChat from './pages/BuildChat'
 import RunsPage from './pages/Runs'
 import Approvals from './pages/Approvals'
 import Connections from './pages/Connections'
@@ -34,6 +35,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/new" element={<NewAgent />} />
+            <Route path="/new/chat" element={<BuildChat />} />
+            <Route path="/new/chat/:id" element={<BuildChat />} />
             <Route path="/agents/:name" element={<Editor />} />
             <Route path="/agents/:name/runs" element={<RunsPage />} />
             <Route path="/agents/:name/tests" element={<Tests />} />

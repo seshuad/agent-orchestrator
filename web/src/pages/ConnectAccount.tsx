@@ -4,7 +4,7 @@ import { api, type Connector } from '../api'
 import { Block, Check, Dialog, Icon, Segmented } from '../ui'
 
 const STATE: Record<string, [string, string]> = { ready: ['Ready', '#2E8B57'], attention: ['Needs attention', '#C2553A'], setup: ['Not set up', '#8A8A80'] }
-const SERVICE_NAME: Record<string, string> = { gmail: 'Gmail', 'google-sheets': 'Google Sheets', 'google-calendar': 'Google Calendar', bigquery: 'BigQuery' }
+const SERVICE_NAME: Record<string, string> = { gmail: 'Gmail', 'google-sheets': 'Google Sheets', 'google-calendar': 'Google Calendar', bigquery: 'BigQuery', gcs: 'Cloud Storage' }
 
 export function StatusDot({ state }: { state: string }) {
   const [text, color] = STATE[state] ?? STATE.setup

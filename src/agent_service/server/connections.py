@@ -53,6 +53,16 @@ SERVICES: dict[str, dict[str, Any]] = {
         },
         "never": "Deleting or updating rows, dropping tables, changing schemas: not offered.",
     },
+    "gcs": {
+        "name": "Cloud Storage", "icon": "folder",
+        "permissions": {
+            "read": {"label": "List and read files", "actions": ["list_objects", "read_object"], "scope": "storage (named buckets and prefixes)",
+                     "detail": "List files and read them into rows (CSV, JSON, Parquet) or text. Each step names its buckets or prefixes and a byte cap."},
+            "write": {"label": "Write new files", "actions": ["write_object"], "scope": "storage (named prefixes, new files only)",
+                      "detail": "Write new files under prefixes a step names. Act steps only. Never overwrites or deletes a file."},
+        },
+        "never": "Overwriting or deleting files, changing buckets or their permissions: not offered.",
+    },
     "github": {
         "name": "GitHub", "icon": "code", "sign_in": "token",
         "permissions": {

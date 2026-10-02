@@ -87,7 +87,7 @@ class Limits(Strict):
 
 
 class Connection(Strict):
-    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp", "bigquery"]
+    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp", "bigquery", "gcs"]
     permission: str
     account: str | None = None               # the workspace connection (account) it uses
 
@@ -107,7 +107,8 @@ class Uses(Strict):
     arg_limits: dict[str, list[str]] | None = None   # MCP: argument -> the only values a call may pass
     datasets: list[str] | None = None        # BigQuery: dataset, project.dataset or project.dataset.table it may read
     max_bytes: str | int | None = None       # BigQuery: the most one query may scan, e.g. "1GB"
-    max_rows: int | None = None              # BigQuery: rows returned per query
+    max_rows: int | None = None              # BigQuery: rows returned per query; Cloud Storage: rows read per file
+    paths: list[str] | None = None           # Cloud Storage: bucket or bucket/prefix it may list, read or write under
     tables: list[str] | None = None          # BigQuery: tables an Act step may insert into
     recipients: list[str] | None = None      # Gmail sending: the only addresses (or @domains) it may send to
     max_emails: int | None = None            # Gmail sending: at most this many emails per run (default 20)
@@ -163,7 +164,8 @@ class BuiltInStep(Step):
     @field_validator("operation")
     @classmethod
     def _one_operation(cls, v: dict[str, Any]) -> dict[str, Any]:
-        known = {"cel", "tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery", "chart"}
+        known = {"cel", "tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery", "chart",
+                 "gcs-list", "gcs-read"}
         if len(v) != 1 or next(iter(v)) not in known:
             raise ValueError(f"operation must be exactly one of {sorted(known)}")
         return v
@@ -312,12 +314,14 @@ class ActStep(Step):
     call_tool: dict[str, Any] | None = None      # MCP: {tool, arguments: {arg: "{field}" or text}, for_each}
     insert_rows: dict[str, Any] | None = None    # BigQuery: {table, for_each, row: {column: "{field}"}}
     send_email: dict[str, Any] | None = None     # Gmail: {to: [...], cc?, subject, body, for_each?}: templates over "{name}"
+    write_object: dict[str, Any] | None = None   # Cloud Storage: {path: "bucket/prefix/{name}.json", format: json|jsonl|csv|text|png}; takes: {content: ref}
     follows_dry_run: str | None = None          # a yes/no run option; none: it always makes its changes
 
     @model_validator(mode="after")
     def _one_action(self) -> ActStep:
-        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool, self.insert_rows, self.send_email)) != 1:
-            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row, call_tool, insert_rows or send_email")
+        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool, self.insert_rows, self.send_email, self.write_object)) != 1:
+            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row, call_tool, insert_rows, send_email "
+                             "or write_object")
         return self
 
 
@@ -384,7 +388,7 @@ class Agent(Strict):
             # Built-in services: Ask steps only read. An MCP connector's tools are read or act by its admin's choice,
             # checked against the workspace's connectors when the agent is saved.
             if (isinstance(s, (AskStep, BranchBlock)) and uses and self.connections[uses.connection].service != "mcp"
-                    and set(uses.actions) - {"search", "open", "read", "query", "list_tables", "get_schema"}):
+                    and set(uses.actions) - {"search", "open", "read", "query", "list_tables", "get_schema", "list_objects", "read_object"}):
                 raise ValueError(f"{s.name}: {'Ask steps' if isinstance(s, AskStep) else 'a Branch'} can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")

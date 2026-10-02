@@ -31,7 +31,7 @@ from .connections import SERVICES, allowed_actions, steps_using
 from . import pubsub
 from .runs import Runs, prune
 from . import connectors as conn_types
-from . import author, google, mcp_oauth
+from . import author, build_chat, google, mcp_oauth
 from .store import EXAMPLES, SAMPLE_SETS, Conflict, NotFound, Store
 from ..runtime import upstream, vault
 
@@ -99,6 +99,16 @@ class TestIn(BaseModel):
     from_run: str | None = None                # new tests: the run it copies inputs and approvals from
     name: str = ""
     expect: list[dict[str, str]] | None = None
+
+
+class BuildStart(BaseModel):
+    message: str = ""
+    source: str = "live"                       # live accounts, or a sample set's data
+    sample_set: str | None = None
+
+
+class BuildMessage(BaseModel):
+    text: str
 
 
 class Judgment(BaseModel):
@@ -208,7 +218,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             return False
         connector = store.connector(conn.get("connector"))
         kind = conn_types.sign_in_kind(connector)
-        if connector and connector["type"] == "bigquery":        # the service's gcloud account or its own credentials need no secret
+        if connector and connector["type"] in ("bigquery", "gcs"):   # the service's gcloud account or its own credentials need no secret
             auth = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "gcloud")
             return auth != "service_account" or bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
         if kind == "shared":
@@ -392,14 +402,14 @@ def create_app(home: Path | None = None) -> FastAPI:
             vault.delete(conn_types.secret_key(cid), vault_dir)
             return
         value: Any = secret.strip()
-        if ctype == "bigquery":
+        if ctype in ("bigquery", "gcs"):
             try:
                 value = json.loads(value)
             except ValueError:
                 raise fail(ValueError("Paste the service account's whole JSON key file."), 422)
             if value.get("type") != "service_account" or "private_key" not in value:
                 raise fail(ValueError("That isn't a service account key (it needs \"type\": \"service_account\" and a private key)."), 422)
-        field = "client_secret" if ctype == "google" else "key" if ctype == "bigquery" else "token"
+        field = "client_secret" if ctype == "google" else "key" if ctype in ("bigquery", "gcs") else "token"
         vault.save(conn_types.secret_key(cid), {field: value, "_set_at": time.time()}, vault_dir)
 
     def _connector_fields(body: ConnectorIn, existing: dict[str, Any] | None, ctype: str) -> dict[str, Any]:
@@ -446,7 +456,11 @@ def create_app(home: Path | None = None) -> FastAPI:
         if existing is None:
             raise fail(NotFound(f"No connector {cid!r}."), 404)
         _save_secret(cid, existing["type"], body.secret)
-        saved = store.save_connector({"id": cid, **_connector_fields(body, existing, existing["type"])})
+        fields = _connector_fields(body, existing, existing["type"])
+        changed = fields.get("settings") != existing.get("settings") or (body.secret is not None)
+        if changed and (existing.get("status") or {}).get("state") == "attention":     # an old failure no longer applies
+            fields["status"] = conn_types.status("setup", "Changed since the last test: test it again.", store.workspace()["user"]["name"])
+        saved = store.save_connector({"id": cid, **fields})
         for c in store.connections():                    # accounts can't hold more than the connector now offers
             if c.get("connector") == cid:
                 keep = [p for p in c.get("permissions", []) if p in conn_types.catalog(c["service"], saved)["permissions"]]
@@ -482,6 +496,8 @@ def create_app(home: Path | None = None) -> FastAPI:
             ok, msg = conn_types.test_github(c)
         elif c["type"] == "bigquery":
             ok, msg = conn_types.test_bigquery(c, vault_dir)
+        elif c["type"] == "gcs":
+            ok, msg = conn_types.test_gcs(c, vault_dir)
         else:
             auth = ((c.get("settings") or {}).get("auth") or {}).get("kind", "none")
             if auth == "oauth" and not vault.load(conn_types.secret_key(cid) + "-admin", vault_dir):
@@ -562,6 +578,42 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     def checker(raw: dict[str, Any]) -> list[dict[str, str]]:
         return author.problems(raw, store.accounts(), connectors_map())
+
+    chats = build_chat.Chats(store, lambda: drafts._client(), SAMPLE_SETS)
+
+    @app.post("/api/build")
+    def build_start(body: BuildStart) -> dict[str, Any]:
+        """Starts a conversation with Claude about building an agent. Poll /api/build/<id>."""
+        need_claude()
+        if body.source == "sample" and body.sample_set not in SAMPLE_SETS:
+            raise fail(ValueError("Pick a sample set to look at."), 422)
+        return chats.start(body.message, body.source, body.sample_set)
+
+    @app.get("/api/build/{cid}")
+    def build_get(cid: str) -> dict[str, Any]:
+        try:
+            return chats.get(cid)
+        except KeyError:
+            raise fail(NotFound("No such conversation."), 404)
+
+    @app.post("/api/build/{cid}/stop")
+    def build_stop(cid: str) -> dict[str, Any]:
+        try:
+            return chats.stop(cid)
+        except KeyError:
+            raise fail(NotFound("No such conversation."), 404)
+
+    @app.post("/api/build/{cid}/message")
+    def build_say(cid: str, body: BuildMessage) -> dict[str, Any]:
+        need_claude()
+        try:
+            return chats.say(cid, body.text)
+        except KeyError:
+            raise fail(NotFound("No such conversation."), 404)
+        except RuntimeError as exc:
+            raise fail(Conflict(str(exc)), 409)
+        except ValueError as exc:
+            raise fail(exc, 422)
 
     @app.post("/api/agents/describe")
     def describe_agent(body: DescribeAgent) -> dict[str, Any]:

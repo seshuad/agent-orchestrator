@@ -453,6 +453,64 @@ def chart(step: str, conf: dict, data: dict) -> dict:
     return {"image": f"charts/{step}.png", "title": conf.get("title") or ""}
 
 
+# ------------------------------------------------------------------ Cloud Storage: list, read, write new files
+
+def _paths(value: Any) -> list[str]:
+    """Paths from a step's input: one path, a list of them, or files from a listing (each with `path`)."""
+    items = value if isinstance(value, list) else [value]
+    out = []
+    for x in items:
+        if isinstance(x, dict) and x.get("path"):
+            out.append(x["path"])
+        elif isinstance(x, dict) and x.get("bucket") and x.get("name"):     # a Pub/Sub notification of a new object
+            out.append(f"{x['bucket']}/{x['name']}")
+        elif isinstance(x, str) and x.strip():
+            out.append(x.strip())
+    return out
+
+
+def gcs_list(conf: dict, data: dict) -> dict:
+    """Files under the prefix (the step's setting, or its `prefix` input), optionally only those modified after a time
+    (`modified_after`) and matching a name pattern (`match`, e.g. *.csv)."""
+    import fnmatch
+    conn = gateway.connect("gcs")
+    prefix = data.get("prefix") or conf.get("prefix") or ""
+    files = gateway.call(conn, "gcs", "list_objects", {"prefix": prefix, "modified_after": data.get("modified_after") or None,
+                                                      "limit": int(conf.get("limit") or 1000)})
+    if conf.get("match"):
+        files = [f for f in files if fnmatch.fnmatch(f["path"].rsplit("/", 1)[-1], conf["match"])]
+    return {"files": files, "count": len(files)}
+
+
+def gcs_read(conf: dict, data: dict) -> dict:
+    """One file, or several (a list of paths or a listing's files): their rows together, each marked with its _file."""
+    conn = gateway.connect("gcs")
+    paths = _paths(data.get("path") if data.get("path") is not None else data.get("files") if data.get("files") is not None else conf.get("path"))
+    if data.get("bucket") and data.get("name") and not paths:
+        paths = [f"{data['bucket']}/{data['name']}"]
+    rows, files, truncated, text = [], [], False, None
+    for path in paths:
+        out = gateway.call(conn, "gcs", "read_object", {"path": path, "format": conf.get("format") or "auto"})
+        rows += [{**r, "_file": out["path"]} if len(paths) > 1 else r for r in out["rows"]]
+        files.append({"path": out["path"], "format": out["format"], "bytes": out["bytes"], "row_count": out["row_count"], "truncated": out["truncated"]})
+        truncated = truncated or out["truncated"]
+        if len(paths) == 1:
+            text = out.get("text")
+    return {"rows": rows, "row_count": len(rows), "truncated": truncated, "files": files, "text": text}
+
+
+def write_objects(conf: dict, dry_run: bool, data: dict) -> dict:
+    """A new file at the path template (filled from the step's inputs), holding its `content` input as JSON, JSON lines,
+    CSV, text, or a chart's PNG. The gateway refuses a path outside the step's prefixes, or one that already exists."""
+    from .gcs_api import serialize
+    conn = gateway.connect("gcs")
+    path = _fill_text(conf.get("path", ""), {k: v for k, v in data.items() if k != "content"})
+    body, content_type = serialize(data.get("content"), conf.get("format") or "json")
+    out = gateway.call(conn, "gcs", "write_object", {"path": path, "data": body, "content_type": content_type, "dry_run": dry_run})
+    done = f"{out.get('path') or out.get('would_write')} ({len(body):,} bytes)"
+    return {"created": [] if dry_run else [done], "would_create": [done] if dry_run else [], "skipped": [], "path": out.get("path") or out.get("would_write")}
+
+
 # ------------------------------------------------------------------ email: one per run, or one per record
 
 def _as_text(value: Any) -> str:
@@ -565,12 +623,28 @@ class ScriptError(Exception):
     """The code threw, ran too long, or returned something the step doesn't declare. The message says which."""
 
 
+# QuickJS's Date only reads ISO dates; browsers also read "May 22, 2021". So Date.parse and new Date(text) here also read
+# "May 22, 2021", "Sat, May 22, 2021", "22 May 2021" and "05/22/2021" (US), with an optional "10:30 AM" or "18:05:09",
+# as UTC. ISO text is read exactly as before. One line, so the builder's line numbers in errors stay right.
+DATES = ("(function(){const N=Date,P=N.parse,M={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};"
+         "function q(s){if(typeof s!=='string')return P(s);let t=P(s);if(!isNaN(t))return t;s=s.trim().replace(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\\.?,?\\s+/i,'');"
+         "let m,y,mo,d,h=0,mi=0,se=0;const tm=s.match(/,?\\s+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*([AaPp][Mm])?$/);"
+         "if(tm){s=s.slice(0,tm.index);h=+tm[1];mi=+tm[2];se=+(tm[3]||0);if(tm[4]){const pm=/p/i.test(tm[4]);if(h===12)h=pm?12:0;else if(pm)h+=12}}"
+         "const mon=(w)=>{w=w.toLowerCase();return M[w.slice(0,4)]!==undefined?M[w.slice(0,4)]:M[w.slice(0,3)]};"
+         "if(m=s.match(/^([A-Za-z]+)\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})$/)){mo=mon(m[1]);d=+m[2];y=+m[3]}"
+         "else if(m=s.match(/^(\\d{1,2})\\s+([A-Za-z]+)\\.?,?\\s+(\\d{4})$/)){d=+m[1];mo=mon(m[2]);y=+m[3]}"
+         "else if(m=s.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/)){mo=+m[1]-1;d=+m[2];y=+m[3]}"
+         "else return NaN;if(mo===undefined||d<1||d>31)return NaN;return N.UTC(y,mo,d,h,mi,se)}"
+         "function D(...a){if(!new.target)return N();if(a.length===1&&typeof a[0]==='string')return new N(q(a[0]));return new N(...a)}"
+         "D.prototype=N.prototype;D.parse=q;D.UTC=N.UTC;D.now=N.now;Date=D;})();")
+
+
 def javascript(code: str, returns: list[str], data: dict) -> dict:
     """Runs the builder's code in QuickJS: a function body that gets `inputs` (the step's Takes) and returns an object
     with the fields in Returns. No files, network or processes: only its inputs, JSON in and JSON out, time and
     memory limited. Date is available; nothing else from outside."""
     import quickjs
-    wrapper = ("function __main(json) {\n  const inputs = JSON.parse(json);\n"
+    wrapper = (DATES + "function __main(json) {\n  const inputs = JSON.parse(json);\n"
                "  const out = (function (inputs) {\n" + code + "\n  })(inputs);\n"
                "  return JSON.stringify(out === undefined ? null : out);\n}")
     try:
@@ -734,7 +808,7 @@ def show(data: dict) -> dict:
 def execute(argv: list[str], data: dict) -> dict:
     """One operation, from the same arguments a script step passes, on its inputs. Records the output (or the error)."""
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect", "send-email", "chart", "cel"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect", "send-email", "chart", "cel", "gcs-list", "gcs-read", "write-object"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -757,6 +831,7 @@ def execute(argv: list[str], data: dict) -> dict:
     p.add_argument("--steps", help="each-collect: the block's step ids, as JSON.")
     p.add_argument("--email", help="send-email: {to, cc, subject, body}, as JSON.")
     p.add_argument("--ops-b64", help="cel: the operators, JSON in base64.")
+    p.add_argument("--gcs-b64", help="gcs-list, gcs-read, write-object: the settings, JSON in base64.")
     p.add_argument("--chart-b64", help="chart: its settings (kind, x, y, title, highlight, reference ...), JSON in base64.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
@@ -778,6 +853,18 @@ def execute(argv: list[str], data: dict) -> dict:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation in ("gcs-list", "gcs-read", "write-object"):
+        import base64
+        conf = json.loads(base64.b64decode(a.gcs_b64).decode()) if a.gcs_b64 else {}
+        try:
+            out = (gcs_list(conf, data) if a.operation == "gcs-list" else gcs_read(conf, data) if a.operation == "gcs-read"
+                   else write_objects(conf, a.dry_run == "true", data))
+        except gateway.Refused as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(f"Refused: {exc}")
+        except Exception as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(f"Cloud Storage failed: {str(exc).splitlines()[0][:400]}")
     elif a.operation == "cel":
         import base64
         try:

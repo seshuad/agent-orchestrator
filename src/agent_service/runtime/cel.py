@@ -49,7 +49,12 @@ def _numbers_meet(fn):
     """An operator that, when an int meets a double, compares or computes as doubles. Data mixes them freely (BigQuery
     counts are ints, amounts doubles), and `item.revenue / item.orders > 500` shouldn't fail on that. Newer CEL
     implementations compare across numeric types; this extends the same promotion to arithmetic."""
+    equality = getattr(fn, "__name__", "") in ("bool_eq", "bool_ne")
+
     def promoted(a: Any, b: Any) -> Any:
+        if equality and (a is None or b is None):     # CEL: anything can be compared with null; equal only to null
+            same = (a is None) and (b is None)
+            return celtypes.BoolType(same if fn.__name__ == "bool_eq" else not same)
         if isinstance(a, (celtypes.IntType, celtypes.UintType)) and isinstance(b, celtypes.DoubleType):
             a = celtypes.DoubleType(a)
         elif isinstance(a, celtypes.DoubleType) and isinstance(b, (celtypes.IntType, celtypes.UintType)):

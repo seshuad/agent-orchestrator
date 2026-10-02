@@ -51,6 +51,8 @@ An agent is a YAML document. Top level:
             sample: {table: sales_processed.orders, rows: 120}}   # the message test runs use
                                                             # runs the published version once per message (e.g. when an ETL load finishes);
                                                             # also gives trigger.message_id, trigger.published_at
+                                                            # "when a file lands": the bucket's Cloud Storage notification topic;
+                                                            # message fields bucket, name, size, eventType (filter eventType == "OBJECT_FINALIZE")
   run_options:                                              # values a person sets when running it: run.<name>
     dry_run: {type: yes/no, default: true, description: "List what it would do, and change nothing."}
     question: {type: text, default: "", description: "..."}
@@ -123,10 +125,17 @@ built-in: no model. Three engines (cel operators over a list, javascript, bigque
                 The body gets `inputs` (each of takes by name) and must `return {field: ...}` with every field in returns.
                 Plain JavaScript in a sandbox (no network, files or other programs; 2 s, 64 MB): use it for exact,
                 repeatable work a model shouldn't do, like sorting, ranking, date arithmetic, counting and reshaping.
+                Date.parse / new Date(text) read ISO dates and "May 22, 2021", "22 May 2021", "05/22/2021" (as UTC);
+                for other formats, parse the parts yourself.
     chart: {kind: bar|line, x: <field>, y: <field>, title: "...", y_format?: "$,.0f", highlight?: "<CEL over row and takes>",
             reference?: <a takes name holding a number>, reference_label?: "..."}   takes: {rows: <list ref>, ...}
                 Draws a PNG from the rows, no model. Highlighted rows in red; a dashed line at the reference. Email it with
                 send_email.charts; an approver sees it.
+    gcs-list: {prefix: bucket/prefix/, match?: "*.csv"}   takes: {prefix?: <ref>, modified_after?: <ref>}
+                uses: {connection: gcs, actions: [list_objects], paths: [bucket/prefix/]}   -> files (path, size, updated, format), count
+    gcs-read: {format: auto|csv|json|jsonl|parquet|text}   takes: {files: <list.files> | path: <ref> | bucket, name: <refs>}
+                uses: {connection: gcs, actions: [read_object], paths: [..], max_bytes: "50MB", max_rows: 5000}
+                -> rows (with _file when several), row_count, truncated, files, text. Cloud Storage files, no model.
   Outputs: lookup -> found, <as>; filter-rows -> <as>; show -> value;
            javascript -> its returns; chart -> image, title; cel -> items, notes and each save_as.
 
@@ -223,6 +232,8 @@ act: changes something outside the agent, using only checked fields (never free 
                    takes: {name: <ref>, ...}   uses: {connection: gmail, actions: [send], recipients: [a@company.com, "@company.com"], max_emails: 5}
                    The gateway sends only to `recipients`. Lists fill in as bullet lines. If the body uses text a model wrote,
                    put an Approve step first (items: the report, then for_each: <approve>.approved) so a person reads it.
+    write_object:  {path: "bucket/prefix/{name}.json", format: json|jsonl|csv|text|png}   takes: {content: <ref>, name: <ref>}
+                   uses: {connection: gcs, actions: [write_object], paths: [bucket/prefix/]}   # new files only, never overwrites
     follows_dry_run: run.dry_run                             # optional: on a dry run it lists what it would do
 
 ## Rules (CEL)

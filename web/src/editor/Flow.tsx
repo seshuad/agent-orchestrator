@@ -42,6 +42,7 @@ function access(draft: Json): string {
         (u.actions.includes('append_row') ? writes : reads).push(`${u.actions.includes('append_row') ? 'add rows to' : 'read'} ${(u.sheets ?? []).join(', ') || 'a sheet'}`)
       } else if (service === 'google-calendar') writes.push(`create events on ${u.calendar ?? 'a calendar'}`)
       else if (service === 'github') reads.push(`read GitHub ${(u.repos ?? []).join(', ') || '(no repositories yet)'}`)
+      else if (service === 'gcs') (s.kind === 'act' ? writes : reads).push(`${s.kind === 'act' ? 'write new files under' : 'read files in'} ${(u.paths ?? []).join(', ') || 'Cloud Storage'}`)
       else if (service === 'bigquery') (s.kind === 'act' ? writes : reads).push(s.kind === 'act' ? `insert rows into ${(u.tables ?? []).join(', ') || 'a table'}` : `query ${(u.datasets ?? []).join(', ') || 'BigQuery'}`)
       else if (service === 'mcp') (s.kind === 'act' ? writes : reads).push(`${s.kind === 'act' ? 'call' : 'use'} ${(u.actions ?? []).join(', ') || 'no tool yet'} on ${u.connection}`)
     }

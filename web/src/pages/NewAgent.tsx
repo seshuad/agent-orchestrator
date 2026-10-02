@@ -57,6 +57,14 @@ export default function NewAgent() {
           <h1>New agent</h1>
           <span className="muted" style={{ fontSize: 13 }}>An agent starts on a trigger, works through its steps, then finishes. You can run it on sample data before publishing.</span>
         </div>
+        <button type="button" className="card pad" disabled={!session?.claude_api} onClick={() => navigate('/new/chat')}
+          style={{ textAlign: 'left', gap: 4, borderColor: '#C9D7EA', background: 'var(--acc-soft)', cursor: session?.claude_api ? 'pointer' : 'not-allowed', opacity: session?.claude_api ? 1 : 0.6 }}>
+          <span className="row" style={{ gap: 8 }}><Icon name="spark" size={18} color="var(--acc)" /><strong style={{ fontSize: 14 }}>Build with Claude</strong>
+            <span className="faint">recommended when you're starting from your data</span></span>
+          <span className="muted">A conversation: Claude looks at your tables, folders and files first (read-only), suggests agents grounded in what's there,
+            asks what matters, and drafts one. {session?.claude_api ? '' : 'Needs the service to have a Claude API key.'}</span>
+        </button>
+        <span className="faint" style={{ textAlign: 'center' }}>or set it up here</span>
         <Block title={describing ? 'Name (optional)' : 'Name'}>
           <input className="input" style={{ fontSize: 14, padding: '8px 10px' }} value={name} onChange={(e) => setName(e.target.value)} placeholder={describing ? 'Leave empty and Claude names it' : 'e.g. vendor-onboarding'} aria-label="Name" />
           {slug && slug !== name && <span className="faint">Saved as <code className="mono">{slug}</code></span>}

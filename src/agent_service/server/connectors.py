@@ -32,6 +32,7 @@ TYPES: dict[str, dict[str, Any]] = {
     "github": {"name": "GitHub", "icon": "code", "services": ["github"], "reach": "Issues · pull requests · files, read only"},
     "mcp": {"name": "MCP server", "icon": "plug", "services": ["mcp"], "reach": "Any system with an MCP server"},
     "bigquery": {"name": "BigQuery", "icon": "database", "services": ["bigquery"], "reach": "BigQuery: read queries, optionally inserts"},
+    "gcs": {"name": "Cloud Storage", "icon": "folder", "services": ["gcs"], "reach": "Cloud Storage: read files, optionally write new ones"},
 }
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -100,6 +101,9 @@ def reach(connector: dict[str, Any]) -> str:
     if connector["type"] == "bigquery":
         st = connector.get("settings") or {}
         return f"BigQuery · {st.get('billing_project') or 'no project yet'}" + (f" · {', '.join(st.get('allowed') or [])}" if st.get("allowed") else "")
+    if connector["type"] == "gcs":
+        allowed = (connector.get("settings") or {}).get("allowed") or []
+        return "Cloud Storage · " + (", ".join(allowed) if allowed else "no buckets yet")
     if connector["type"] == "mcp":
         server = (connector.get("settings") or {}).get("server") or {}
         where = server.get("url", "").split("//")[-1].split("/")[0] if server.get("transport") == "url" else server.get("command", "")
@@ -115,7 +119,7 @@ def sign_in_kind(connector: dict[str, Any] | None) -> str:
         return "google"
     if connector["type"] == "github":
         return "token"
-    if connector["type"] == "bigquery":
+    if connector["type"] in ("bigquery", "gcs"):
         return "shared"
     kind = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "none")
     return {"oauth": "oauth", "bearer": "shared", "header": "shared"}.get(kind, "none")
@@ -186,6 +190,20 @@ def test_bigquery(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str
     except Exception as exc:
         return False, f"BigQuery refused: {str(exc).splitlines()[0][:240]}"
     return True, f"Signed in as {who}; billing {st['billing_project']}." + (f" Can see {', '.join(seen)}." if seen else " No data allowed yet.")
+
+
+def test_gcs(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str]:
+    """Who it signs in as, and a listing of each allowed bucket or prefix."""
+    import os
+    os.environ.setdefault("AGENT_SERVICE_VAULT", str(vault_dir))
+    from ..runtime import gcs_api
+    st = connector.get("settings") or {}
+    if not st.get("allowed"):
+        return False, "List the buckets (or bucket/prefix) agents may use first."
+    try:
+        return True, gcs_api.identity_and_check({**st, "connector": connector["id"]})
+    except Exception as exc:
+        return False, f"Cloud Storage refused: {str(exc).splitlines()[0][:240]}"
 
 
 def mcp_credentials(connector: dict[str, Any], vault_dir: Path, account: str | None = None) -> dict[str, Any]:

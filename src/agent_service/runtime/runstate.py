@@ -52,6 +52,7 @@ RESULT_CAP = 200_000                     # characters of a call's result kept fo
 
 def log_call(connection: str, action: str, args: dict[str, Any], outcome: str, detail: str = "", result: Any = None,
              **extra: Any) -> None:
+    args = {k: (f"<{len(v):,} bytes>" if isinstance(v, (bytes, bytearray)) else v) for k, v in args.items()}   # file contents: their size
     entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": time.time(), "step": os.environ.get(STEP_ENV, ""),
              "connection": connection, "action": action, "args": args, "outcome": outcome, "detail": detail,
              **{k: v for k, v in extra.items() if v is not None}}

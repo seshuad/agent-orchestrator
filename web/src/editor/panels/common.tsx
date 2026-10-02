@@ -168,7 +168,7 @@ export function TakesEditor({ fixed, allowAdd = true }: { fixed?: string[]; allo
 }
 
 /** Which connection a step uses, which of its actions, and the limits the gateway enforces. */
-export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos' | 'datasets' | 'max_bytes' | 'max_rows' | 'tables' | 'recipients')[]; mcpTools?: McpTool[] }) {
+export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos' | 'datasets' | 'max_bytes' | 'max_rows' | 'tables' | 'recipients' | 'paths')[]; mcpTools?: McpTool[] }) {
   const { step, set, draft, p, block } = useStep()
   const uses: Json | undefined = step.uses
   const conns = Object.keys(draft.connections ?? {})
@@ -183,7 +183,7 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
   }
   const setU = (k: string, v: unknown) => set(['uses'], { ...uses, [k]: v === '' || (Array.isArray(v) && !v.length && k !== 'actions') ? undefined : v })
   const service = draft.connections?.[uses.connection]?.service
-  const actionLabel = (a: string) => service === 'bigquery' ? ({ query: 'run read queries (SELECT)', list_tables: 'list tables', get_schema: 'read table schemas', insert_rows: 'insert rows' } as Record<string, string>)[a] ?? a : service === 'mcp' ? `${a}${mcpTools?.find((t) => t.name === a)?.description ? ': ' + mcpTools.find((t) => t.name === a)!.description : ''}` : service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : service === 'gmail' && a === 'send' ? 'send email' : a.replace('_', ' ')
+  const actionLabel = (a: string) => service === 'bigquery' ? ({ query: 'run read queries (SELECT)', list_tables: 'list tables', get_schema: 'read table schemas', insert_rows: 'insert rows' } as Record<string, string>)[a] ?? a : service === 'mcp' ? `${a}${mcpTools?.find((t) => t.name === a)?.description ? ': ' + mcpTools.find((t) => t.name === a)!.description : ''}` : service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : service === 'gmail' && a === 'send' ? 'send email' : service === 'gcs' ? ({ list_objects: 'list files', read_object: 'read files', write_object: 'write new files' } as Record<string, string>)[a] ?? a : a.replace('_', ' ')
   const stepIds = (block?.steps ?? []).map((s: Json) => s.id).filter((id: string) => id !== step.id)
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -210,6 +210,7 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
         <div className="stack" style={{ gap: 7, marginLeft: 22, padding: '8px 10px', background: 'var(--soft)', border: '1px solid var(--line)', borderRadius: 8 }}>
           <span className="faint">Limits, enforced by the service, not by the instructions:</span>
           {limits.includes('senders') && <span className="row"><span className="muted">From</span><Chips values={uses.senders ?? []} onChange={(v) => setU('senders', v)} placeholder="Add a sender domain" /></span>}
+          {limits.includes('paths') && <span className="row"><span className="muted">Buckets and prefixes</span><Chips values={uses.paths ?? []} onChange={(v) => setU('paths', v)} placeholder="bucket/prefix/" /></span>}
           {limits.includes('repos') && <span className="row"><span className="muted">Repositories</span><Chips values={uses.repos ?? []} onChange={(v) => setU('repos', v)} placeholder="owner/name" /></span>}
           {limits.includes('lookback_days') && <span className="row"><span className="muted">{service === 'github' ? 'Updated in the last' : 'Sent in the last'}</span><Text width={56} value={uses.lookback_days ?? ''} onChange={(v) => setU('lookback_days', v ? Number(v) : '')} label="Days" /><span className="muted">days</span></span>}
           {limits.includes('only_message') && <Check checked={!!uses.only_message} onChange={(on) => setU('only_message', on ? 'trigger.email_id' : '')}>Only the email that started the run</Check>}
@@ -222,10 +223,10 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
           {limits.includes('calendar') && <span className="row"><span className="muted">Calendar</span><Text value={uses.calendar ?? ''} onChange={(v) => setU('calendar', v)} label="Calendar" /></span>}
           {limits.includes('datasets') && <span className="row"><span className="muted">May read</span><Chips values={uses.datasets ?? []} onChange={(v) => setU('datasets', v)} placeholder="dataset, project.dataset or a table (all the connector allows if none)" /></span>}
           {limits.includes('tables') && <span className="row"><span className="muted">May insert into</span><Chips values={uses.tables ?? []} onChange={(v) => setU('tables', v)} placeholder="project.dataset.table" /></span>}
-          {limits.includes('max_bytes') && <span className="row"><span className="muted">At most</span><Text width={80} value={uses.max_bytes ?? ''} onChange={(v) => setU('max_bytes', v)} label="Max bytes" placeholder="1GB" /><span className="muted">scanned per query</span></span>}
+          {limits.includes('max_bytes') && <span className="row"><span className="muted">At most</span><Text width={80} value={uses.max_bytes ?? ''} onChange={(v) => setU('max_bytes', v)} label="Max bytes" placeholder="1GB" /><span className="muted">{service === 'gcs' ? 'read per file' : 'scanned per query'}</span></span>}
           {limits.includes('recipients') && <span className="row"><span className="muted">May send to</span><Chips values={uses.recipients ?? []} onChange={(v) => setU('recipients', v)} placeholder="name@company.com or @company.com" /></span>}
           {limits.includes('recipients') && <span className="row"><span className="muted">At most</span><Text width={50} value={uses.max_emails ?? ''} onChange={(v) => setU('max_emails', v ? Number(v) : '')} label="Max emails" placeholder="20" /><span className="muted">emails per run</span></span>}
-          {limits.includes('max_rows') && <span className="row"><span className="muted">At most</span><Text width={70} value={uses.max_rows ?? ''} onChange={(v) => setU('max_rows', v ? Number(v) : '')} label="Max rows" placeholder="1000" /><span className="muted">rows back per query</span></span>}
+          {limits.includes('max_rows') && <span className="row"><span className="muted">At most</span><Text width={70} value={uses.max_rows ?? ''} onChange={(v) => setU('max_rows', v ? Number(v) : '')} label="Max rows" placeholder={service === 'gcs' ? '5000' : '1000'} /><span className="muted">{service === 'gcs' ? 'rows per file' : 'rows back per query'}</span></span>}
         </div>
       )}
     </div>
@@ -241,9 +242,9 @@ export function ReadsEditor() {
     <UsesEditor mcpTools={service === 'mcp' ? mcpTools : undefined}
       actions={service === 'mcp' ? mcpTools.filter((t) => t.treat === 'read').map((t) => t.name)
         : service === 'google-sheets' ? ['read'] : service === 'github' ? ['search', 'open', 'read']
-        : service === 'bigquery' ? ['query', 'list_tables', 'get_schema'] : ['search', 'open']}
+        : service === 'bigquery' ? ['query', 'list_tables', 'get_schema'] : service === 'gcs' ? ['list_objects', 'read_object'] : ['search', 'open']}
       limits={service === 'gmail' ? ['senders', 'lookback_days', 'only_message', 'from_domain', 'only_cited_by'] : service === 'google-sheets' ? ['sheets']
-        : service === 'github' ? ['repos', 'lookback_days'] : service === 'bigquery' ? ['datasets', 'max_bytes', 'max_rows'] : []} />
+        : service === 'github' ? ['repos', 'lookback_days'] : service === 'bigquery' ? ['datasets', 'max_bytes', 'max_rows'] : service === 'gcs' ? ['paths', 'max_bytes', 'max_rows'] : []} />
   )
 }
 

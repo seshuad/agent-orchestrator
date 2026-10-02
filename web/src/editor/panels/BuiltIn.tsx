@@ -5,12 +5,12 @@ import { api, type Json } from '../../api'
 import { Block, Cel, Check, FieldErrors, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
 import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useStep } from './common'
 
-const OTHER = ['chart', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'tidy'] as const
+const OTHER = ['chart', 'gcs-list', 'gcs-read', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'tidy'] as const
 const ENGINE_OF = (op: string) => (op === 'cel' ? 'cel' : op === 'javascript' ? 'javascript' : op === 'bigquery' ? 'bigquery' : 'other')
-const OP_LABEL: Record<string, string> = { cel: 'CEL rules', tidy: 'Tidy up (retired)', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript', bigquery: 'BigQuery query', chart: 'Chart' }
+const OP_LABEL: Record<string, string> = { cel: 'CEL rules', tidy: 'Tidy up (retired)', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript', bigquery: 'BigQuery query', chart: 'Chart', 'gcs-list': 'List files (GCS)', 'gcs-read': 'Read files (GCS)' }
 const OP_TAKES: Record<string, Json> = {
   tidy: { records: '' }, lookup: { any_of: [] }, 'filter-rows': { equals: '' }, compare: { value: '', on_file: '' },
-  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' }, bigquery: {}, chart: { rows: '' }, cel: { items: '' },
+  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' }, bigquery: {}, chart: { rows: '' }, cel: { items: '' }, 'gcs-list': {}, 'gcs-read': { files: '' },
 }
 const JS_TEMPLATE = `// \`inputs\` holds what this step takes, by name (see Takes).
 // Return an object with every field listed under Returns.
@@ -22,6 +22,7 @@ const OP_DEFAULT: Record<string, Json> = {
   bigquery: { sql: 'SELECT column, COUNT(*) AS n\nFROM `project.dataset.table`\nWHERE column = @value\nGROUP BY column\nORDER BY n DESC' },
   chart: { kind: 'bar', x: '', y: '', title: '' },
   cel: [{ keep: '' }],
+  'gcs-list': { prefix: '', match: '' }, 'gcs-read': { format: 'auto' },
 }
 
 /** A fixed BigQuery query: the SQL, the step's Takes as @parameters, its limits, and a free cost estimate. */
@@ -208,7 +209,10 @@ export default function BuiltIn() {
     if (next === 'bigquery') {
       const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'bigquery')?.[0]
       set(['uses'], conn ? { connection: conn, actions: ['query'], max_bytes: '1GB' } : undefined)
-    } else if (step.operation && 'bigquery' in step.operation) set(['uses'], undefined)
+    } else if (next === 'gcs-list' || next === 'gcs-read') {
+      const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gcs')?.[0]
+      set(['uses'], conn ? { connection: conn, actions: [next === 'gcs-list' ? 'list_objects' : 'read_object'], paths: [], max_bytes: '50MB' } : undefined)
+    } else if (step.operation && ('bigquery' in step.operation || 'gcs-list' in step.operation || 'gcs-read' in step.operation)) set(['uses'], undefined)
   }
   return (
     <>
@@ -220,7 +224,7 @@ export default function BuiltIn() {
         <span className="faint">{({ cel: 'Operators over a list: keep, add fields, check, remove duplicates, sort, summarize, match, link. You write one small rule per operator; it does the iterating. No code, always ends, checked as you type.',
           javascript: 'Your own function, in a sandbox, for logic the CEL operators can\u2019t express.',
           bigquery: 'One fixed SELECT on your warehouse, checked and capped before it runs.',
-          other: 'A chart, a sheet look-up, or a fixed operation.' } as Record<string, string>)[ENGINE_OF(op)]}</span>
+          other: 'A chart, Cloud Storage files, a sheet look-up, or a fixed operation.' } as Record<string, string>)[ENGINE_OF(op)]}</span>
         {ENGINE_OF(op) === 'other' && <Segmented options={OTHER.filter((o) => o !== 'tidy' || op === 'tidy')} value={op as (typeof OTHER)[number]} onChange={setOp} labels={OP_LABEL} />}
         {op === 'tidy' && <span className="faint">Tidy up is retired: use CEL rules for checks, duplicates and filters, or JavaScript. It still runs here so this step keeps working.</span>}
         <FieldErrors path={p('operation')} exact />
@@ -242,8 +246,35 @@ export default function BuiltIn() {
         </Block>
       )}
       {op === 'chart' && <ChartSettings />}
+      {(op === 'gcs-list' || op === 'gcs-read') && (
+        <Block title={op === 'gcs-list' ? 'List files' : 'Read files'} aside="Cloud Storage; no model">
+          {op === 'gcs-list' ? (
+            <>
+              <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>Under</span>
+                <input className="input mono grow" value={conf.prefix ?? ''} placeholder="bucket/prefix/" aria-label="Prefix" onChange={(e) => set(['operation', op, 'prefix'], e.target.value)} /></span>
+              <span className="row"><span className="muted" style={{ width: 90 }}>Named like</span>
+                <Text width={140} value={conf.match ?? ''} onChange={(v) => set(['operation', op, 'match'], v || undefined)} label="Match" placeholder="*.csv (optional)" /></span>
+              <span className="faint">Returns <code className="mono">files</code> (path, size, updated, format) and <code className="mono">count</code>. Takes can set
+                {' '}<code className="mono">prefix</code> (e.g. from the trigger) and <code className="mono">modified_after</code> (an ISO time).</span>
+            </>
+          ) : (
+            <>
+              <span className="row"><span className="muted" style={{ width: 90 }}>Format</span>
+                <Select value={conf.format ?? 'auto'} options={['auto', 'csv', 'json', 'jsonl', 'parquet', 'text']} onChange={(v) => set(['operation', op, 'format'], v)} label="Format"
+                  labels={{ auto: 'From the file name', csv: 'CSV', json: 'JSON', jsonl: 'JSON lines', parquet: 'Parquet', text: 'Text' }} /></span>
+              <span className="faint">Takes <code className="mono">files</code> (a listing's files), <code className="mono">path</code> (bucket/name, one or a list), or
+                {' '}<code className="mono">bucket</code> and <code className="mono">name</code> (a Pub/Sub notification). Returns <code className="mono">rows</code> (each
+                marked with its <code className="mono">_file</code> when there are several), <code className="mono">row_count</code>, <code className="mono">truncated</code>, <code className="mono">files</code> and,
+                for one text file, <code className="mono">text</code>. Numbers in CSV come back as numbers; empty cells as null.</span>
+            </>
+          )}
+        </Block>
+      )}
+      {(op === 'gcs-list' || op === 'gcs-read') && (
+        <Block title="Uses"><UsesEditor actions={[op === 'gcs-list' ? 'list_objects' : 'read_object']} limits={op === 'gcs-list' ? ['paths'] : ['paths', 'max_bytes', 'max_rows']} /></Block>
+      )}
       {op === 'three-way-match' && <Block title="Three-way match"><span className="muted">Prices against the purchase order; quantities against the order and, for goods, what was received. Returns <code className="mono">passed</code> and <code className="mono">differences</code>.</span></Block>}
-      <Block title="Takes" aside={op === 'bigquery' ? 'the query\u2019s @parameters' : op === 'chart' ? 'rows, and values the rule or line reads' : op === 'cel' ? 'items: the list; other inputs by name' : undefined}><TakesEditor fixed={op === 'javascript' || op === 'bigquery' || op === 'chart' || op === 'cel' ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
+      <Block title="Takes" aside={op === 'bigquery' ? 'the query\u2019s @parameters' : op === 'chart' ? 'rows, and values the rule or line reads' : op === 'cel' ? 'items: the list; other inputs by name' : undefined}><TakesEditor fixed={op === 'javascript' || op === 'bigquery' || op === 'chart' || op === 'cel' || op.startsWith('gcs-') ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
       {op === 'bigquery' && <BigQueryQuery />}
       {op === 'javascript' && <JavaScript />}
       {(op === 'lookup' || op === 'filter-rows') && <Block title="Can use"><UsesEditor actions={['read']} limits={['sheets']} /></Block>}

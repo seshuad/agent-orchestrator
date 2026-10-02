@@ -224,7 +224,7 @@ Every `command:` in a compiled workflow is one of the service's own programs:
 | Program | What it is |
 |---|---|
 | `agent-service-gateway` | The connector gateway's stdio shim. Every limit comes from the signed token; every call is checked and logged. Serves sample data for test runs; forwards to the real system (Gmail, GitHub, BigQuery, MCP servers) for runs on real accounts |
-| `agent-service-steps` | The Built-in step library: the CEL operators (`cel`), `javascript`, `bigquery`, `chart`, `lookup`, `filter-rows`, `compare`, `three-way-match`, the Act operations, memory recall and the Parallel item and collect steps (`tidy` stays for agent versions published before it was retired) |
+| `agent-service-steps` | The Built-in step library: the CEL operators (`cel`), `javascript`, `bigquery`, `chart`, `gcs-list`, `gcs-read`, `lookup`, `filter-rows`, `compare`, `three-way-match`, the Act operations, memory recall and the Parallel item and collect steps (`tidy` stays for agent versions published before it was retired) |
 | `agent-service-cel` | The CEL evaluator (MCP). Returns `passed`, `failed`, `results` and `error`; on an error the run stops and names the rule, rather than guess |
 | `agent-service-replay` | For tests: stands in for model steps and approvals with scripted answers |
 
@@ -268,6 +268,17 @@ it is: accounts and permissions, each MCP connector's approved tools, the sample
 same checks as a saved agent; failures go back to Claude to fix, up to three rounds. The result is only ever a draft:
 you see Claude's summary, its assumptions and questions, a refine can be undone, and nothing runs until you run it.
 
+**Build with Claude** (New agent, recommended when you're starting from your data) is a conversation instead of a single
+prompt. Claude looks before it designs: it lists BigQuery tables and Cloud Storage folders, reads schemas, and samples
+a few rows or the head of a file. These looks go through the connector gateway with the connector's own limits,
+read-only and capped (5 rows, 64 KB), and every one is logged. It summarizes what it found, including what looks off;
+suggests agents grounded in it; asks only what changes the design; and saves a draft with `save_draft`, which runs the
+editor's checks and hands any problems back to Claude to fix. Builders can keep talking to change the draft (each change
+can be undone), or come back later from the editor ("Continue the conversation"). An admin can turn off samples per
+connector ("Let Claude read samples while drafting agents"): Claude then sees names, columns, sizes and row counts only.
+A conversation can also look at a sample set instead of real accounts. Conversations are kept in `.workspace/build/`
+(`server/build_chat.py`).
+
 ## Connections
 
 Connections have three layers:
@@ -283,6 +294,7 @@ Connections have three layers:
 | **Google Workspace** | Gmail: search and open, and send (Act steps, only to the recipients each step names; test and dry runs fill the run's outbox instead). Real mail after an admin sets up the OAuth client and a builder signs in, granted only the scopes its permissions need. Sheets and Calendar use sample data for now |
 | **GitHub** | Read only: search issues and pull requests, open one with its comments, read files, in the repositories each step names. Real runs use a fine-grained read-only token |
 | **BigQuery** | Built-in "BigQuery query" (fixed SQL with `@parameters`), `run_query` / `list_tables` / `get_schema` for Ask steps, append-only inserts for Act steps. A dry run first checks every query: a single SELECT, only the step's data, under its byte cap and within the monthly budget. Test runs query sample tables in DuckDB |
+| **Cloud Storage** | Built-in "List files" and "Read files" (CSV, JSON, JSON lines and Parquet as rows; text otherwise), `list_files` / `read_file` for Ask steps, and an Act step that writes a **new** file (JSON, JSON lines, CSV, text or a chart's PNG), never overwriting one. The admin lists the buckets or prefixes agents may use and a read cap; each step names its own prefixes within those. Signs in like BigQuery: a service account key, the gcloud account, or default credentials. Test runs read `<sample set>/gcs/<bucket>/…` and write into the run folder |
 | **Any MCP server** | A remote URL or a local command, signing in with OAuth, a bearer token, a header or nothing. Each tool is marked read, act or not offered, with argument limits; approved tools are pinned |
 
 ## ETL pipelines
@@ -299,6 +311,12 @@ use them as `trigger.<field>`, plus `trigger.message_id` and `trigger.published_
 skips messages that aren't for it. Delivery is at least once, so a message id already seen is skipped; every message is
 acknowledged once handled, and logged (started, skipped, duplicate, failed) on the trigger's panel, where it can be
 paused. Test runs use the trigger's sample message, or one you paste.
+
+**When a file lands.** Cloud Storage can publish a notification for every new object to a Pub/Sub topic
+(`gcloud storage buckets notifications create gs://<bucket> --topic=<topic> --event-types=OBJECT_FINALIZE`). Point a
+Pub/Sub trigger at a subscription on that topic, with message fields `bucket`, `name`, `size` and `eventType`, and a
+filter such as `message.eventType == "OBJECT_FINALIZE" && message.name.startsWith("orders/")`; a "Read files" step
+then takes `bucket` and `name` from the trigger.
 
 **sales-load-check** (`examples/bigquery-sales/`) is the pattern:
 

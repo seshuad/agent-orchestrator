@@ -43,7 +43,7 @@ export interface ServiceInfo {
 }
 export interface AiNote {
   kind: 'created' | 'changed'; request: string; at: number; summary: string; assumptions: string[]; questions: string[]
-  errors: Problem[]; model: string; cost_usd: number
+  errors: Problem[]; model: string; cost_usd: number; chat?: string
 }
 export interface DraftJob {
   id: string; kind: 'create' | 'refine'; status: 'running' | 'done' | 'failed'; stage: string; started_at: number; ended_at?: number
@@ -67,6 +67,13 @@ export interface TestCase {
 }
 export const chartUrl = (run: string, image: string) => `/api/runs/${run}/charts/${image.split('/').pop()}`
 
+export interface BuildChat {
+  id: string; status: 'idle' | 'thinking' | 'error'; error: string | null; source: 'live' | 'sample'; sample_set: string | null
+  agent: string | null; cost_usd: number; created_at: number
+  transcript: ({ role: 'user' | 'assistant'; text: string; at: number } | { role: 'tool'; at: number; tool: string; label: string; detail: string; ok: boolean; agent?: string })[]
+  explored: { kind: 'dataset' | 'table' | 'folder' | 'file'; name: string; detail: string; account: string; at: number }[]
+}
+
 export interface PubSubStatus {
   listening: boolean; paused: boolean; published_subscription: string | null; last_pull_at: number | null; last_error: string | null
   messages: { at: number; message_id: string; outcome: 'started' | 'skipped' | 'duplicate' | 'failed'; run?: string; detail?: string; fields?: Json }[]
@@ -84,7 +91,7 @@ export interface McpTool {
   pin?: string; approved_pin?: string | null; new?: boolean; changed?: boolean
 }
 export interface Connector {
-  id: string; type: 'google' | 'github' | 'mcp' | 'bigquery'; type_name: string; name: string; icon: string; reach: string
+  id: string; type: 'google' | 'github' | 'mcp' | 'bigquery' | 'gcs'; type_name: string; name: string; icon: string; reach: string
   settings: Json; offered?: Record<string, string[]>; tools?: McpTool[]; who: 'builders' | 'admins'; domains: string[]
   status: { state: 'ready' | 'attention' | 'setup'; message?: string; tested_at?: number | null; tested_by?: string; reason?: string }
   secret_set: boolean; secret_set_at?: number | null; accounts: number; created_by?: string
@@ -163,6 +170,10 @@ export const api = {
   clearAiNote: (name: string) => call<Json>('POST', `/api/agents/${name}/ai-note/clear`),
   undoRefine: (name: string) => call<AgentDetail>('POST', `/api/agents/${name}/refine/undo`),
   draftJob: (job: string) => call<DraftJob>('GET', `/api/drafts/${job}`),
+  buildStart: (body: { message: string; source: string; sample_set: string | null }) => call<BuildChat>('POST', '/api/build', body),
+  buildGet: (id: string) => call<BuildChat>('GET', `/api/build/${id}`),
+  buildSay: (id: string, text: string) => call<BuildChat>('POST', `/api/build/${id}/message`, { text }),
+  buildStop: (id: string) => call<BuildChat>('POST', `/api/build/${id}/stop`),
   publish: (name: string, note: string) => call<AgentDetail & { version: number }>('POST', `/api/agents/${name}/publish`, { note }),
   references: (name: string, step: string | null) =>
     call<Reference[]>('GET', `/api/agents/${name}/references${step ? `?step=${encodeURIComponent(step)}` : ''}`),

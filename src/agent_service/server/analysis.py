@@ -184,6 +184,12 @@ def _type_of_returns(step: Any) -> list[tuple[str, str]]:
         return [(n, f.type) for n, f in step.returns.items()]
     if isinstance(step, BuiltInStep) and step.op == "chart":
         return [("image", "chart"), ("title", "text")]
+    if isinstance(step, BuiltInStep) and step.op == "gcs-list":
+        return [("files", "list of files"), ("count", "number")]
+    if isinstance(step, BuiltInStep) and step.op == "gcs-read":
+        rows = step.returns.get("rows")
+        return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),
+                ("files", "list of files"), ("text", "text")]
     if isinstance(step, BuiltInStep) and step.op == "cel":
         declared = step.returns.get("items")
         out = [("items", declared.type if declared else "list of records"), ("notes", "list of text")]

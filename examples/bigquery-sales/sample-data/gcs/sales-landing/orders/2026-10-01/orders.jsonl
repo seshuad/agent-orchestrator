@@ -1,0 +1,16 @@
+{"order_id": "SO-3101", "order_date": "2026-10-01", "region": "West", "product_id": "P007", "product": "Desk Chair", "quantity": 4, "amount": 1454.56}
+{"order_id": "SO-3102", "order_date": "2026-10-01", "region": "East", "product_id": "P007", "product": "Desk Chair", "quantity": 4, "amount": 1611.99}
+{"order_id": "SO-3103", "order_date": "2026-10-01", "region": "North", "product_id": "P007", "product": "Desk Chair", "quantity": 1, "amount": 381.33}
+{"order_id": "SO-3104", "order_date": "2026-10-01", "region": "West", "product_id": "P001", "product": "Laptop", "quantity": 4, "amount": null}
+{"order_id": "SO-3105", "order_date": "2026-10-01", "region": "South", "product_id": "P007", "product": "Desk Chair", "quantity": 2, "amount": 767.75}
+{"order_id": "SO-3106", "order_date": "2026-10-01", "region": "South", "product_id": "P004", "product": "Mouse", "quantity": 1, "amount": 29.02}
+{"order_id": "SO-3107", "order_date": "2026-10-01", "region": "North", "product_id": "P007", "product": "Desk Chair", "quantity": 2, "amount": 823.68}
+{"order_id": "SO-3108", "order_date": "2026-10-01", "region": "East", "product_id": "P007", "product": "Desk Chair", "quantity": 4, "amount": 1603.85}
+{"order_id": "SO-3109", "order_date": "2026-10-01", "region": "South", "product_id": "P004", "product": "Mouse", "quantity": 2, "amount": 54.75}
+{"order_id": "SO-3110", "order_date": "2026-10-01", "region": "South", "product_id": "P002", "product": "Monitor", "quantity": 2, "amount": 541.09}
+{"order_id": "SO-3111", "order_date": "2026-10-01", "region": "East", "product_id": "P002", "product": "Monitor", "quantity": 3, "amount": 810.55}
+{"order_id": "SO-3112", "order_date": "2026-10-01", "region": "East", "product_id": "P004", "product": "Mouse", "quantity": 3, "amount": 93.87}
+{"order_id": "SO-3113", "order_date": "2026-10-01", "region": "North", "product_id": "P001", "product": "Laptop", "quantity": 4, "amount": 4222.73}
+{"order_id": "SO-3114", "order_date": "2026-10-01", "region": "North", "product_id": "P004", "product": "Mouse", "quantity": 1, "amount": 29.85}
+{"order_id": "SO-3115", "order_date": "2026-10-01", "region": "West", "product_id": "P001", "product": "Laptop", "quantity": 2, "amount": 2304.94}
+{"order_id": "SO-3101", "order_date": "2026-10-01", "region": "West", "product_id": "P007", "product": "Desk Chair", "quantity": 4, "amount": 1454.56}

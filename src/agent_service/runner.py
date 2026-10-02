@@ -92,6 +92,19 @@ def message_inputs(agent: Agent, message: dict[str, Any] | None) -> dict[str, st
     return out
 
 
+def _storage(account_id: str | None, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """A Cloud Storage connector's settings for the gateway: how it signs in, the most a step may use, the read cap."""
+    account = accounts.get(account_id or "")
+    connector = connectors.get((account or {}).get("connector") or "")
+    if account is None or connector is None:
+        raise RunError("This agent's Cloud Storage connection isn't linked to a workspace account. Pick one in its Connections.")
+    if (connector.get("status") or {}).get("state") == "attention":
+        raise RunError(f"{connector['name']} needs an admin's attention (Connections → Connectors): {connector['status'].get('message', '')}")
+    st = connector.get("settings") or {}
+    return {"connector": connector["id"], "name": connector["name"], "auth": st.get("auth") or {"kind": "gcloud"},
+            "allowed": st.get("allowed") or [], "max_read_bytes": st.get("max_read_bytes")}
+
+
 def month_spend(connector_id: str, runs_root: Path) -> float:
     """What a BigQuery connector's queries cost this calendar month, from every run's gateway log."""
     from .runtime.bigquery_api import cost_of
@@ -140,7 +153,7 @@ def conductor_command() -> list[str]:
     return [python, str(CACHED)] if python and Path(python).exists() and "python" in Path(python).name else ["conductor"]
 
 
-LIVE_SERVICES = {"gmail", "github", "bigquery"}    # services a run can use for real so far; the rest stay on sample data
+LIVE_SERVICES = {"gmail", "github", "bigquery", "gcs"}    # services a run can use for real so far; the rest stay on sample data
 ALWAYS_LIVE = {"mcp"}                  # an MCP connector has no sample data: its steps always reach the real system
 
 
@@ -193,6 +206,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             raise RunError(f"A {spec['connection']} connection in this agent isn't linked to a workspace account; pick one in its Connections.")
         if spec["connection"] == "mcp":
             spec["upstream"] = _upstream(spec["account"], accounts or {}, connectors or {})
+        if spec["connection"] == "gcs" and spec["source"] == "live":
+            spec["upstream"] = _storage(spec.get("account"), accounts or {}, connectors or {})
         if spec["connection"] == "bigquery":
             spec["upstream"], spec["budget_left_usd"] = _warehouse(spec.get("account"), accounts or {}, connectors or {}, runs_root)
             if vault is None:
