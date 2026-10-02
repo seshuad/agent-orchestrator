@@ -22,7 +22,6 @@ export function AddMenu({ inside, allow, onPick, onClose, style }: { inside?: bo
         {inside && (allow ?? []).includes('branch') && <><div style={{ margin: '6px 10px', borderTop: '1px solid var(--line-2)' }} /><span className="eyebrow" style={{ padding: '2px 10px' }}>Flow</span>{FLOW_KINDS.filter((k) => k.kind === 'branch').map(item)}</>}
         {inside && <span className="faint" style={{ padding: '4px 10px' }}>{
           (allow ?? []).includes('branch') ? 'Approve steps run after the block: a person approves once, not per item.'
-            : (allow ?? []).length === 1 ? 'Only Ask steps run together. To run other steps, run the block for each item of a list.'
             : 'Approve and Act steps run after the block, in a fixed order.'}</span>}
       </div>
     </>

@@ -17,8 +17,8 @@ export default function Parallel() {
       <Block title="Runs">
         <Segmented options={['together', 'each']} value={each ? 'each' : 'together'} onChange={(v) => toEach(v === 'each')}
           labels={{ together: 'These steps, together', each: 'For each item in a list' }} />
-        {!each && <span className="faint">For reads that don't depend on each other, like three mailboxes at once. Only Ask steps can run together;
-          later steps read their results as usual.</span>}
+        {!each && <span className="faint">For reads and computations that don't depend on each other, like three mailboxes or three queries at
+          once. Ask and Built-in steps can run together; the next step starts when all of them have finished, and reads their results as usual.</span>}
         {each && (
           <>
             <span className="row"><span className="muted">Each</span>
@@ -56,7 +56,7 @@ export default function Parallel() {
           ? [`Each ${name} runs on its own: what one ${name} says can't change how another is handled.`,
              `At most ${each.at_once ?? 5} ${name}s run at once, within the agent's budget and time limit.`,
              'Approvals happen outside the block, once for the whole run.']
-          : ['The steps can only read: nothing changes until after the block.', 'All of them finish (or fail) before the next step starts.']} />
+          : ['The steps only read or compute: nothing changes until after the block.', 'All of them finish (or fail) before the next step starts.']} />
       </Block>
     </>
   )

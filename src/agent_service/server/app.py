@@ -28,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 from .. import definition, runner
 from . import analysis
 from .connections import SERVICES, allowed_actions, steps_using
+from . import pubsub
 from .runs import Runs, prune
 from . import connectors as conn_types
 from . import author, google, mcp_oauth
@@ -142,6 +143,7 @@ class RunRequest(BaseModel):
     email_id: str | None = None
     scripted: bool = False
     source: str = "sample"                     # sample | live: Gmail steps read the real signed-in accounts
+    message: dict[str, Any] | None = None      # a Pub/Sub-triggered agent: the message's fields (else the trigger's sample)
 
 
 class Approval(BaseModel):
@@ -179,6 +181,12 @@ class ConnectorIn(BaseModel):
     who: str = "builders"                      # builders | admins: who may connect accounts
     domains: list[str] = []                    # Google: only accounts in these domains
     tools: list[dict[str, Any]] | None = None  # MCP: [{name, treat: read|act|off, limits}]; saving approves them as listed
+
+
+def needs_claude(raw: dict[str, Any]) -> bool:
+    """Whether an agent has model steps: Ask steps, model-decided Branches or a Free-form planner."""
+    every = [x for s in raw.get("steps") or [] for x in [s, *(s.get("steps") or [])]]
+    return any(s.get("kind") in ("ask", "free-form") or (s.get("kind") == "branch" and s.get("decide") == "model") for s in every)
 
 
 def create_app(home: Path | None = None) -> FastAPI:
@@ -736,6 +744,15 @@ def create_app(home: Path | None = None) -> FastAPI:
         except NotFound as exc:
             raise fail(exc, 404)
 
+    @app.get("/api/runs/{run_id}/charts/{file}")
+    def run_chart(run_id: str, file: str) -> Any:
+        """A chart a run drew (charts/<step>.png): nothing else in the run folder is served."""
+        from fastapi.responses import FileResponse
+        path = (store.runs_root() / run_id / "charts" / file).resolve()
+        if path.parent != (store.runs_root() / run_id / "charts").resolve() or path.suffix != ".png" or not path.exists():
+            raise fail(NotFound("No such chart."), 404)
+        return FileResponse(path, media_type="image/png")
+
     @app.get("/api/runs/{run_id}/memory")
     def run_memory(run_id: str) -> list[dict[str, Any]]:
         """This run's judgments, as remembered: candidates to confirm or correct."""
@@ -830,7 +847,7 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.post("/api/agents/{name}/runs")
     def start_run(name: str, body: RunRequest) -> dict[str, Any]:
-        if not body.scripted and not os.environ.get("ANTHROPIC_API_KEY"):
+        if not body.scripted and not os.environ.get("ANTHROPIC_API_KEY") and needs_claude(store.version(name, body.version)):
             raise fail(ValueError("The service has no Claude API key (ANTHROPIC_API_KEY), so model steps can't run. "
                                   "Use scripted answers, or restart the service with a key."), 422)
         live = body.source == "live"
@@ -852,7 +869,8 @@ def create_app(home: Path | None = None) -> FastAPI:
                 trigger_email = LiveGmail(gmail_accounts(raw)[0]).email(body.email_id)
         try:
             return runs.start(name, version=body.version, inputs=body.inputs, email_id=body.email_id,
-                              scripted=body.scripted, started_by=store.workspace()["user"]["name"], live=live, trigger_email=trigger_email)
+                              scripted=body.scripted, started_by=store.workspace()["user"]["name"], live=live, trigger_email=trigger_email,
+                              trigger_message={"message_id": "test", "published_at": "", "fields": body.message} if body.message is not None else None)
         except (runner.RunError, ValidationError, NotFound) as exc:
             raise fail(exc, 422)
         except Exception as exc:                 # compile errors on an old version, a busy port ...
@@ -1011,6 +1029,40 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     app.router.on_shutdown.append(runs.close)
 
+    # -------------------------------------------------------------- Pub/Sub triggers
+
+    listener = pubsub.Listener(store, runs)
+    if os.environ.get("AGENT_SERVICE_PUBSUB", "1") != "0":
+        app.router.on_startup.append(listener.start)
+    app.router.on_shutdown.append(listener.close)
+    app.state.pubsub = listener
+
+    @app.get("/api/agents/{name}/pubsub")
+    def pubsub_status(name: str) -> dict[str, Any]:
+        """The Pub/Sub trigger's listener for this agent: paused or not, its last pull and error, and recent messages."""
+        try:
+            meta = store.meta(name)
+        except NotFound as exc:
+            raise fail(exc, 404)
+        state = listener.state(name)
+        published = store.version(name, meta["published"]).get("trigger", {}) if meta.get("published") else {}
+        return {"listening": published.get("kind") == "pubsub" and not state.get("paused"), "paused": bool(state.get("paused")),
+                "published_subscription": published.get("subscription") if published.get("kind") == "pubsub" else None,
+                "last_pull_at": state.get("last_pull_at"), "last_error": state.get("last_error"), "messages": listener.log(name)}
+
+    @app.post("/api/agents/{name}/pubsub")
+    def pubsub_pause(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        listener.set_paused(name, bool(body.get("paused")))
+        return pubsub_status(name)
+
+    @app.post("/api/agents/{name}/pubsub/check")
+    def pubsub_check(name: str) -> dict[str, Any]:
+        """Whether the draft's subscription can be read with its account."""
+        trigger = store.draft(name).get("trigger") or {}
+        if trigger.get("kind") != "pubsub":
+            raise fail(ValueError("This agent's trigger isn't a Pub/Sub subscription."), 422)
+        return listener.check(trigger)
+
     # -------------------------------------------------------------- account sign-in: Google, GitHub token, MCP OAuth
 
     def _connector_of(conn: dict[str, Any]) -> dict[str, Any] | None:
@@ -1101,6 +1153,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         except Exception as exc:
             return RedirectResponse(f"/connections?sign_in_error={quote(str(exc))}")
         conn = store.accounts()[cid]
+        email = email or conn.get("account") or ""          # a send-only Gmail account can't report its address
         domains = (_connector_of(conn) or {}).get("domains") or []
         if domains and email.rsplit("@", 1)[-1].lower() not in domains:
             vault.delete(cid, vault_dir)

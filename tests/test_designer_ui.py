@@ -92,6 +92,7 @@ def test_blank_agent_and_the_add_menu(page, base):
 def test_run_now_and_approve_in_the_page(page, base):
     page.goto(base + "/")
     page.click("tr:has-text('invoice-check') button:has-text('Run now')")
+    page.click("button:has-text('Sample data')")                     # real accounts are the default
     page.select_option("select[aria-label='Email']", "inv-northwind-2208")
     page.click("button:has-text('Scripted answers')")
     page.click("button:has-text('Start run')")

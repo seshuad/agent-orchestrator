@@ -20,8 +20,10 @@ SERVICES: dict[str, dict[str, Any]] = {
         "permissions": {
             "read": {"label": "Read email", "actions": ["search", "open"], "scope": "gmail.readonly",
                      "detail": "Search and open email. Steps set their own sender and date limits."},
+            "send": {"label": "Send email", "actions": ["send"], "scope": "gmail.send",
+                     "detail": "Send email from this account. Only Act steps, only to the recipients each step names."},
         },
-        "never": "Send, delete or label email: not offered.",
+        "never": "Delete, label or forward email: not offered.",
     },
     "google-sheets": {
         "name": "Google Sheets", "icon": "group",

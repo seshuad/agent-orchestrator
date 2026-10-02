@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "quickjs>=1.19.4",
     "uvicorn[standard]>=0.53.0",
+    "vl-convert-python>=1.9.0.post1",
 ]
 
 [project.scripts]

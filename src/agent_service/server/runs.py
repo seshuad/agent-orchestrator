@@ -96,7 +96,12 @@ class Runs:
         return rec
 
     def _save(self, rec: dict[str, Any]) -> None:
-        (self.store.runs_root() / rec["id"] / "run.json").write_text(json.dumps(rec, indent=1))
+        """Atomically: the page and the run's watcher read and write this at the same time, and a reader must never see
+        a half-written file."""
+        path = self.store.runs_root() / rec["id"] / "run.json"
+        tmp = path.with_name(f"run.json.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(rec, indent=1))
+        tmp.replace(path)
 
     def list(self, agent: str | None = None) -> list[dict[str, Any]]:
         out = []
@@ -122,7 +127,8 @@ class Runs:
     # -------------------------------------------------------------- start
 
     def start(self, agent_name: str, *, version: int | None, inputs: dict[str, str], email_id: str | None,
-              scripted: bool, started_by: str, live: bool = False, trigger_email: dict[str, Any] | None = None) -> dict[str, Any]:
+              scripted: bool, started_by: str, live: bool = False, trigger_email: dict[str, Any] | None = None,
+              trigger_message: dict[str, Any] | None = None, trigger: str = "manual") -> dict[str, Any]:
         """With `live`, Gmail steps read the real accounts their connections are signed in to."""
         meta = self.store.meta(agent_name)
         raw = self.store.version(agent_name, version)
@@ -136,9 +142,10 @@ class Runs:
                                   inputs=inputs, email_id=email_id, replay=Path(meta["replay"]) if scripted else None,
                                   replay_gates=False, run_id=run_id, vault=self.store.home / "vault", live=live,
                                   trigger_email=trigger_email, accounts=self.store.accounts(),
-                                  connectors={c["id"]: c for c in self.store.connectors()}, memory=self.store.memory(agent_name))
+                                  connectors={c["id"]: c for c in self.store.connectors()}, memory=self.store.memory(agent_name),
+                                  trigger_message=trigger_message)
         (prepared.run_dir / "agent.yaml").write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
-        return self._launch(run_id, agent_name, version, prepared, started_by, live, {"trigger": "manual", "scripted": scripted})
+        return self._launch(run_id, agent_name, version, prepared, started_by, live, {"trigger": trigger, "scripted": scripted})
 
     def _launch(self, run_id: str, agent_name: str, version: int | None, prepared: Any, started_by: str, live: bool,
                 extra: dict[str, Any]) -> dict[str, Any]:
@@ -256,6 +263,13 @@ class Runs:
                     "raw": cause or m.group(0)}
         evs = [e for e in evs if not e["data"].get("subworkflow_path")]      # one item failing is that item's, not the run's
         if any(e["type"] == "agent_failed" and e["data"].get("agent_name") == "stop_step_failed" for e in evs):
+            errored = next((e["data"].get("agent_name") for e in reversed(evs) if e["type"] == "mcp_completed" and e["data"].get("is_error")), None)
+            hist = self.store.runs_root() / run_id / "history.jsonl"
+            failed = next((h for h in reversed([json.loads(l) for l in hist.read_text().splitlines()] if hist.exists() else [])
+                           if h["step"] == errored and isinstance(h.get("output"), dict) and h["output"].get("error")), None)
+            if failed:                                       # a Built-in step in a group: its error came back as a result
+                return {"title": f"A step failed: {errored}", "why": failed["output"]["error"],
+                        "fix": "Check that step's settings in the editor.", "raw": failed["output"]["error"]}
             crashed = next((e["data"] for e in reversed(evs) if e["type"] == "script_completed" and e["data"].get("exit_code")), {})
             err = (crashed.get("stderr") or "").strip().splitlines()
             return {"title": f"A step failed: {crashed.get('agent_name', 'a step')}",
@@ -666,7 +680,8 @@ def _names(raw: dict[str, Any]) -> dict[str, tuple[str, str]]:
     def walk(steps: list[dict[str, Any]]) -> None:
         for s in steps or []:
             shows = s.get("kind") == "built-in" and "show" in (s.get("operation") or {})
-            out[s["id"]] = (s.get("name", s["id"]), "show" if shows else s.get("kind", ""))
+            charts = s.get("kind") == "built-in" and "chart" in (s.get("operation") or {})
+            out[s["id"]] = (s.get("name", s["id"]), "show" if shows else "chart" if charts else s.get("kind", ""))
             if s.get("kind") == "approve":
                 out[f"{s['id']}_preselect"] = (f"{s.get('name')}: pre-select", "rules")
             if s.get("memory"):
@@ -823,6 +838,10 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
                 f"{d.get('success_count')} finished, {d.get('failure_count')} failed"
             entries.append({**base, "step": "Together", "kind": "group", "detail": f"{detail} in {round(d.get('elapsed') or 0, 1)}s",
                             "tone": "warn" if d.get("failure_count") else "", "plumbing": False})
+        elif t == "parallel_agent_completed" and kind in ("built-in", "show", "chart"):      # a Built-in step in a group
+            out = recorded(name) or {}
+            entries.append({**base, "detail": out["error"] if out.get("error") else _brief(out), "tone": "bad" if out.get("error") else "",
+                            "why": "In a group", "image": out.get("image") if kind == "chart" else None})
         elif t in ("parallel_agent_completed", "mcp_completed") and kind == "ask":
             out = recorded(name)
             c = d.get("cost_usd") or 0.0
@@ -893,6 +912,10 @@ def build_log(evs: list[dict[str, Any]], raw: dict[str, Any], run_dir: Path) -> 
             else:
                 entry["detail"] = _brief(out)
             entries.append(entry)
+        elif t == "script_completed" and kind == "chart":
+            out = recorded(name) or _json(d.get("stdout")) or {}
+            entries.append({**base, "detail": f"Drew {out.get('title') or 'a chart'}" if out.get("image") else (out.get("error") or "No chart"),
+                            "image": out.get("image"), "tone": "" if out.get("image") else "bad"})
         elif t == "script_completed" and kind == "show":
             out = recorded(name) or _json(d.get("stdout")) or {}
             value = out.get("value") if isinstance(out, dict) else None
@@ -947,6 +970,8 @@ def _outcome(run_dir: Path) -> dict[str, Any]:
         elif isinstance(data, dict) and {"added", "would_add"} <= set(data):
             fmt = lambda r: " · ".join(f"{k}: {v}" for k, v in r.items())
             out["act"] = {"step": f.stem, "created": [fmt(r) for r in data["added"]], "would_create": [fmt(r) for r in data["would_add"]], "skipped": []}
+    if (run_dir / "outbox.json").exists():
+        out["emails"] = json.loads((run_dir / "outbox.json").read_text())      # sent, or what would be
     for sheet in (run_dir / "sheets").glob("*.json") if (run_dir / "sheets").exists() else []:
         out.setdefault("rows_added", {})[sheet.stem] = json.loads(sheet.read_text())
     return out

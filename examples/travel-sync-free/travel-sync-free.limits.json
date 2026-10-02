@@ -63,7 +63,7 @@
    "open"
   ],
   "agent": "travel-sync",
-  "only_cited_by": "tidy_up"
+  "only_cited_by": "group_trips"
  },
  "LIMITS_CALENDAR_ADD_TO_CALENDAR": {
   "connection": "google-calendar",

@@ -1,26 +1,26 @@
 [
 {
 "region": "West",
-"total_orders": 190,
+"total_orders": 205,
 "total_revenue": 151200.4,
-"avg_order_value": 795.79
+"avg_order_value": 737.56
 },
 {
 "region": "South",
-"total_orders": 181,
+"total_orders": 196,
 "total_revenue": 137800.0,
-"avg_order_value": 761.33
+"avg_order_value": 703.06
 },
 {
 "region": "East",
-"total_orders": 176,
+"total_orders": 191,
 "total_revenue": 132540.2,
-"avg_order_value": 753.07
+"avg_order_value": 693.93
 },
 {
 "region": "North",
-"total_orders": 124,
-"total_revenue": 122132.2,
-"avg_order_value": 984.94
+"total_orders": 139,
+"total_revenue": 122133.2,
+"avg_order_value": 878.66
 }
 ]

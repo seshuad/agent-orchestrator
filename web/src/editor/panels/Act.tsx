@@ -1,11 +1,15 @@
 // Act: changes something outside the agent, using only checked fields. No model involved.
 import type { Json } from '../../api'
-import { Block, Chips, FieldErrors, Guarantees, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
-import { ArgLimits, StepHeader, UsesEditor, useMcpTools, useStep } from './common'
+import { Area, Block, Chips, FieldErrors, Guarantees, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
+import { ArgLimits, StepHeader, TakesEditor, UsesEditor, useMcpTools, useStep } from './common'
 
 export default function Act() {
   const { step, set, p, refs, draft } = useStep()
-  const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : step.insert_rows ? 'insert_rows' : 'add_row'
+  const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : step.insert_rows ? 'insert_rows' : step.send_email ? 'send_email' : 'add_row'
+  const gmailConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gmail')?.[0]
+  const se: Json = step.send_email ?? {}
+  const seType = refs.find((r) => r.ref === se.for_each)?.type.replace(/^list of /, '') ?? ''
+  const seFields = Object.keys(draft.records?.[seType]?.fields ?? {})
   const mcpConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'mcp')?.[0]
   const bqConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'bigquery')?.[0]
   const ir: Json = step.insert_rows ?? {}
@@ -16,16 +20,18 @@ export default function Act() {
   const row: Json = step.add_row?.row ?? {}
   const yesNo = Object.entries(draft.run_options ?? {}).filter(([, o]: [string, any]) => o.type === 'yes/no').map(([k]) => `run.${k}`)
   const switchTo = (a: string) => {
-    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : a === 'insert_rows' ? 'bigquery' : 'google-sheets'
+    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : a === 'insert_rows' ? 'bigquery' : a === 'send_email' ? 'gmail' : 'google-sheets'
     const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === service)?.[0] ?? ''
     set(['create_events'], a === 'create_events' ? { calendar: 'Personal', templates: { default: { title: '', starts: '{start}', ends: '{end}' } }, never_twice: { match_fields: [] } } : undefined)
     set(['add_row'], a === 'add_row' ? { sheet: '', row: {} } : undefined)
     set(['call_tool'], a === 'call_tool' ? { tool: '', arguments: {} } : undefined)
     set(['insert_rows'], a === 'insert_rows' ? { table: '', row: {} } : undefined)
+    set(['send_email'], a === 'send_email' ? { to: [], subject: '', body: '' } : undefined)
     set(['uses'], a === 'create_events' ? { connection: conn, actions: ['create_event'], calendar: 'Personal' }
       : a === 'call_tool' ? { connection: conn, actions: [] } : a === 'insert_rows' ? { connection: conn, actions: ['insert_rows'], tables: [] }
+      : a === 'send_email' ? { connection: conn, actions: ['send'], recipients: [] }
       : { connection: conn, actions: ['append_row'], sheets: [] })
-    set(['takes'], a === 'create_events' ? { records: '' } : undefined)
+    set(['takes'], a === 'create_events' ? { records: '' } : a === 'send_email' ? {} : undefined)
   }
   const ct: Json = step.call_tool ?? {}
   const actTools = tools.filter((t) => t.treat === 'act')
@@ -47,10 +53,40 @@ export default function Act() {
     <>
       <StepHeader note="The only kind of step that changes the outside world, and it takes no text a model wrote: only checked fields." />
       <Block title="Does">
-        <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : []), ...(bqConn || action === 'insert_rows' ? ['insert_rows'] : [])]} value={action} onChange={switchTo}
-          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery' }} />
+        <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : []), ...(bqConn || action === 'insert_rows' ? ['insert_rows'] : []), ...(gmailConn || action === 'send_email' ? ['send_email'] : [])]} value={action} onChange={switchTo}
+          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery', send_email: 'Send an email' }} />
       </Block>
-      {action === 'insert_rows' ? (
+      {action === 'send_email' ? (
+        <>
+          <Block title="Uses"><UsesEditor actions={['send']} limits={['recipients']} />
+            <span className="faint">The gateway refuses any recipient not on this list, whatever the templates say.</span></Block>
+          <Block title="Fills in from" aside="named values for the templates"><TakesEditor />
+            <span className="faint">Each input is a <code className="mono">{'{name}'}</code> in the email: e.g. <code className="mono">summary: write_report.summary</code>. Lists become bullet lines.</span></Block>
+          <Block title="The email">
+            <span className="row"><span className="muted" style={{ width: 52 }}>To</span><Chips values={se.to ?? []} onChange={(v) => set(['send_email', 'to'], v)} placeholder="address, or {field}" /></span>
+            <span className="row"><span className="muted" style={{ width: 52 }}>Cc</span><Chips values={se.cc ?? []} onChange={(v) => set(['send_email', 'cc'], v.length ? v : undefined)} placeholder="optional" /></span>
+            <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 52 }}>Subject</span>
+              <input className="input grow" value={se.subject ?? ''} aria-label="Subject" placeholder="e.g. Sales load {load_id}: {headline}" onChange={(e) => set(['send_email', 'subject'], e.target.value)} /></span>
+            <Area value={se.body ?? ''} onChange={(v) => set(['send_email', 'body'], v)} rows={7} label="Body" path={p('send_email', 'body')} />
+            <span className="row" style={{ alignItems: 'flex-start' }}><span className="muted" style={{ width: 52 }}>Charts</span>
+              <span className="stack grow" style={{ gap: 4 }}>
+                {(se.charts ?? []).map((ref: string, i: number) => (
+                  <span key={i} className="row" style={{ flexWrap: 'nowrap' }}>
+                    <RefPicker value={ref} refs={refs.filter((r) => r.type === 'chart')} onChange={(v) => set(['send_email', 'charts', i], v)} />
+                    <button className="icon-btn" aria-label="Remove chart" onClick={() => set(['send_email', 'charts'], (se.charts ?? []).filter((_: string, k: number) => k !== i))}><Icon name="x" size={12} /></button>
+                  </span>
+                ))}
+                <button className="link" style={{ alignSelf: 'flex-start' }} onClick={() => set(['send_email', 'charts'], [...(se.charts ?? []), refs.find((r) => r.type === 'chart')?.ref ?? ''])}>
+                  <Icon name="plus" size={13} width={2} />Include a chart</button>
+              </span></span>
+            <span className="row"><span className="muted">One per item of</span>
+              <RefPicker value={se.for_each ?? ''} refs={refs.filter((r) => r.type.startsWith('list'))} onChange={(v) => set(['send_email', 'for_each'], v || undefined)} path={p('send_email', 'for_each')} /></span>
+            <span className="faint">{se.for_each ? 'One email per item; each item\u2019s fields fill in too.' : 'Leave empty to send one email; pick a list to send one per item.'}</span>
+            {seFields.length > 0 && <span className="row" style={{ gap: 4 }}><span className="faint">Fields of {seType}:</span>{seFields.map((f) => <code key={f} className="ref">{`{${f}}`}</code>)}</span>}
+            <FieldErrors path={p('send_email')} />
+          </Block>
+        </>
+      ) : action === 'insert_rows' ? (
         <>
           <Block title="Uses"><UsesEditor actions={['insert_rows']} limits={[]} /></Block>
           <Block title="Insert">
@@ -110,7 +146,7 @@ export default function Act() {
           </Block>
         </>
       ) : <Block title="Uses"><UsesEditor actions={action === 'create_events' ? ['create_event'] : ['append_row']} limits={action === 'create_events' ? ['calendar'] : ['sheets']} /></Block>}
-      {action === 'call_tool' || action === 'insert_rows' ? null : action === 'create_events' ? (
+      {action === 'call_tool' || action === 'insert_rows' || action === 'send_email' ? null : action === 'create_events' ? (
         <>
           <Block title="For each"><RefPicker value={step.takes?.records ?? ''} refs={refs} onChange={(v) => set(['takes', 'records'], v)} path={p('takes', 'records')} />
             <span className="faint">e.g. <code className="mono">approve_trips.approved[*].bookings</code>: every booking in the approved trips.</span></Block>
@@ -170,7 +206,9 @@ export default function Act() {
         <span className="muted">{step.follows_dry_run ? 'On a dry run it lists what it would do, and changes nothing.' : 'Every run makes the changes. Pick a yes/no run option to allow dry runs.'}</span>
         <FieldErrors path={p('follows_dry_run')} />
       </Block>
-      <Guarantees items={['Only checked fields go outside the agent, never free text a model wrote.',
+      <Guarantees items={action === 'send_email' ? ['Only to the recipients listed under Uses, and at most the emails per run set there.',
+          'Text a model wrote can go in the body: add an Approve step before this one so a person reads the email first.',
+          'Test runs and dry runs put the email in the run\u2019s outbox; nothing is sent.'] : ['Only checked fields go outside the agent, never free text a model wrote.',
         'Runs without a person checking first, unless you add an Approve step before it: your choice.']} />
     </>
   )

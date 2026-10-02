@@ -6,7 +6,7 @@ import { Block, Guarantees, Icon, Pill, Segmented, Check } from '../ui'
 import RunNow from './RunNow'
 import SaveAsTest from './SaveAsTest'
 import { CaseCard, CorrectRow } from './Memory'
-import type { MemoryCase } from '../api'
+import { chartUrl, type MemoryCase } from '../api'
 import { AgentTabs } from './Tests'
 import StepInspector from './StepInspector'
 
@@ -117,6 +117,8 @@ function RunView({ id }: { id: string }) {
   const entries = d.log.filter((e) => everyStep || !e.plumbing)
   const block = d.outcome.block as Record<string, any> | undefined
   const act = d.outcome.act as Record<string, any> | undefined
+  const emails = (d.outcome.emails ?? []) as { to: string[]; cc: string[]; subject: string; body: string; status: string; images?: string[] }[]
+  const charts = d.log.filter((e) => e.image)
   const decide = async (choice: string) => {
     setBusy(true)
     try { await api.approve(d.id, choice, picked || undefined); setD({ ...d, gate: null, status: 'running' }) } catch (e: any) { setError(e.message) } finally { setBusy(false) }
@@ -155,6 +157,12 @@ function RunView({ id }: { id: string }) {
         <div className="card pad" style={{ borderColor: '#EBD3A6', background: '#FFFCF6' }}>
           <span className="row"><Icon name="person" size={16} color="var(--warn)" /><strong>Waiting for your approval</strong></span>
           <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>{md(d.gate.prompt)}</div>
+          {charts.length > 0 && (
+            <div className="stack" style={{ gap: 6 }}>
+              <span className="faint">The charts this run drew:</span>
+              {charts.map((c, i) => <img key={i} src={chartUrl(d.id, c.image!)} alt={c.detail} style={{ maxWidth: 600, width: '100%', border: '1px solid var(--line)', borderRadius: 6, background: '#fff' }} />)}
+            </div>
+          )}
           {d.gate.option_details.some((o) => o.prompt_for) && (
             <label className="row"><span className="muted">Items to pick (ids, comma-separated):</span>
               <input className="input" value={picked} onChange={(e) => setPicked(e.target.value)} aria-label="Items to pick" /></label>
@@ -218,6 +226,16 @@ function RunView({ id }: { id: string }) {
         </div>
       )}
 
+      {emails.map((m, k) => (
+        <div key={k} className="card pad" style={{ gap: 6 }}>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><Icon name="mail" size={15} color="var(--muted)" />
+            <strong className="grow">{m.subject}</strong><Pill kind={m.status === 'sent' ? 'succeeded' : 'draft'}>{m.status}</Pill></span>
+          <span className="faint">To {m.to.join(', ')}{m.cc?.length ? ` · Cc ${m.cc.join(', ')}` : ''}</span>
+          <div className="pre" style={{ whiteSpace: 'pre-wrap', maxHeight: 320 }}>{m.body}</div>
+          {(m.images ?? []).map((img, i) => <img key={i} src={chartUrl(d.id, img)} alt="chart" style={{ maxWidth: 600, width: '100%', border: '1px solid var(--line)', borderRadius: 6, background: '#fff' }} />)}
+        </div>
+      ))}
+
       {!live && (
         <Block title="Checked by the service">
           <Guarantees items={[
@@ -247,6 +265,7 @@ function RunView({ id }: { id: string }) {
                 {e.why && <span className="why"><Icon name="spark" size={12} color="var(--flow)" /><span><strong>Why:</strong> {e.why}</span></span>}
                 {!live && e.ref && <CorrectRow runId={d.id} e={e} cases={judgments} onSaved={(c) => setJudgments([...judgments.filter((x) => x.id !== c.id), c])} />}
                 {e.tools.length > 0 && <span className="faint" style={{ display: 'block' }}>{e.tools.length} connection call{e.tools.length > 1 ? 's' : ''} · inspect to see them</span>}
+                {e.image && <img src={chartUrl(d.id, e.image)} alt={e.detail} onClick={(ev) => ev.stopPropagation()} style={{ display: 'block', marginTop: 6, maxWidth: 520, width: '100%', border: '1px solid var(--line)', borderRadius: 6, background: '#fff' }} />}
                 {e.value !== undefined && (
                   <details open onClick={(ev) => ev.stopPropagation()} style={{ marginTop: 4 }}>
                     <summary className="faint" style={{ cursor: 'pointer' }}>The value</summary>

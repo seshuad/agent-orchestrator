@@ -1,0 +1,17 @@
+# Scripted answers for sales-load-check on the Sales (BigQuery) sample: the load passes its checks, August 2025 is
+# well below a typical month, and the report goes to approval.
+worth_reporting:
+- path: Report it
+  reason: August 2025 revenue was far below a typical month, past the drop threshold.
+  evidence: ["weak_months: 2025-08 (-59%)"]
+  confidence: sure
+  runner_up: ''
+write_report:
+- reports:
+  - subject: August revenue fell 59% below a typical month
+    body: |-
+      August 2025 brought in well under a typical month's revenue, the only month past the 30% drop threshold.
+      - December, the latest month, was close to a typical month.
+      - West leads regions for the year.
+      - Laptops are the largest product by revenue.
+      Region and product totals cover the whole year, so they can't say what drove August.

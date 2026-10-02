@@ -45,6 +45,12 @@ An agent is a YAML document. Top level:
   trigger: {kind: manual}                                   # or
            {kind: schedule, every: weekday|day|week, at: "07:00", time_zone: America/Los_Angeles}
            {kind: email, to: someone@company.com}           # runs on each email; gives trigger.email_id, trigger.sender_domain
+           {kind: pubsub, subscription: projects/<p>/subscriptions/<s>, account: <a BigQuery account id>,
+            message: {table: {type: text}, rows: {type: number}},  # the message's fields: trigger.table, trigger.rows
+            when: 'message.table == "sales_processed.orders"',     # optional CEL filter
+            sample: {table: sales_processed.orders, rows: 120}}   # the message test runs use
+                                                            # runs the published version once per message (e.g. when an ETL load finishes);
+                                                            # also gives trigger.message_id, trigger.published_at
   run_options:                                              # values a person sets when running it: run.<name>
     dry_run: {type: yes/no, default: true, description: "List what it would do, and change nothing."}
     question: {type: text, default: "", description: "..."}
@@ -92,11 +98,8 @@ ask: a model reads and extracts. It can never change anything.
     mcp: actions are the connector's tool names marked read. Limit: arg_limits {argument: [allowed values]} for the
          arguments the admin lets steps limit. A limited argument must be passed on every call.
 
-built-in: fixed operations, no model.
+built-in: no model. Three engines (cel operators over a list, javascript, bigquery), plus chart and a few fixed operations.
   operation (exactly one):
-    tidy: [ {check: {record: Booking, timestamps: [start, end], required: [..]}}, {remove_duplicates: {identity: "<CEL over b>"}},
-            {filter: {keep: "<CEL over b>"}}, {group: {into: Trip, together: "<CEL over a, b>"}},
-            {flag: [{when: "<CEL over trip>", note: "..."}]} ]            takes: {records: <list reference>}
     lookup: {sheet: Vendors, column: vendor, as: vendor}    takes: {key: <reference>}    uses: {connection: sheets, actions: [read], sheets: [Vendors]}
     filter-rows: {sheet: Receiving log, column: po_number, as: receipts}   (same shape as lookup; returns every matching row)
     compare: {}                 takes: {a: <ref>, b: <ref>}          returns status
@@ -105,12 +108,27 @@ built-in: fixed operations, no model.
     bigquery: {sql: "SELECT ... WHERE x = @name"}   takes: {name: <ref>} (the @parameters)   uses: {connection: bq, actions: [query],
                 datasets: [..], max_bytes: "1GB"}   returns: {rows: {type: list of <Record>}}   -> rows, row_count, truncated, bytes_billed
                 Prefer this over an Ask step when the query is known ahead: no model writes SQL.
+    cel: [<operators, in order, over takes.items>]   takes: {items: <list ref>, other: <ref>, ...}   -> items, notes, saved names
+          - keep: "item.amount > 0"
+          - add_fields: {aov: "item.revenue / item.orders"}
+          - check: [{rule: "has(item.region)", message: "...", on_fail: drop|flag|fail, once: false}]   # once: over `items`
+          - remove_duplicates: {key: "item.order_id", keep_highest: "item.updated_at"}
+          - sort: {by: "item.revenue", descending: true, take: 10}
+          - summarize: {of: items, group_by: {region: "item.region"}, totals: {revenue: "sum(item.revenue)", n: "count()"},
+                        save_as: overall}   # with save_as the list is unchanged and later rules read overall.revenue
+          - match: {with: <takes name>, key: "item.customer_id", other_key: "other.id", as: customer}   # has(item.customer)
+          - link: {together: "a.confirmation == b.confirmation", as: members}
+                Prefer these over JavaScript for filtering, ranking, totals and checks: no code, always terminates.
     javascript: {code: "<function body>"}   takes: {name: <ref>, ...}   returns: {field: {type: ...}, ...}
                 The body gets `inputs` (each of takes by name) and must `return {field: ...}` with every field in returns.
                 Plain JavaScript in a sandbox (no network, files or other programs; 2 s, 64 MB): use it for exact,
                 repeatable work a model shouldn't do, like sorting, ranking, date arithmetic, counting and reshaping.
-  Outputs: tidy -> trips (with group) or records, notes; lookup -> found, <as>; filter-rows -> <as>; show -> value;
-           javascript -> its returns.
+    chart: {kind: bar|line, x: <field>, y: <field>, title: "...", y_format?: "$,.0f", highlight?: "<CEL over row and takes>",
+            reference?: <a takes name holding a number>, reference_label?: "..."}   takes: {rows: <list ref>, ...}
+                Draws a PNG from the rows, no model. Highlighted rows in red; a dashed line at the reference. Email it with
+                send_email.charts; an approver sees it.
+  Outputs: lookup -> found, <as>; filter-rows -> <as>; show -> value;
+           javascript -> its returns; chart -> image, title; cel -> items, notes and each save_as.
 
 free-form: a planning model picks which inner steps to run, how often, toward a goal. Use it only when the order depends
 on what is found (follow-up searches, verification); otherwise use plain sequential steps.
@@ -126,15 +144,16 @@ on what is found (follow-up searches, verification); otherwise use plain sequent
     steps: [ask and built-in steps only]
     before_finishing: [{rule: "<CEL>", message: "Shown to the planner when it doesn't hold"}]
     returns: {trips: "<CEL>"}                               # the block's outputs: <block id>.trips
-  Ask steps inside can have repeat: {planner_sets: focus, usually_after: tidy_up, when: "gap found"}.
+  Ask steps inside can have repeat: {planner_sets: focus, usually_after: group_trips, when: "gap found"}.
   Built-in steps inside can have reruns_by_itself: true.
 
 parallel: run steps at the same time. Two ways:
-  Together: its Ask steps all at once (reads that don't depend on each other). Later steps read <step>.<field> as usual.
+  Together: its Ask and Built-in steps all at once (reads, queries, computations that don't depend on each other); the next
+  step starts when all have finished. Later steps read <step>.<field> as usual.
   - id: reads
     kind: parallel
     name: Read the three mailboxes
-    steps: [<ask step>, <ask step>, <ask step>]        # only Ask steps run together
+    steps: [<ask or built-in step>, ...]               # Ask and Built-in steps run together; Act/Approve after the block
     failure: stop | continue                           # one fails: stop the run, or keep the others
   For each item of a list: its steps run in order for every item, several items at a time. Inside, <as> is one item;
   a Branch's `then` can be one of the block's steps, next, or end (the end of that item only). Steps inside: Ask,
@@ -199,11 +218,16 @@ act: changes something outside the agent, using only checked fields (never free 
                    takes: {records: <list ref>}                                            uses: {connection: calendar, actions: [create_event], calendar: Personal}
     insert_rows:   {table: project.dataset.table, for_each: <list ref>, row: {column: "{field}"}}   uses: {connection: bq, actions: [insert_rows], tables: [..]}
     call_tool:     {tool: <act tool>, for_each: <list ref>, arguments: {arg: "{field}" or "text"}}   uses: {connection: <mcp>, actions: [<tool>], arg_limits: {..}}
+    send_email:    {to: [address or "{field}"], cc?: [..], subject: "...{name}...", body: "...{name}...", for_each?: <list ref>,
+                    charts?: [<chart step>.image]}                   # inline images in the email (HTML)
+                   takes: {name: <ref>, ...}   uses: {connection: gmail, actions: [send], recipients: [a@company.com, "@company.com"], max_emails: 5}
+                   The gateway sends only to `recipients`. Lists fill in as bullet lines. If the body uses text a model wrote,
+                   put an Approve step first (items: the report, then for_each: <approve>.approved) so a person reads it.
     follows_dry_run: run.dry_run                             # optional: on a dry run it lists what it would do
 
 ## Rules (CEL)
 
-Conditions (branch `when`, `before_finishing`, block `returns`, tidy expressions, `pre_select`) are CEL. They read
+Conditions (branch `when`, `before_finishing`, block `returns`, cel operator rules, `pre_select`) are CEL. They read
 `steps.<id>.<output>` (absent until the step runs: test with `has(steps.x)`), `run.<option>`, `run.started`, and in a
 Free-form block `planner.<field>` and `collected.<name>`. Helpers: is_me(name, run.my_name), norm(text), date_of(timestamp),
 duration('24h'). Never compare a list or record to null; use has() or size().

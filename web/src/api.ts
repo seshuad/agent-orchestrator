@@ -65,6 +65,12 @@ export interface TestCase {
   last: null | { run: string; status: string; at: number; stale: boolean; cost_usd: number
     result: null | { passed: boolean; results: (Expectation & { passed: boolean; value: unknown; error: string | null })[] } }
 }
+export const chartUrl = (run: string, image: string) => `/api/runs/${run}/charts/${image.split('/').pop()}`
+
+export interface PubSubStatus {
+  listening: boolean; paused: boolean; published_subscription: string | null; last_pull_at: number | null; last_error: string | null
+  messages: { at: number; message_id: string; outcome: 'started' | 'skipped' | 'duplicate' | 'failed'; run?: string; detail?: string; fields?: Json }[]
+}
 export interface MemoryCase {
   id: string; run: string; at: number; step: string; step_name: string; kind: 'branch' | 'free-form'
   status: 'candidate' | 'confirmed' | 'corrected' | 'rejected'; decision: string; reason?: string | null; evidence?: string[]
@@ -100,6 +106,7 @@ export interface LogEntry {
   why: string | null; tone: string; plumbing: boolean; model?: string | null; tokens?: number
   tools: { tool: string; args: string }[]; options?: { label: string; value: string }[]; value?: string
   ref?: string; choices?: string[]; decision?: string | null; confidence?: 'sure' | 'leaning' | 'unsure'; runner_up?: string | null
+  image?: string | null
 }
 
 export interface RunError { title: string; why: string; fix: string; raw: string }
@@ -170,6 +177,9 @@ export const api = {
   sampleSets: () => call<string[]>('GET', '/api/sample-sets'),
   services: () => call<Record<string, ServiceInfo>>('GET', '/api/services'),
   connections: () => call<Connection[]>('GET', '/api/connections'),
+  pubsub: (name: string) => call<PubSubStatus>('GET', `/api/agents/${name}/pubsub`),
+  pubsubPause: (name: string, paused: boolean) => call<PubSubStatus>('POST', `/api/agents/${name}/pubsub`, { paused }),
+  pubsubCheck: (name: string) => call<{ ok: boolean; topic?: string; message: string }>('POST', `/api/agents/${name}/pubsub/check`),
   connection: (id: string) => call<Connection>('GET', `/api/connections/${id}`),
   addConnection: (body: ConnectionIn) => call<Connection>('POST', '/api/connections', body),
   editConnection: (id: string, body: ConnectionIn) => call<Connection>('PUT', `/api/connections/${id}`, body),
@@ -183,7 +193,7 @@ export const api = {
   removeConnector: (id: string) => call<Json>('DELETE', `/api/connectors/${id}`),
   testConnector: (id: string) => call<Connector>('POST', `/api/connectors/${id}/test`),
   connectorOauthStart: (id: string) => call<{ url: string }>('POST', `/api/connectors/${id}/oauth/start`),
-  startRun: (name: string, body: { version: number | null; inputs: Record<string, string>; email_id: string | null; scripted: boolean; source: string }) =>
+  startRun: (name: string, body: { version: number | null; inputs: Record<string, string>; email_id: string | null; scripted: boolean; source: string; message?: Json | null }) =>
     call<Run>('POST', `/api/agents/${name}/runs`, body),
   runs: (agent?: string) => call<Run[]>('GET', `/api/runs${agent ? `?agent=${agent}` : ''}`),
   run: (id: string) => call<RunDetail>('GET', `/api/runs/${id}`),

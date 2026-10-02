@@ -1,7 +1,7 @@
 """Per-run state on disk: the prototype's stand-in for the event store.
 
     <run dir>/steps/<step>.json    latest output of each Built-in step (what the gateway checks
-                                   run-dependent limits against, e.g. "only emails cited by tidy_up")
+                                   run-dependent limits against, e.g. "only emails cited by group_trips")
     <run dir>/history.jsonl        every recorded output (and, for Built-in and rule steps, its inputs), in order
     <run dir>/events.jsonl         Conductor's event log, copied here when the run ends (the temp copy gets cleaned up)
     <run dir>/gateway.jsonl        every connection call: who, what, allowed or refused, result size

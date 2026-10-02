@@ -17,8 +17,8 @@
 "product_id": "P007",
 "product_name": "Desk Chair",
 "category": "Furniture",
-"units_sold": 330,
-"total_revenue": 132000.0
+"units_sold": 410,
+"total_revenue": 163658.8
 },
 {
 "product_id": "P005",
@@ -40,5 +40,19 @@
 "category": "Electronics",
 "units_sold": 270,
 "total_revenue": 8100.0
+},
+{
+"product_id": "P006",
+"product_name": "Webcam",
+"category": "Electronics",
+"units_sold": 284,
+"total_revenue": 17040.0
+},
+{
+"product_id": "P008",
+"product_name": "USB Hub",
+"category": "Electronics",
+"units_sold": 315,
+"total_revenue": 7875.0
 }
 ]

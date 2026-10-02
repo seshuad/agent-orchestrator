@@ -77,6 +77,16 @@ def append_row(name: str, row: dict[str, Any]) -> int:
     return len(rows)
 
 
+def outbox() -> list[dict[str, Any]]:
+    """Email an Act step sent, or would send, in this run."""
+    path = run_dir() / "outbox.json"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def add_to_outbox(message: dict[str, Any]) -> None:
+    (run_dir() / "outbox.json").write_text(json.dumps(outbox() + [message], indent=1))
+
+
 def calendar_events() -> list[dict[str, Any]]:
     path = run_dir() / "calendar.json"
     return json.loads(path.read_text()) if path.exists() else []

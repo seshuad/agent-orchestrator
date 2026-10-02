@@ -120,7 +120,7 @@ def test_invoice_check_northwind(tmp_path):
 def test_travel_sync_on_the_sample_emails(tmp_path):
     run, path = run_agent("travel-sync", tmp_path, "--sample-data", str(ROOT / "examples/travel-sync-free/sample-data"),
                           "--replay", str(ROOT / "examples/travel-sync-free/replay-sample.yaml"))
-    assert path.count("tidy_up") == 4                      # re-ran by itself after every reader
+    assert path.count("group_trips") == 4                      # re-ran by itself after every reader
     assert path.count("finish_check") == 2                 # finishing before double-checking was refused
     assert json.loads((run / "steps/approve_trips_preselect.json").read_text())["results"]["preselected"] == ["b0bde9c185"]
     events = json.loads((run / "steps/add_to_calendar.json").read_text())
@@ -145,11 +145,11 @@ def test_an_empty_look_up_is_an_error_when_saved():
 def test_travel_sync_reads_every_source_at_the_same_time(tmp_path):
     run, path = run_agent("travel-sync", tmp_path, "--sample-data", str(ROOT / "examples/travel-sync-free/sample-data"),
                           "--replay", str(ROOT / "examples/travel-sync-free/replay-together.yaml"))
-    assert path[:5] == ["plan", "find_and_check_together", "find_and_check_together_record", "collect", "tidy_up"]
+    assert path[:5] == ["plan", "find_and_check_together", "find_and_check_together_record", "collect", "group_trips"]
     recorded = [json.loads(l)["step"] for l in (run / "history.jsonl").read_text().splitlines()]
     assert {"read_airline", "read_hotel", "read_portal"} <= set(recorded)       # each reader's answer, for the run log
     assert path.count("plan") == 5                         # two fewer planner turns than reading one by one
-    assert path.count("tidy_up") == 2                      # once after the group, once after the focused re-read
+    assert path.count("group_trips") == 2                      # once after the group, once after the focused re-read
     assert json.loads((run / "steps/approve_trips_preselect.json").read_text())["results"]["preselected"] == ["b0bde9c185"]
     events = json.loads((run / "steps/add_to_calendar.json").read_text())
     assert events["would_create"] == ["Hotel: Courtyard Chicago Downtown/River North (2026-10-20T16:00:00-05:00 to 2026-10-22T12:00:00-05:00)"]

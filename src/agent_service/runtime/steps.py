@@ -14,7 +14,7 @@ Operations
     show              a value, written to the run's log for debugging; passed on unchanged
 
 Each run's output is recorded under the step's name, which is what the gateway checks
-run-dependent limits against ("only emails cited by tidy_up").
+run-dependent limits against ("only emails cited by group_trips").
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from typing import Any
 
 from . import gateway
 from .cel import Rule, to_cel, to_python
-from .runstate import record_step
+from .runstate import record_step, run_dir
 
 
 def _norm(v: Any) -> str:
@@ -140,6 +140,165 @@ def tidy(operations: list[dict], data: dict) -> dict:
     return {"trips" if grouped else "records": items, "notes": notes}
 
 
+# ------------------------------------------------------------------ CEL operators: the operator iterates, CEL judges one item
+
+AGGREGATES = re.compile(r"^\s*(count|sum|avg|min|max)\s*\((.*)\)\s*$", re.S)
+CEL_OPS = ("keep", "add_fields", "check", "remove_duplicates", "sort", "summarize", "match", "link")
+
+
+def cel_pipeline(ops: list[dict], data: dict) -> dict:
+    """Run the CEL operators in order over `items` (the step's list), each one's result feeding the next.
+
+    Every expression sees `item` (or `a` and `b`, for Link), `run`, the step's other inputs by name, and anything an
+    earlier Summarize saved. Numbers mix freely (ints and doubles). Returns the items, notes on what each operator
+    dropped or changed, and every saved value."""
+    run = {"started": datetime.now(timezone.utc).isoformat(timespec="seconds"), **(data.get("run") or {})}
+    inputs = {k: v for k, v in data.items() if k not in ("items", "run")}
+    items = [dict(x) if isinstance(x, dict) else {"value": x} for x in (data.get("items") or [])]
+    notes: list[str] = []
+    saved: dict[str, Any] = {}
+
+    def rule(where: str, source: str) -> Rule:
+        try:
+            return Rule(where, source)
+        except Exception as exc:
+            raise ScriptError(str(exc)) from None
+
+    def value(r: Rule, **names: Any) -> Any:
+        act = {"run": run, **inputs, **saved, **names}
+        try:
+            return to_python(r.evaluate_cel({k: to_cel(v, timestamps=True) for k, v in act.items()}))
+        except Exception as exc:
+            raise ScriptError(f"{r.name}: {exc}") from None
+
+    for n, op in enumerate(ops, 1):
+        (kind, conf), = op.items()
+        where = f"{n}. {kind.replace('_', ' ')}"
+        if kind == "keep":
+            r = rule(where, conf)
+            kept = [x for x in items if value(r, item=x) is True]
+            if len(kept) < len(items):
+                notes.append(f"Keep: left out {len(items) - len(kept)} of {len(items)} (not {conf}).")
+            items = kept
+        elif kind == "add_fields":
+            rules = [(name, rule(f"{where}: {name}", src)) for name, src in conf.items()]
+            for x in items:
+                for name, r in rules:                     # in order: a later field can use an earlier one
+                    x[name] = value(r, item=x)
+        elif kind == "check":
+            for c in conf:
+                r = rule(f"{where}: {c.get('name') or c['rule']}", c["rule"])
+                message, on_fail = c.get("message") or c["rule"], c.get("on_fail", "drop")
+                if c.get("once"):
+                    if value(r, items=items) is not True:
+                        if on_fail == "fail":
+                            raise ScriptError(f"Check failed: {message}")
+                        notes.append(f"Check: {message}")
+                    continue
+                failed = [x for x in items if value(r, item=x) is not True]
+                if not failed:
+                    continue
+                if on_fail == "fail":
+                    raise ScriptError(f"Check failed for {len(failed)} item(s): {message}")
+                if on_fail == "flag":
+                    for x in failed:
+                        x.setdefault("flags", []).append(message)
+                    notes.append(f"Check: flagged {len(failed)}: {message}")
+                else:
+                    ids = {id(x) for x in failed}
+                    items = [x for x in items if id(x) not in ids]
+                    notes.append(f"Check: dropped {len(failed)}: {message}")
+        elif kind == "remove_duplicates":
+            key = rule(f"{where}: key", conf["key"])
+            best_r = rule(f"{where}: keep highest", conf["keep_highest"]) if conf.get("keep_highest") else None
+            best: dict[str, tuple[Any, int, dict]] = {}
+            for i, x in enumerate(items):
+                k = json.dumps(value(key, item=x), sort_keys=True, default=str)
+                score = value(best_r, item=x) if best_r else 0
+                if k not in best or (best_r and score > best[k][0]):
+                    best[k] = (score, best[k][1] if k in best else i, x)
+            if len(best) < len(items):
+                notes.append(f"Remove duplicates: dropped {len(items) - len(best)}.")
+            items = [x for _, _, x in sorted(best.values(), key=lambda t: t[1])]      # in the order first seen
+        elif kind == "sort":
+            r = rule(f"{where}: by", conf["by"])
+            keyed = [(value(r, item=x), i, x) for i, x in enumerate(items)]
+            missing = [t for t in keyed if t[0] is None]
+            keyed = sorted([t for t in keyed if t[0] is not None], key=lambda t: t[0], reverse=bool(conf.get("descending")))
+            items = [x for _, _, x in keyed + missing]                                 # missing values last
+            if conf.get("take"):
+                if len(items) > int(conf["take"]):
+                    notes.append(f"Sort and take: kept the first {int(conf['take'])} of {len(items)}.")
+                items = items[: int(conf["take"])]
+        elif kind == "summarize":
+            source = items if conf.get("of", "items") == "items" else [dict(x) for x in (inputs.get(conf["of"]) or []) if isinstance(x, dict)]
+            groups_by = [(name, rule(f"{where}: group by {name}", src)) for name, src in (conf.get("group_by") or {}).items()]
+            totals = []
+            for name, spec in (conf.get("totals") or {}).items():
+                m = AGGREGATES.match(spec)
+                if not m:
+                    raise ScriptError(f"{where}: {name} must be count(), count(<rule>), sum(<expr>), avg, min or max; got {spec!r}")
+                totals.append((name, m.group(1), rule(f"{where}: {name}", m.group(2)) if m.group(2).strip() else None))
+            buckets: dict[str, tuple[dict, list[dict]]] = {}
+            for x in source:
+                key = {name: value(r, item=x) for name, r in groups_by}
+                buckets.setdefault(json.dumps(key, sort_keys=True, default=str), (key, []))[1].append(x)
+            if not buckets and not groups_by:
+                buckets["{}"] = ({}, [])
+            rows = []
+            for key, members in buckets.values():
+                row = dict(key)
+                for name, fn, r in totals:
+                    vals = [value(r, item=x) for x in members] if r else []
+                    if fn == "count":
+                        row[name] = sum(1 for v in vals if v is True) if r else len(members)
+                    else:
+                        nums = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+                        row[name] = (sum(nums) if fn == "sum" else (sum(nums) / len(nums) if nums else None) if fn == "avg"
+                                     else (min(nums) if nums else None) if fn == "min" else (max(nums) if nums else None))
+                        if isinstance(row[name], float):
+                            row[name] = round(row[name], 6)
+                rows.append(row)
+            if conf.get("save_as"):
+                saved[conf["save_as"]] = rows if groups_by else rows[0]    # the list stays as it was
+            else:
+                items = rows
+        elif kind == "match":
+            others = [x for x in (inputs.get(conf["with"]) or []) if isinstance(x, dict)]
+            key, other_key = rule(f"{where}: key", conf["key"]), rule(f"{where}: other key", conf["other_key"])
+            index: dict[str, dict] = {}
+            for o in others:
+                index.setdefault(json.dumps(value(other_key, other=o), sort_keys=True, default=str), o)
+            unmatched = 0
+            for x in items:
+                found = index.get(json.dumps(value(key, item=x), sort_keys=True, default=str))
+                if found is not None:                 # absent when nothing matched: test it with has(item.<as>)
+                    x[conf.get("as", "match")] = found
+                unmatched += found is None
+            if unmatched:
+                notes.append(f"Match: {unmatched} of {len(items)} had nothing in {conf['with']}.")
+        elif kind == "link":
+            r = rule(f"{where}: together", conf["together"])
+            parent = list(range(len(items)))
+
+            def find(i: int) -> int:
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+            for j in range(len(items)):
+                for i in range(j):
+                    if find(i) != find(j) and value(r, a=items[i], b=items[j]) is True:
+                        parent[find(j)] = find(i)
+            clusters: dict[int, list[dict]] = {}
+            for i, x in enumerate(items):
+                clusters.setdefault(find(i), []).append(x)
+            items = [{conf.get("as", "members"): members, "size": len(members)} for members in clusters.values()]
+        else:
+            raise ScriptError(f"Unknown CEL operator {kind!r}: use one of {', '.join(CEL_OPS)}.")
+    return {"items": items, "notes": notes, **saved}
+
+
 # ------------------------------------------------------------------ sheets
 
 def _rows(sheet: str) -> list[dict]:
@@ -229,6 +388,107 @@ def create_events(calendar: str, templates: dict, match_fields: list[str], dry_r
             existing.append(event)
             created.append(event["title"])
     return {"created": created, "skipped": skipped, "would_create": would}
+
+
+# ------------------------------------------------------------------ charts: a PNG drawn from checked rows, no model
+
+BASE, HIGHLIGHT, REFERENCE, INK, GRID = "#4C6FA8", "#D1495B", "#3A3A36", "#3A3A36", "#E6E4DD"
+
+
+def chart_spec(conf: dict, data: dict) -> dict:
+    """A Vega-Lite spec from the step's settings: bars or a line over its rows, rows the highlight rule matches in a
+    second color, and an optional dashed reference line (a value from Takes). A raw `spec` is used as given, with the
+    rows as its data."""
+    rows = [dict(r) for r in data.get("rows") or [] if isinstance(r, dict)]
+    if conf.get("highlight"):
+        from .cel import Rule
+        rule = Rule("highlight", conf["highlight"])
+        extra = {k: v for k, v in data.items() if k != "rows"}
+        for r in rows:
+            try:
+                r["_highlight"] = bool(rule.evaluate({"row": r, **extra}))
+            except Exception as exc:
+                raise ScriptError(f"The highlight rule failed on a row: {exc}") from None
+    if conf.get("spec"):
+        return {**conf["spec"], "data": {"values": rows}}
+    x, y = conf["x"], conf["y"]
+    y_axis = {"title": conf.get("y_title", y.replace("_", " ")), "grid": True, "gridColor": GRID, "domain": False, "tickCount": 5}
+    if conf.get("y_format"):
+        y_axis["format"] = conf["y_format"]
+    x_enc = {"field": x, "type": "ordinal", "sort": None, "title": conf.get("x_title", x.replace("_", " ")) or None,
+             "axis": {"labelAngle": 0 if len(rows) <= 8 else -45, "domainColor": INK, "tickColor": INK}}
+    y_enc = {"field": y, "type": "quantitative", "axis": y_axis}
+    color = ({"condition": {"test": "datum._highlight", "value": HIGHLIGHT}, "value": BASE} if conf.get("highlight") else {"value": BASE})
+    if conf.get("kind", "bar") == "line":
+        layers = [{"mark": {"type": "line", "color": BASE, "strokeWidth": 2}, "encoding": {"x": x_enc, "y": y_enc}},
+                  {"mark": {"type": "point", "filled": True, "size": 60}, "encoding": {"x": x_enc, "y": y_enc, "color": color}}]
+    else:
+        layers = [{"mark": {"type": "bar", "cornerRadiusEnd": 2, "width": {"band": 0.7}}, "encoding": {"x": x_enc, "y": y_enc, "color": color}}]
+    ref = data.get(conf["reference"]) if conf.get("reference") else None
+    notes = [conf["subtitle"]] if conf.get("subtitle") else []
+    if isinstance(ref, (int, float)) and not isinstance(ref, bool):
+        # Its own one-row data: drawn once, not once per row. Its label goes in the subtitle, clear of the bars.
+        layers.append({"data": {"values": [{}]}, "mark": {"type": "rule", "strokeDash": [5, 4], "color": REFERENCE, "strokeWidth": 1.5},
+                       "encoding": {"y": {"datum": ref}}})
+        notes.append(f"Dashed line: {conf.get('reference_label') or conf['reference'].replace('_', ' ')}")
+    spec = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "width": conf.get("width", 560), "height": conf.get("height", 260),
+            "data": {"values": rows}, "layer": layers,
+            "config": {"view": {"stroke": None}, "font": "Helvetica, Arial, sans-serif",
+                       "axis": {"labelColor": INK, "titleColor": INK, "labelFontSize": 11, "titleFontSize": 11, "titleFontWeight": "normal"},
+                       "title": {"anchor": "start", "fontSize": 14, "color": INK, "subtitleColor": "#6B6B63"}}}
+    if conf.get("title"):
+        spec["title"] = {"text": conf["title"], **({"subtitle": ". ".join(n.rstrip(".") for n in notes) + "."} if notes else {})}
+    return spec
+
+
+def chart(step: str, conf: dict, data: dict) -> dict:
+    """Draw the chart to <run dir>/charts/<step>.png (twice the pixels, for sharp screens and email)."""
+    import vl_convert as vlc
+    if not (data.get("rows") or []):
+        raise ScriptError("There are no rows to chart.")
+    png = vlc.vegalite_to_png(chart_spec(conf, data), scale=2)
+    out = run_dir() / "charts" / f"{step}.png"
+    out.parent.mkdir(exist_ok=True)
+    out.write_bytes(png)
+    return {"image": f"charts/{step}.png", "title": conf.get("title") or ""}
+
+
+# ------------------------------------------------------------------ email: one per run, or one per record
+
+def _as_text(value: Any) -> str:
+    """A value as it reads in an email: a list as lines, a record as "name: value" lines, numbers as written."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(f"- {_as_text(v)}" if not isinstance(v, (dict, list)) else _as_text(v) for v in value)
+    if isinstance(value, dict):
+        return "\n".join(f"{k}: {_as_text(v)}" for k, v in value.items())
+    if isinstance(value, float):
+        return f"{value:,.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _fill_text(template: str, record: dict) -> str:
+    return re.sub(r"\{(\w+)\}", lambda m: _as_text(record.get(m.group(1))), template).strip()
+
+
+def send_emails(spec: dict, dry_run: bool, data: dict) -> dict:
+    """Fill the step's To, Cc, subject and body templates from its inputs (and each item's fields, one email per
+    item), and send each through the gateway, which checks the recipients."""
+    conn = gateway.connect("gmail")
+    values = data.get("values") or {}
+    records = data.get("records")
+    sent, would = [], []
+    for item in (records if records is not None else [{}]):
+        rec = {**values, **(item if isinstance(item, dict) else {"item": item})}
+        to = [a.strip() for t in spec.get("to") or [] for a in _fill_text(t, rec).split(",") if a.strip()]
+        cc = [a.strip() for t in spec.get("cc") or [] for a in _fill_text(t, rec).split(",") if a.strip()]
+        subject = _fill_text(spec.get("subject", ""), rec)
+        body = _fill_text(spec.get("body", ""), rec)
+        images = [c for c in data.get("charts") or [] if isinstance(c, str) and c]
+        gateway.call(conn, "gmail", "send", {"to": to, "cc": cc, "subject": subject, "body": body, "images": images, "dry_run": dry_run})
+        (would if dry_run else sent).append(f"To {', '.join(to)}: {subject}")
+    return {"created": sent, "would_create": would, "skipped": [], "emails": len(sent) + len(would)}
 
 
 # ------------------------------------------------------------------ sheets: one row per record
@@ -471,9 +731,10 @@ def show(data: dict) -> dict:
 
 # ------------------------------------------------------------------ command line
 
-def main() -> None:
+def execute(argv: list[str], data: dict) -> dict:
+    """One operation, from the same arguments a script step passes, on its inputs. Records the output (or the error)."""
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect", "send-email", "chart", "cel"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -494,12 +755,14 @@ def main() -> None:
     p.add_argument("--memory", action="store_true", help="decide-prep: recall past cases for each item.")
     p.add_argument("--paths", help="decide-collect: the Branch's path names, in order; each-collect: each model Branch's, as JSON.")
     p.add_argument("--steps", help="each-collect: the block's step ids, as JSON.")
+    p.add_argument("--email", help="send-email: {to, cc, subject, body}, as JSON.")
+    p.add_argument("--ops-b64", help="cel: the operators, JSON in base64.")
+    p.add_argument("--chart-b64", help="chart: its settings (kind, x, y, title, highlight, reference ...), JSON in base64.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
-    a = p.parse_args()
+    a = p.parse_args(argv)
     import os
     os.environ.setdefault("AGENT_SERVICE_STEP", a.step)      # connection calls are logged against this step
-    data = json.loads(sys.stdin.read() or "{}")
 
     if a.operation == "tidy":
         out = tidy(json.loads(a.operations), data)
@@ -515,6 +778,26 @@ def main() -> None:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
+    elif a.operation == "cel":
+        import base64
+        try:
+            out = cel_pipeline(json.loads(base64.b64decode(a.ops_b64).decode()), data)
+        except ScriptError as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(str(exc))
+    elif a.operation == "chart":
+        import base64
+        try:
+            out = chart(a.step, json.loads(base64.b64decode(a.chart_b64).decode()), data)
+        except ScriptError as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(str(exc))
+    elif a.operation == "send-email":
+        try:
+            out = send_emails(json.loads(a.email), a.dry_run == "true", data)
+        except gateway.Refused as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(f"Refused: {exc}")
     elif a.operation == "each-collect":
         out = each_collect(data, json.loads(a.steps), json.loads(a.paths or "{}"))
     elif a.operation in ("decide-prep", "decide-collect"):
@@ -523,7 +806,7 @@ def main() -> None:
                    else decide_collect(data, json.loads(a.paths)))
         except ScriptError as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
-            sys.exit(str(exc))
+            raise StepFailed(str(exc))
     elif a.operation == "memory-recall":
         from .memory import recall
         out = recall(a.for_step, data, a.max_cases)
@@ -534,26 +817,57 @@ def main() -> None:
                    else insert_rows(a.table, json.loads(a.row or "{}"), a.dry_run == "true", data))
         except gateway.Refused as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
-            sys.exit(f"Refused: {exc}")
+            raise StepFailed(f"Refused: {exc}")
         except Exception as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
-            sys.exit(f"BigQuery failed: {str(exc).splitlines()[0][:400]}")
+            raise StepFailed(f"BigQuery failed: {str(exc).splitlines()[0][:400]}")
     elif a.operation == "javascript":
         import base64
         try:
             out = javascript(base64.b64decode(a.code_b64).decode(), [r for r in a.returns.split(",") if r], data)
         except ScriptError as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
-            sys.exit(str(exc))
+            raise StepFailed(str(exc))
     elif a.operation == "call-tools":
         try:
             out = call_tools(a.tool, json.loads(a.arguments or "{}"), a.dry_run == "true", data)
         except gateway.Refused as exc:
-            sys.exit(f"Refused: {exc}")
+            raise StepFailed(f"Refused: {exc}")
     else:
         out = create_events(a.calendar, json.loads(a.templates), [f for f in a.match_fields.split(",") if f],
                             a.dry_run == "true", data)
     record_step(a.step, out, inputs=data)
+    return out
+
+
+
+class StepFailed(Exception):
+    """The step failed; the message says why (a script step exits with it, an MCP call returns it as an error)."""
+
+
+def serve() -> None:
+    """The step library as an MCP server, for Built-in steps in a parallel group (Conductor runs only model, set and MCP
+    steps in groups). One tool, `run`, takes the same arguments as the script and the step's inputs."""
+    from mcp.server.mcpserver import MCPServer
+    server = MCPServer("agent-service-steps")
+
+    @server.tool(name="run", description="Run one Built-in operation: its command-line arguments and its inputs.")
+    def run(argv: list[str], data: Any = None) -> dict[str, Any]:
+        inputs = json.loads(data) if isinstance(data, str) else (data or {})
+        return execute(argv, inputs)
+
+    server.run("stdio")
+
+
+def main() -> None:
+    if sys.argv[1:2] == ["--mcp"]:
+        serve()
+        return
+    data = json.loads(sys.stdin.read() or "{}")
+    try:
+        out = execute(sys.argv[1:], data)
+    except StepFailed as exc:
+        sys.exit(str(exc))
     json.dump(out, sys.stdout)
 
 

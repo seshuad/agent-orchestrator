@@ -1,4 +1,4 @@
-"""Real Gmail, read-only (gmail.readonly), for runs on real accounts. The gateway decides what a step
+"""Real Gmail for runs on real accounts: reading (gmail.readonly) and, for accounts granted it, sending (gmail.send). The gateway decides what a step
 may see; this only talks to the Gmail API. Email bodies are cleaned the way travel-sync does it:
 HTML stripped, tracking links and filler characters removed, and very long bodies cut with a note.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import re
+from pathlib import Path
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
@@ -14,6 +15,12 @@ from typing import Any
 from . import vault
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPE_OF = {"read": "https://www.googleapis.com/auth/gmail.readonly", "send": "https://www.googleapis.com/auth/gmail.send"}
+
+
+def scopes_for(permissions: list[str]) -> list[str]:
+    """What a sign-in asks Google for: only what the account's permissions need."""
+    return [SCOPE_OF[p] for p in permissions if p in SCOPE_OF] or SCOPES
 MAX_BODY_CHARS = 30_000
 RETRIES = 2
 HTTP_TIMEOUT = 30          # seconds per request: a stuck request fails, and the step can try again or carry on
@@ -65,11 +72,32 @@ def credentials(connection: str):
     token = vault.load(connection)
     if token is None:
         raise PermissionError(f"The connection {connection!r} isn't signed in to Google.")
-    creds = Credentials.from_authorized_user_info(token, SCOPES)
+    creds = Credentials.from_authorized_user_info(token, token.get("scopes") or SCOPES)    # what it was granted
     if not creds.valid:
         creds.refresh(Request())
         vault.save(connection, {**token, **__import__("json").loads(creds.to_json())})
     return creds
+
+
+def html_body(text: str, cids: list[str]) -> str:
+    """Plain text as simple HTML (paragraphs, "- " lines as a list), then each image."""
+    import html
+    out, items = [], []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.splitlines()
+        for line in lines:
+            if line.startswith("- "):
+                items.append(f"<li>{html.escape(line[2:])}</li>")
+                continue
+            if items:
+                out.append("<ul>" + "".join(items) + "</ul>")
+                items = []
+            out.append(f"<p>{html.escape(line)}</p>")
+        if items:
+            out.append("<ul>" + "".join(items) + "</ul>")
+            items = []
+    out += [f'<p><img src="cid:{c}" alt="chart" style="max-width:100%;width:600px;height:auto"></p>' for c in cids]
+    return '<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222">' + "".join(out) + "</div>"
 
 
 class LiveGmail:
@@ -134,6 +162,31 @@ class LiveGmail:
         walk(msg["payload"])
         body = clean_body("\n".join(plain)) if plain else clean_body("\n".join(html), is_html=True)
         return {**self._summary(msg), "body": body}
+
+    def send(self, to: list[str], cc: list[str], subject: str, body: str, images: list[Any] | None = None) -> str:
+        """Send an email from the account; returns Gmail's message id. With images (PNG files), it goes as HTML with
+        each image inline under the text, and the plain text as the alternative."""
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["To"], msg["Subject"] = ", ".join(to), subject
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        msg.set_content(body)
+        if images:
+            from email.utils import make_msgid
+            cids = [make_msgid(domain="agent-service") for _ in images]
+            msg.add_alternative(html_body(body, [c[1:-1] for c in cids]), subtype="html")
+            html = msg.get_payload()[1]
+            for path, cid in zip(images, cids):
+                html.add_related(Path(path).read_bytes(), maintype="image", subtype="png", cid=cid,
+                                 filename=Path(path).name, disposition="inline")
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        try:
+            return self.svc.users().messages().send(userId="me", body={"raw": raw}).execute(num_retries=RETRIES)["id"]
+        except Exception as exc:
+            if "insufficient" in str(exc).lower() or "403" in str(exc):
+                raise PermissionError("This Gmail account wasn't signed in with permission to send. Sign in again on Connections.") from exc
+            raise
 
     def profile(self) -> str:
         return self.svc.users().getProfile(userId="me").execute(num_retries=RETRIES)["emailAddress"]

@@ -982,9 +982,11 @@ def test_a_parallel_block_runs_ask_steps_together(api, tmp_path):
     assert fb["ok"], fb["errors"]
     wf = _yaml.safe_load(fb["compiled"])
     assert wf["parallel"][0]["agents"] == ["read_a", "read_b"] and "reads.outputs.get(" in fb["compiled"]
-    bad = dict(draft, steps=[{**draft["steps"][0], "steps": [ask("a"), draft["steps"][1]]}])
+    act = {"id": "note", "kind": "act", "name": "Add a row", "uses": {"connection": "x", "actions": ["append_row"]}, "add_row": {"sheet": "S", "row": {}}}
+    bad = dict(draft, connections={"x": {"service": "google-sheets", "permission": "add rows"}},
+               steps=[{**draft["steps"][0], "steps": [ask("a"), act]}])
     fb = api.put("/api/agents/two-reads", json={"draft": bad}).json()["feedback"]
-    assert any("only Ask steps run together" in e["message"] for e in fb["errors"])
+    assert any("only Ask and Built-in steps run together" in e["message"] for e in fb["errors"])          # nothing that changes things
     api.put("/api/agents/two-reads", json={"draft": draft})
     replay = tmp_path / "replay.yaml"
     replay.write_text(_yaml.safe_dump({"read_a": [{"count": 2}], "read_b": [{"count": 3}]}))
@@ -994,3 +996,221 @@ def test_a_parallel_block_runs_ask_steps_together(api, tmp_path):
     assert d["status"] == "succeeded", d.get("error")
     assert next(e for e in d["log"] if e["id"] == "total")["detail"] == "total: 5"
     assert any(e["kind"] == "group" and "Read a, Read b at the same time" in e["detail"] for e in d["log"])
+
+
+def wait_run(api, run_id, timeout=60):
+    for _ in range(timeout * 2):
+        d = api.get(f"/api/runs/{run_id}").json()
+        if d["status"] not in ("running", "waiting"):
+            return d
+        time.sleep(0.5)
+    raise AssertionError("the run didn't finish")
+
+
+def email_agent(api, name, to="data-team@northpeak.co", body="{summary}", takes=None):
+    conn = api.post("/api/connections", json={"service": "gmail", "account": "reports@northpeak.co", "permissions": ["send"]}).json()
+    api.post("/api/agents", json={"name": name, "sample_set": "Sales (BigQuery)"})
+    draft = api.get(f"/api/agents/{name}").json()["draft"]
+    draft["connections"] = {"mail": {"service": "gmail", "permission": "send", "account": conn["id"]}}
+    draft["run_options"] = {"dry_run": {"type": "yes/no", "default": False}}
+    draft["steps"] = [
+        {"id": "sum_up", "kind": "built-in", "name": "Sum up", "operation": {"javascript": {"code": "return {summary: 'Revenue up 4%', points: ['West +9%', 'East -2%']};"}},
+         "returns": {"summary": {"type": "text"}, "points": {"type": "list of text"}}},
+        {"id": "email", "kind": "act", "name": "Email the team", "follows_dry_run": "run.dry_run",
+         "uses": {"connection": "mail", "actions": ["send"], "recipients": ["@northpeak.co"]},
+         "takes": takes or {"summary": "sum_up.summary", "points": "sum_up.points"},
+         "send_email": {"to": [to], "subject": "Sales: {summary}", "body": body}}]
+    return draft
+
+
+@needs_conductor
+def test_an_act_step_sends_email_only_to_its_recipients(api):
+    draft = email_agent(api, "mail-report", body="{summary}\n\n{points}")
+    fb = api.put("/api/agents/mail-report", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert not fb["warnings"]                                     # no model wrote anything: no approval needed
+    run = api.post("/api/agents/mail-report/runs", json={"scripted": False, "inputs": {"dry_run": "false"}}).json()
+    d = wait_run(api, run["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    [m] = d["outcome"]["emails"]
+    assert m["to"] == ["data-team@northpeak.co"] and m["subject"] == "Sales: Revenue up 4%"
+    assert m["body"] == "Revenue up 4%\n\n- West +9%\n- East -2%" and m["status"].startswith("sent (test run")
+    outside = email_agent(api, "mail-leak", to="someone@elsewhere.com")
+    api.put("/api/agents/mail-leak", json={"draft": outside})
+    d = wait_run(api, api.post("/api/agents/mail-leak/runs", json={"inputs": {}}).json()["id"])
+    assert d["status"] == "failed" and "someone@elsewhere.com" in json.dumps(d["error"])      # the gateway refused it
+    ask = {"id": "write", "kind": "ask", "name": "Write it", "model": "claude-sonnet-5", "instructions": "Write.", "task": "Write.",
+           "returns": {"text": {"type": "text"}}}
+    draft["steps"].insert(1, ask)
+    draft["steps"][2]["takes"] = {"summary": "write.text"}
+    fb = api.put("/api/agents/mail-report", json={"draft": draft}).json()["feedback"]
+    assert any("emails text a model wrote" in w["message"] for w in fb["warnings"])
+
+
+@needs_conductor
+def test_a_pubsub_message_starts_a_run_of_the_published_version(api):
+    import base64 as b64
+    from agent_service.server.pubsub import Listener
+    api.post("/api/agents", json={"name": "on-load", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/on-load").json()["draft"]
+    draft["trigger"] = {"kind": "pubsub", "subscription": "projects/acme/subscriptions/etl-done", "account": "x",
+                        "message": {"table": {"type": "text"}, "rows": {"type": "number"}}, "when": "message.table.startsWith('sales')",
+                        "sample": {"table": "sales_processed.orders", "rows": 120}}
+    draft["steps"] = [{"id": "note", "kind": "built-in", "name": "Note it", "takes": {"table": "trigger.table", "rows": "trigger.rows", "id": "trigger.message_id"},
+                       "operation": {"javascript": {"code": "return {line: inputs.table + ': ' + inputs.rows + ' rows (' + inputs.id + ')'};"}},
+                       "returns": {"line": {"type": "text"}}}]
+    fb = api.put("/api/agents/on-load", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert any(r["ref"] == "trigger.rows" for r in api.get("/api/agents/on-load/references?step=note").json())
+    test = wait_run(api, api.post("/api/agents/on-load/runs", json={"inputs": {}}).json()["id"])      # the trigger's sample
+    assert test["status"] == "succeeded" and next(e for e in test["log"] if e["id"] == "note")["detail"] == "line: sales_processed.orders: 120 rows (sample)"
+    api.post("/api/agents/on-load/publish", json={"note": ""})
+
+    msg = lambda mid, data: {"ackId": f"a-{mid}", "message": {"messageId": mid, "publishTime": "2026-10-01T09:00:00Z",
+                                                             "data": b64.b64encode(json.dumps(data).encode()).decode()}}
+    batches = [[msg("m1", {"table": "sales_processed.orders", "rows": 310}), msg("m2", {"table": "hr.people", "rows": 4}), msg("m1", {})]]
+    acked = []
+
+    class Resp:
+        def __init__(self, body): self.status_code, self.body = 200, body
+        def json(self): return self.body
+
+    class Session:
+        def post(self, url, json=None, timeout=None):
+            if url.endswith(":pull"):
+                return Resp({"receivedMessages": batches.pop(0) if batches else []})
+            acked.extend(json["ackIds"])
+            return Resp({})
+
+    listener = Listener(api.app.state.pubsub.store, api.app.state.pubsub.runs, session_for=lambda trigger: Session())
+    assert listener.poll("on-load") == 3 and acked == ["a-m1", "a-m2", "a-m1"]
+    log = api.get("/api/agents/on-load/pubsub").json()["messages"]
+    assert [e["outcome"] for e in log] == ["duplicate", "skipped", "started"]                     # newest first
+    d = wait_run(api, log[-1]["run"])
+    assert d["status"] == "succeeded" and d["trigger"] == "pubsub" and d["version"] == 1
+    assert next(e for e in d["log"] if e["id"] == "note")["detail"] == "line: sales_processed.orders: 310 rows (m1)"
+    api.post("/api/agents/on-load/pubsub", json={"paused": True})
+    assert listener.poll("on-load") == 0
+
+
+@needs_conductor
+def test_sales_load_check_reports_a_passing_load_after_approval(api, tmp_path):
+    """The ETL example: checks pass on the sample warehouse, the scripted judgment says report it, a person approves,
+    and on a dry run the email lands in the run's outbox."""
+    import yaml as _yaml
+    from agent_service.server.store import EXAMPLES, Store
+    c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
+        "auth": {"kind": "gcloud"}, "billing_project": "project-0a33b36a-f359-40ab-93b", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+    bq = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
+    mail = api.post("/api/connections", json={"service": "gmail", "account": "seshu.adunuthula@gmail.com", "permissions": ["send"]}).json()
+    api.post("/api/agents", json={"name": "sales-load-check", "sample_set": "Sales (BigQuery)"})
+    draft = _yaml.safe_load((EXAMPLES / "bigquery-sales/sales-load-check.agent.yaml").read_text())
+    draft["trigger"]["account"] = bq["id"]
+    draft["connections"]["bq"]["account"], draft["connections"]["mail"]["account"] = bq["id"], mail["id"]
+    fb = api.put("/api/agents/sales-load-check", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert not fb["warnings"]                       # the report is approved before it's sent; the alert holds only checked values
+    store = Store(tmp_path)
+    store.set_test_data("sales-load-check", store.meta("sales-load-check")["sample_data"], str(EXAMPLES / "bigquery-sales/replay-load-check.yaml"))
+    d = run_scripted(api, "sales-load-check", {"inputs": {"dry_run": "true"}}, approve="all")
+    assert d["status"] == "succeeded", d.get("error")
+    together = [e for e in d["log"] if e["id"] in ("monthly", "regions", "products")]
+    assert len(together) == 3 and all(e["why"] == "In a group" and e["detail"].startswith(("12 rows", "4 rows", "8 rows")) for e in together)
+    assert any(e["kind"] == "group" and "at the same time" in e["detail"] for e in d["log"])
+    checked = api.get(f"/api/runs/{d['id']}/steps/check_load/0").json()["output"]
+    assert checked["passed"] and checked["alerts"] == [] and checked["kpis"]["weak_months"] == ["2025-08 (-59%)"]
+    assert checked["kpis"]["total_revenue"] == 543673.8 and checked["kpis"]["total_orders"] == 731
+    [m] = d["outcome"]["emails"]
+    assert m["status"] == "would send" and m["subject"] == "Sales: August revenue fell 59% below a typical month"
+    assert "Load: sample-load" in m["body"] and m["to"] == ["seshu.adunuthula@gmail.com"]
+    assert m["images"] == ["charts/monthly_chart.png", "charts/region_chart.png"]                 # the charts go with it
+    drawn = [e for e in d["log"] if e.get("image")]
+    assert [e["detail"] for e in drawn] == ["Drew Monthly revenue", "Drew Revenue by region"]
+    png = api.get(f"/api/runs/{d['id']}/charts/monthly_chart.png")
+    assert png.status_code == 200 and png.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert api.get(f"/api/runs/{d['id']}/charts/run.json").status_code == 404                     # nothing else in the run folder
+    assert b'"agent"' not in api.get(f"/api/runs/{d['id']}/charts/..%2Frun.json").content
+
+
+def test_sales_load_check_alerts_on_a_load_that_doesnt_reconcile():
+    import yaml as _yaml
+    from agent_service.runtime.steps import javascript
+    from agent_service.server.store import EXAMPLES
+    agent = _yaml.safe_load((EXAMPLES / "bigquery-sales/sales-load-check.agent.yaml").read_text())
+    step = next(s for s in agent["steps"] if s["id"] == "check_load")
+    months = [{"month": "2026-01", "total_orders": 10, "total_revenue": 1000}, {"month": "2026-03", "total_orders": 10, "total_revenue": 900},
+              {"month": "2026-03", "total_orders": 5, "total_revenue": 500}]
+    regions = [{"region": "West", "total_orders": 20, "total_revenue": 1900, "avg_order_value": 95}]
+    products = [{"product_id": "P1", "product_name": "Laptop", "category": "Electronics", "units_sold": 3, "total_revenue": 2400}]
+    out = javascript(step["operation"]["javascript"]["code"], list(step["returns"]),
+                     {"months": months, "regions": regions, "products": products, "threshold": 30, "load_id": "L7", "dataset": "sales_processed"})
+    assert not out["passed"]
+    failed = {f.split(":")[0] for f in out["failures"]}
+    assert failed == {"No duplicate keys", "No missing months", "Revenue reconciles across tables", "Orders reconcile across tables"}
+    [alert] = out["alerts"]
+    assert alert["subject"] == "Sales load L7 failed 4 check(s)" and "- Orders reconcile across tables: months 25, regions 20" in alert["body"]
+
+
+@needs_conductor
+def test_a_cel_step_summarizes_and_ranks_in_a_run(api):
+    api.post("/api/agents", json={"name": "ranker", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/ranker").json()["draft"]
+    draft["run_options"] = {"top": {"type": "number", "default": 2}}
+    rows = "[{region:'West',amount:120},{region:'East',amount:80},{region:'West',amount:30},{region:'North',amount:200},{region:'East',amount:5}]"
+    draft["steps"] = [
+        {"id": "orders", "kind": "built-in", "name": "Orders", "operation": {"javascript": {"code": f"return {{rows: {rows}}};"}},
+         "returns": {"rows": {"type": "list of text"}}},
+        {"id": "rank", "kind": "built-in", "name": "Rank regions", "takes": {"items": "orders.rows"},
+         "operation": {"cel": [{"keep": "item.amount > 10"},
+                               {"summarize": {"group_by": {"region": "item.region"}, "totals": {"revenue": "sum(item.amount)", "orders": "count()"}}},
+                               {"sort": {"by": "item.revenue", "descending": True, "take": 2}}]}},
+        {"id": "show", "kind": "built-in", "name": "Show", "operation": {"show": {}}, "takes": {"value": "rank.items"}}]
+    fb = api.put("/api/agents/ranker", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    refs = {r["ref"]: r["type"] for r in api.get("/api/agents/ranker/references?step=show").json()}
+    assert refs["rank.items"] == "list of records" and refs["rank.notes"] == "list of text"
+    d = wait_run(api, api.post("/api/agents/ranker/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    shown = json.loads(next(e for e in d["log"] if e["id"] == "show")["value"])
+    assert shown == [{"region": "North", "revenue": 200, "orders": 1}, {"region": "West", "revenue": 150, "orders": 2}]
+    bad = json.loads(json.dumps(draft))
+    bad["steps"][1]["operation"]["cel"][1]["summarize"]["totals"]["revenue"] = "total(item.amount)"
+    fb = api.put("/api/agents/ranker", json={"draft": bad}).json()["feedback"]
+    assert any("must be count()" in e["message"] for e in fb["errors"])
+    bad["steps"][1]["operation"]["cel"][0]["keep"] = "item.amount >"
+    fb = api.put("/api/agents/ranker", json={"draft": bad}).json()["feedback"]
+    assert any(e["path"] == "steps.1.operation.cel.0.keep" for e in fb["errors"])      # pinned to the operator's field
+
+
+@needs_conductor
+def test_sales_load_check_alerts_when_one_table_cant_be_read(api, tmp_path):
+    """The three reads run together and keep going if one fails: a refused query becomes a failed check and an alert."""
+    import yaml as _yaml
+    from agent_service.server.store import EXAMPLES, Store
+    c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
+        "auth": {"kind": "gcloud"}, "billing_project": "project-0a33b36a-f359-40ab-93b", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+    bq = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
+    mail = api.post("/api/connections", json={"service": "gmail", "account": "seshu.adunuthula@gmail.com", "permissions": ["send"]}).json()
+    api.post("/api/agents", json={"name": "sales-load-check", "sample_set": "Sales (BigQuery)"})
+    draft = _yaml.safe_load((EXAMPLES / "bigquery-sales/sales-load-check.agent.yaml").read_text())
+    draft["trigger"]["account"] = bq["id"]
+    draft["connections"]["bq"]["account"], draft["connections"]["mail"]["account"] = bq["id"], mail["id"]
+    products = next(s for s in draft["steps"][0]["steps"] if s["id"] == "products")
+    products["operation"]["bigquery"]["sql"] = "SELECT * FROM `project-0a33b36a-f359-40ab-93b.credit.customer_limits`"
+    products["uses"]["datasets"] = ["credit"]                     # outside what the connector allows: refused
+    fb = api.put("/api/agents/sales-load-check", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    store = Store(tmp_path)
+    store.set_test_data("sales-load-check", store.meta("sales-load-check")["sample_data"], str(EXAMPLES / "bigquery-sales/replay-load-check.yaml"))
+    d = run_scripted(api, "sales-load-check", {"inputs": {"dry_run": "true"}}, approve="all")
+    assert d["status"] == "succeeded", d.get("error")
+    assert next(e for e in d["log"] if e["id"] == "products")["tone"] == "bad"
+    checked = api.get(f"/api/runs/{d['id']}/steps/check_load/0").json()["output"]
+    assert not checked["passed"] and any(f.startswith("Every table has rows") for f in checked["failures"])
+    [m] = d["outcome"]["emails"]
+    assert m["subject"].startswith("Sales load sample-load failed") and "Every table has rows: 12 months, 4 regions, 0 products" in m["body"]
+    draft["steps"][0]["failure"] = "stop"                         # the other way: one failed read stops the run, and says which
+    api.put("/api/agents/sales-load-check", json={"draft": draft})
+    d = run_scripted(api, "sales-load-check", {"inputs": {"dry_run": "true"}}, approve="all")
+    assert d["status"] == "failed" and d["error"]["title"] == "A step failed: products" and "may not read" in d["error"]["why"]
+    assert not any(e["id"] == "check_load" for e in d["log"])

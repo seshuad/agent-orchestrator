@@ -1,0 +1,357 @@
+format: agent-service/v1
+name: sales-load-check
+description: When the sales_processed ETL finishes, check the load (completeness, duplicates, reconciliation across tables)
+  and alert the data team if it fails. If it passes, decide whether anything moved enough to tell sales leadership, and if
+  so write a short report, have a person approve it, and email it.
+trigger:
+  kind: pubsub
+  subscription: projects/project-0a33b36a-f359-40ab-93b/subscriptions/sales-etl-done-agent
+  account: bigquery-2
+  message:
+    dataset:
+      type: text
+      hint: The dataset the ETL loaded, e.g. sales_processed.
+    load_id:
+      type: text
+      hint: The ETL run's id, for the alert and the report.
+    finished_at:
+      type: text
+      hint: When the load finished (ISO 8601).
+  when: message.dataset == "sales_processed"
+  sample:
+    dataset: sales_processed
+    load_id: sample-load
+    finished_at: '2026-10-01T06:00:00Z'
+run_options:
+  dry_run:
+    type: yes/no
+    default: true
+    description: List the emails it would send, and send nothing.
+  drop_threshold:
+    type: number
+    default: 30
+    description: A month this many percent below a typical month is a drop worth explaining.
+  dashboard_url:
+    type: text
+    default: ''
+    description: A link to the Looker dashboard, added to the report.
+limits:
+  budget_usd: 1.0
+  timeout_minutes: 15
+connections:
+  bq:
+    service: bigquery
+    permission: run read queries
+    account: bigquery-2
+  mail:
+    service: gmail
+    permission: send email
+    account: seshu-gmail
+records:
+  Month:
+    fields:
+      month: {type: text}
+      total_orders: {type: number}
+      total_revenue: {type: number}
+  Region:
+    fields:
+      region: {type: text}
+      total_orders: {type: number}
+      total_revenue: {type: number}
+      avg_order_value: {type: number}
+  Product:
+    fields:
+      product_id: {type: text}
+      product_name: {type: text}
+      category: {type: text}
+      units_sold: {type: number}
+      total_revenue: {type: number}
+  Check:
+    fields:
+      check: {type: text}
+      passed: {type: yes/no}
+      detail: {type: text}
+  KPIs:
+    fields:
+      latest_month: {type: text}
+      latest_revenue: {type: number}
+      prior_month: {type: text}
+      prior_revenue: {type: number}
+      typical_revenue: {type: number, hint: The average of the other months.}
+      change_vs_prior_pct: {type: number}
+      change_vs_typical_pct: {type: number}
+      weak_months: {type: list of text, hint: 'Months this far below a typical month, like 2024-11 (-55%).'}
+      total_revenue: {type: number}
+      total_orders: {type: number}
+      top_region: {type: text}
+      top_product_share_pct: {type: number, hint: The biggest product's share of revenue.}
+  Alert:
+    fields:
+      subject: {type: text}
+      body: {type: text}
+  Report:
+    fields:
+      subject: {type: text, hint: 'One line: the finding, with its number.'}
+      body:
+        type: text
+        hint: The report as plain text, at most about 150 words.
+steps:
+- id: read_tables
+  kind: parallel
+  name: Read the three tables
+  failure: continue
+  steps:
+    - id: monthly
+      kind: built-in
+      name: Monthly revenue
+      operation:
+        bigquery:
+          sql: |-
+            SELECT month, total_orders, total_revenue
+            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.monthly_trend`
+            ORDER BY month
+      uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 500}
+      returns:
+        rows: {type: list of Month}
+    - id: regions
+      kind: built-in
+      name: Revenue by region
+      operation:
+        bigquery:
+          sql: |-
+            SELECT region, total_orders, total_revenue, avg_order_value
+            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.revenue_by_region`
+            ORDER BY total_revenue DESC
+      uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 200}
+      returns:
+        rows: {type: list of Region}
+    - id: products
+      kind: built-in
+      name: Revenue by product
+      operation:
+        bigquery:
+          sql: |-
+            SELECT product_id, product_name, category, units_sold, total_revenue
+            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.revenue_by_product`
+            ORDER BY total_revenue DESC
+      uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 500}
+      returns:
+        rows: {type: list of Product}
+- id: check_load
+  kind: built-in
+  name: Check the load
+  takes:
+    months: monthly.rows
+    regions: regions.rows
+    products: products.rows
+    threshold: run.drop_threshold
+    load_id: trigger.load_id
+    dataset: trigger.dataset
+  operation:
+    javascript:
+      code: |-
+        // Quality checks on the load, then the KPIs a report would use.
+        const months = inputs.months || [], regions = inputs.regions || [], products = inputs.products || [];
+        const threshold = Number(inputs.threshold || 30);
+        const round = (x, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
+        const sum = (rows, f) => rows.reduce((t, r) => t + Number(r[f] || 0), 0);
+        const checks = [];
+        const check = (name, passed, detail) => checks.push({check: name, passed: !!passed, detail: detail});
+
+        check('Every table has rows', months.length && regions.length && products.length,
+          `${months.length} months, ${regions.length} regions, ${products.length} products`);
+        const missing = months.filter(m => !m.month || m.total_revenue == null || m.total_orders == null).length
+          + regions.filter(r => !r.region || r.total_revenue == null).length + products.filter(p => !p.product_id || p.total_revenue == null).length;
+        check('No missing values', missing === 0, missing ? `${missing} row(s) with a missing key or amount` : 'none missing');
+        const dupes = (rows, f) => rows.length - new Set(rows.map(r => r[f])).size;
+        const dup = dupes(months, 'month') + dupes(regions, 'region') + dupes(products, 'product_id');
+        check('No duplicate keys', dup === 0, dup ? `${dup} duplicate month, region or product id(s)` : 'none');
+        const negative = [...months, ...regions, ...products].filter(r => Number(r.total_revenue) < 0).length;
+        check('No negative revenue', negative === 0, negative ? `${negative} row(s) below zero` : 'none');
+        const sorted = months.map(m => m.month).sort();
+        const gaps = [];
+        for (let i = 1; i < sorted.length; i++) {
+          const [y, m] = sorted[i - 1].split('-').map(Number);
+          const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+          if (sorted[i] !== next) gaps.push(`${sorted[i - 1]} to ${sorted[i]}`);
+        }
+        check('No missing months', gaps.length === 0, gaps.length ? `gaps: ${gaps.join(', ')}` : `${sorted[0] || '?'} to ${sorted[sorted.length - 1] || '?'}`);
+        const aov = regions.filter(r => r.total_orders && Math.abs(r.total_revenue / r.total_orders - r.avg_order_value) > Math.max(1, 0.01 * r.avg_order_value));
+        check('Average order values add up', aov.length === 0, aov.length ? `off for ${aov.map(r => r.region).join(', ')}` : 'revenue / orders matches for every region');
+        const mRev = sum(months, 'total_revenue'), rRev = sum(regions, 'total_revenue'), pRev = sum(products, 'total_revenue');
+        const off = (a, b) => b ? Math.abs(a - b) / b * 100 : 0;
+        check('Revenue reconciles across tables', off(rRev, mRev) <= 0.5 && off(pRev, mRev) <= 0.5,
+          `months $${round(mRev)}, regions $${round(rRev)}, products $${round(pRev)}`);
+        const mOrd = sum(months, 'total_orders'), rOrd = sum(regions, 'total_orders');
+        check('Orders reconcile across tables', mOrd === rOrd, `months ${mOrd}, regions ${rOrd}`);
+
+        const failures = checks.filter(c => !c.passed).map(c => `${c.check}: ${c.detail}`);
+        const passed = failures.length === 0;
+        const alerts = passed ? [] : [{
+          subject: `Sales load ${inputs.load_id || ''} failed ${failures.length} check(s)`.replace('  ', ' '),
+          body: `The ${inputs.dataset || 'sales'} load ${inputs.load_id || ''} failed these checks:\n\n`
+            + failures.map(f => `- ${f}`).join('\n') + '\n\nNo report was sent. Fix the load and run the ETL again.'
+        }];
+
+        const byMonth = months.slice().sort((a, b) => a.month < b.month ? -1 : 1);
+        const latest = byMonth[byMonth.length - 1] || {}, prior = byMonth[byMonth.length - 2] || {};
+        const others = byMonth.slice(0, -1);
+        const typical = others.length ? sum(others, 'total_revenue') / others.length : 0;
+        const pct = (a, b) => b ? round((a - b) / b * 100, 1) : 0;
+        const weak = byMonth.map(m => {
+          const rest = byMonth.filter(o => o.month !== m.month);
+          const t = rest.length ? sum(rest, 'total_revenue') / rest.length : 0;
+          return {month: m.month, drop: t ? (t - m.total_revenue) / t * 100 : 0};
+        }).filter(m => m.drop >= threshold).map(m => `${m.month} (-${round(m.drop, 0)}%)`);
+        const top = products.slice().sort((a, b) => b.total_revenue - a.total_revenue)[0] || {};
+        const kpis = {
+          latest_month: latest.month || '', latest_revenue: round(latest.total_revenue || 0), prior_month: prior.month || '',
+          prior_revenue: round(prior.total_revenue || 0), typical_revenue: round(typical),
+          change_vs_prior_pct: pct(latest.total_revenue || 0, prior.total_revenue || 0), change_vs_typical_pct: pct(latest.total_revenue || 0, typical),
+          weak_months: weak, total_revenue: round(mRev), total_orders: mOrd,
+          top_region: (regions.slice().sort((a, b) => b.total_revenue - a.total_revenue)[0] || {}).region || '',
+          top_product_share_pct: mRev ? round((top.total_revenue || 0) / mRev * 100, 1) : 0
+        };
+        return {passed, failures, checks, alerts, kpis};
+  returns:
+    passed: {type: yes/no}
+    failures: {type: list of text}
+    checks: {type: list of Check}
+    alerts: {type: list of Alert}
+    kpis: {type: KPIs}
+- id: alert_data_team
+  kind: act
+  name: Alert the data team
+  uses:
+    connection: mail
+    actions: [send]
+    recipients: [seshu.adunuthula@gmail.com]
+    max_emails: 5
+  send_email:
+    to: [seshu.adunuthula@gmail.com]
+    subject: '{subject}'
+    body: '{body}'
+    for_each: check_load.alerts
+  follows_dry_run: run.dry_run
+- id: load_ok
+  kind: branch
+  name: Did the load pass?
+  paths:
+  - name: Failed a check
+    when: '!steps.check_load.passed'
+    then: end
+  - name: Otherwise
+    then: next
+- id: worth_reporting
+  kind: branch
+  name: Worth telling leadership?
+  decide: model
+  model: claude-sonnet-5
+  question: Did anything in this load move enough that sales leadership would want to know today?
+  takes:
+    kpis: check_load.kpis
+    regions: regions.rows
+    products: products.rows
+    threshold: run.drop_threshold
+  memory:
+    match_on:
+      dataset: trigger.dataset
+    max_cases: 5
+  paths:
+  - name: Report it
+    when_true: The latest month moved sharply against the prior or a typical month, a month fell past the drop threshold,
+      or the mix shifted in a way leaders would act on or ask about.
+    then: next
+  - name: Nothing notable
+    then: end
+- id: monthly_chart
+  kind: built-in
+  name: Chart monthly revenue
+  takes:
+    rows: monthly.rows
+    typical: check_load.kpis.typical_revenue
+    threshold: run.drop_threshold
+  operation:
+    chart:
+      kind: bar
+      x: month
+      y: total_revenue
+      title: Monthly revenue
+      subtitle: In red, months at least the drop threshold below a typical month
+      x_title: ''
+      y_title: Revenue
+      y_format: $,.0f
+      highlight: row.total_revenue < typical * (1.0 - double(threshold) / 100.0)
+      reference: typical
+      reference_label: typical month
+- id: region_chart
+  kind: built-in
+  name: Chart revenue by region
+  takes:
+    rows: regions.rows
+  operation:
+    chart:
+      kind: bar
+      x: region
+      y: total_revenue
+      title: Revenue by region
+      subtitle: The whole period
+      x_title: ''
+      y_title: Revenue
+      y_format: $,.0f
+      height: 200
+- id: write_report
+  kind: ask
+  name: Write the report
+  model: claude-sonnet-5
+  takes:
+    kpis: check_load.kpis
+    regions: regions.rows
+    products: products.rows
+    why: worth_reporting.reason
+  instructions: You write short sales reports for leadership from a checked data load. Use only the numbers in your inputs;
+    never estimate or invent one. Lead with the single finding that matters most, with its number and what it's compared
+    to. Then at most three bullets, each with a number. The region and product tables cover the whole period, not single
+    months, so never say a region or product caused a given month's change. Where the data has a quirk a reader should
+    know (for example a product in an odd category), say so in one line at the end. Plain text, no greeting, no sign-off.
+  task: Write one report on this load, returned as a list with exactly one Report.
+  returns:
+    reports: {type: list of Report}
+- id: approve_report
+  kind: approve
+  name: Approve the report
+  approver: you
+  notify: [email]
+  timeout_hours: 24
+  items: write_report.reports
+  review: |
+    ## Send this report?
+
+    {items: **{subject}**}
+
+    {items: {body}}
+
+    Why it's worth sending: {worth_reporting.reason}
+  choices:
+  - label: Don't send
+    passes: none
+  - label: Send it
+    passes: all
+- id: send_report
+  kind: act
+  name: Email the report
+  uses:
+    connection: mail
+    actions: [send]
+    recipients: [seshu.adunuthula@gmail.com]
+    max_emails: 5
+  takes:
+    dashboard: run.dashboard_url
+    load_id: trigger.load_id
+  send_email:
+    to: [seshu.adunuthula@gmail.com]
+    subject: 'Sales: {subject}'
+    body: "{body}\n\nDashboard: {dashboard}\nLoad: {load_id}"
+    charts: [monthly_chart.image, region_chart.image]
+    for_each: approve_report.approved
+  follows_dry_run: run.dry_run

@@ -45,6 +45,22 @@ def date_of(ts: celtypes.TimestampType) -> celtypes.StringType:
     return celtypes.StringType(str(ts)[:10])
 
 
+def _numbers_meet(fn):
+    """An operator that, when an int meets a double, compares or computes as doubles. Data mixes them freely (BigQuery
+    counts are ints, amounts doubles), and `item.revenue / item.orders > 500` shouldn't fail on that. Newer CEL
+    implementations compare across numeric types; this extends the same promotion to arithmetic."""
+    def promoted(a: Any, b: Any) -> Any:
+        if isinstance(a, (celtypes.IntType, celtypes.UintType)) and isinstance(b, celtypes.DoubleType):
+            a = celtypes.DoubleType(a)
+        elif isinstance(a, celtypes.DoubleType) and isinstance(b, (celtypes.IntType, celtypes.UintType)):
+            b = celtypes.DoubleType(b)
+        return fn(a, b)
+    promoted.__name__ = getattr(fn, "__name__", "operator")
+    return promoted
+
+
+NUMERIC = {name: _numbers_meet(celpy.evaluation.base_functions[name])
+           for name in ("_+_", "_-_", "_*_", "_/_", "_<_", "_<=_", "_>_", "_>=_", "_==_", "_!=_")}
 FUNCTIONS = {"is_me": is_me, "norm": norm, "date_of": date_of}
 _env = celpy.Environment(annotations={name: celtypes.FunctionType for name in FUNCTIONS})
 
@@ -89,7 +105,7 @@ class Rule:
     def __init__(self, name: str, source: str):
         self.name, self.source = name, source
         try:
-            self._program = _env.program(_env.compile(source), functions=FUNCTIONS)
+            self._program = _env.program(_env.compile(source), functions={**NUMERIC, **FUNCTIONS})
         except Exception as exc:  # celpy raises CELParseError and friends
             raise RuleError(f"Rule {name!r} is not valid CEL: {exc}") from None
 

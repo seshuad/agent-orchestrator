@@ -18,9 +18,10 @@ flowchart LR
 ```
 
 The examples in `examples/` are **travel-sync** (read travel confirmation emails, verify them, add approved trips to a
-calendar) and **invoice-check** (match an invoice against its purchase order and receipts, then queue payment after
-finance approves). Agents built on the canvas since include **issue-triage**, which classifies each open GitHub issue
-by type and component, and **monthly-revenue-watch**, which flags weak months in BigQuery sales data.
+calendar), **invoice-check** (match an invoice against its purchase order and receipts, then queue payment after
+finance approves) and **sales-load-check** (when an ETL load finishes, check it, and report what moved; see
+[ETL pipelines](#etl-pipelines)). Agents built on the canvas since include **issue-triage**, which classifies each open
+GitHub issue by type and component, and **monthly-revenue-watch**, which flags weak months in BigQuery sales data.
 
 ## Contents
 
@@ -33,6 +34,7 @@ by type and component, and **monthly-revenue-watch**, which flags weak months in
 - [How the canvas maps onto Conductor](#how-the-canvas-maps-onto-conductor)
 - [The designer](#the-designer)
 - [Connections](#connections)
+- [ETL pipelines](#etl-pipelines)
 - [Debugging and testing](#debugging-and-testing)
 - [Getting started](#getting-started)
 - [Path to enterprise-ready](#path-to-enterprise-ready)
@@ -49,7 +51,7 @@ never inferred from which fields happen to be filled in.
 | Concept | On the canvas | What it does | Guarantee |
 |---|---|---|---|
 | **Linear** | **Ask** | A model reads and extracts: one call, typed output | It can only read. Its tools are an explicit list; its output must match the record type |
-| | **Built-in** | Fixed operations, no model: tidy up, look up, compare, match, BigQuery query, JavaScript | Same input, same output; costs nothing to re-run |
+| | **Built-in** | No model. One of three engines: CEL operators over a list, JavaScript, or a BigQuery query; or a chart or fixed operation | Same input, same output; costs nothing to re-run |
 | | **Approve** | A person decides before anything changes | The first choice passes nothing, so a timeout or an unattended run changes nothing |
 | | **Act** | Changes something outside the agent, using only checked fields | Only here can anything change; it follows the run's dry run |
 | **Branch** | **Branch** | One decision with named paths, each leading to a fixed next step. Decided by rules (CEL) or by a model | One bounded decision; every path's downstream is fixed at design time. A model's answer that isn't a path takes the last, safe one |
@@ -66,7 +68,8 @@ A few properties of each flow block:
   model*: a question, what it decides on, and a plain-language "when this is true" per path. The answer is a path
   name (an enum), a reason and evidence. **Hard rules first** are CEL checks that settle outcomes before the model is
   asked, e.g. amounts over a limit always go to review. A model-decided Branch may read to decide (read-only actions).
-- **Parallel.** *Together*: Ask steps run at once, e.g. three mailboxes; later steps read their answers as usual.
+- **Parallel.** *Together*: Ask and Built-in steps run at once, e.g. three mailboxes or three queries; the next step starts
+  when all of them have finished, and reads their results as usual.
   *For each item*: the block's steps run in order for every item of a list, several items at a time. A Branch inside
   routes per item: to one of the block's steps, on to the next, or to "the end, for this item". Approve stays
   outside, so a person approves once per run, not per item.
@@ -83,13 +86,31 @@ three tiers. Each gives more capability for a weaker guarantee:
 
 | Tier | Can do | Can't do | Guarantee | Here |
 |---|---|---|---|---|
-| **CEL** | Filter, count, check existence, map fields | Sum, average, sort, date math | Not Turing-complete: always terminates; type-checked before it runs | Branch conditions, hard rules, Tidy up, pre-selection, "Before finishing", test expectations |
-| **Script** (JavaScript in QuickJS) | Sum, average, sort, group, date math | Use arbitrary libraries | Deterministic and sandboxed: no files, network or other programs; 2 seconds and 64 MB per run | Built-in → JavaScript |
+| **CEL operators** | Keep, add fields, check, remove duplicates, sort and take, summarize (count, sum, avg, min, max, by group), match two lists, link related items | Loops of your own, string building beyond expressions, anything stateful | Each rule is CEL: not Turing-complete, always terminates, checked as you type. The operator does the iterating | Built-in → CEL rules; and as plain rules in Branch conditions, hard rules, pre-selection, "Before finishing", test expectations |
+| **Script** (JavaScript in QuickJS) | Any logic over the inputs | Use arbitrary libraries | Deterministic and sandboxed: no files, network or other programs; 2 seconds and 64 MB per run | Built-in → JavaScript |
 | **Free-form code execution** (Python) | Anything, including reading current library docs (e.g. via Context7) and iterating on errors | — | Agentic; bounded only by a step limit; needs a real sandbox | Not built yet |
 
-**Use the narrowest tier that can do the job.** "Top N", "most / least", "ranked by" or any real numeric aggregation
-is a clean signal to skip CEL and use a script. Reach for code execution only when a task needs an external, changing
-API surface, or can't be bounded to one deterministic pass.
+**Use the narrowest tier that can do the job.** CEL on its own judges one thing at a time: it can't sort, total or
+group. The CEL operators close that gap without code: the operator iterates, sorts and totals, and CEL supplies one
+small rule per operator. Reach for JavaScript only for logic the operators can't express, and for code execution only
+when a task needs an external, changing API surface.
+
+**The CEL operators** run in order, each feeding the next, over the step's `items`:
+
+| Operator | You write | It does |
+|---|---|---|
+| Keep | a rule: `item.amount > 0` | keeps the items it's true for, noting how many it left out |
+| Add fields | named expressions: `aov: item.revenue / item.orders` | computes new fields on each item, in order |
+| Check | rules with a message, and on failure: drop, flag or fail the run; per item, or once on the whole list | applies each rule, keeping a reason |
+| Remove duplicates | a key, and optionally which to keep | keeps one item per key |
+| Sort and take | a value, highest or lowest first, how many | orders the list, keeps the first N |
+| Summarize | totals: `count()`, `count(rule)`, `sum(…)`, `avg(…)`, `min(…)`, `max(…)`; optionally by group | replaces the list with the totals, or saves them (`save_as`) for later rules |
+| Match | a key on each side, and another list from Takes | adds each item's match from that list (absent when none: `has(item.match)`) |
+| Link related | a pair rule over `a` and `b` | joins items into clusters when it holds for any pair |
+
+Every rule sees `item` (or `a` and `b`), `run`, the step's other inputs by name, and anything Summarize saved. Numbers
+mix freely: an integer meeting a decimal is treated as a decimal (BigQuery counts are integers, amounts decimals);
+dividing two whole numbers gives a whole number, as in CEL. The step returns `items`, `notes` and what it saved.
 
 **Try it** runs a JavaScript step on sample inputs in the editor, or on the inputs it had in the latest run. A thrown
 error, a timeout or a missing return field fails the step and says why.
@@ -101,7 +122,7 @@ the shape; a step's **Takes** are picked references to earlier outputs, never ty
 
 ```
 read_invoice.invoice.po_number        an earlier step's field
-tidy_up.trips[*].bookings             every item's field, flattened into one list
+group_trips.trips[*].bookings         every item's field, flattened into one list
 run.dry_run · trigger.sender_domain   a run option · the email that started the run
 [a.x, b.x]  ·  a.x?                   any of these · optional
 ```
@@ -194,7 +215,7 @@ plus a **limits spec** (one entry per connection use). The compiled YAML is one 
 | Act | a `script` or `mcp` step calling the connector gateway |
 | Branch, by rules | an `mcp` step on the CEL evaluator, with `routes:` on its results |
 | Branch, by a model | an `agent` step whose output is `{path, reason, evidence, confidence, runner_up}`, routed on `output.path`; hard rules and recall run before it |
-| Parallel, together | a `parallel:` group, then a step that records each answer for the run log |
+| Parallel, together | a `parallel:` group (a Built-in member becomes a call to the step library's MCP server, `agent-service-steps --mcp`), then a step that records each Ask answer for the run log |
 | Parallel, for each item | a `for_each` group running a per-item workflow (`<id>.item.yaml`, written next to `workflow.yaml`), in which Branches route as usual; then a step that collects every item's results |
 | Free-form | a planner `agent` routing to each inner step once its inputs exist, each routing back; `parallel:` groups for rows that run together; "Before finishing" checked by the CEL evaluator |
 
@@ -203,7 +224,7 @@ Every `command:` in a compiled workflow is one of the service's own programs:
 | Program | What it is |
 |---|---|
 | `agent-service-gateway` | The connector gateway's stdio shim. Every limit comes from the signed token; every call is checked and logged. Serves sample data for test runs; forwards to the real system (Gmail, GitHub, BigQuery, MCP servers) for runs on real accounts |
-| `agent-service-steps` | The Built-in step library: `tidy`, `lookup`, `filter-rows`, `compare`, `three-way-match`, `javascript`, `bigquery`, the Act operations, memory recall and the Parallel item and collect steps |
+| `agent-service-steps` | The Built-in step library: the CEL operators (`cel`), `javascript`, `bigquery`, `chart`, `lookup`, `filter-rows`, `compare`, `three-way-match`, the Act operations, memory recall and the Parallel item and collect steps (`tidy` stays for agent versions published before it was retired) |
 | `agent-service-cel` | The CEL evaluator (MCP). Returns `passed`, `failed`, `results` and `error`; on an error the run stops and names the rule, rather than guess |
 | `agent-service-replay` | For tests: stands in for model steps and approvals with scripted answers |
 
@@ -217,8 +238,10 @@ What compiling to Conductor taught us:
   a focus would drop what it found first. A Free-form block's `collect` keeps running lists.
 - **Group members can't route.** Conductor won't put routes on a parallel group's members, so inside Free-form each
   member runs as a route-less copy (`read_airline__together`).
-- **Only model, `set` and MCP steps run in a group.** That's why a *together* Parallel block holds Ask steps only, and
-  why *for each item* compiles its steps to a per-item workflow instead.
+- **Only model, `set` and MCP steps run in a group.** So a Built-in step in a *together* block runs as an MCP call on
+  the step library's own server (one per step, carrying its signed limits), and *for each item* compiles its steps to
+  a per-item workflow. A tool error comes back as a result Conductor counts as success, so with "stop" the step after
+  the group checks each Built-in member and stops the run, naming the step.
 - **Portable CEL.** A step that hasn't run is absent from the rules' data and tested with `has(steps.<id>)`, which
   every CEL implementation supports.
 - **Rules must cover every outcome.** An early replay let the planner finish as "amounts differ" without running the
@@ -257,10 +280,44 @@ Connections have three layers:
 
 | Connector | What steps can do |
 |---|---|
-| **Google Workspace** | Gmail: search and open (real mail after an admin sets up the OAuth client and a builder signs in). Sheets and Calendar use sample data for now |
+| **Google Workspace** | Gmail: search and open, and send (Act steps, only to the recipients each step names; test and dry runs fill the run's outbox instead). Real mail after an admin sets up the OAuth client and a builder signs in, granted only the scopes its permissions need. Sheets and Calendar use sample data for now |
 | **GitHub** | Read only: search issues and pull requests, open one with its comments, read files, in the repositories each step names. Real runs use a fine-grained read-only token |
 | **BigQuery** | Built-in "BigQuery query" (fixed SQL with `@parameters`), `run_query` / `list_tables` / `get_schema` for Ask steps, append-only inserts for Act steps. A dry run first checks every query: a single SELECT, only the step's data, under its byte cap and within the monthly budget. Test runs query sample tables in DuckDB |
 | **Any MCP server** | A remote URL or a local command, signing in with OAuth, a bearer token, a header or nothing. Each tool is marked read, act or not offered, with argument limits; approved tools are pinned |
+
+## ETL pipelines
+
+The orchestrator sits after the load: it doesn't move data, it judges it. Looker or a scheduled query can already send a
+dashboard when tables change; an agent adds the decisions in between: did the load pass, is anything worth saying,
+what does it mean, and should a person read it before it goes out.
+
+**Starting when a load finishes.** A trigger can be a **Pub/Sub subscription**. The ETL (Airflow, Composer, Dataform,
+a scheduled query) publishes a message when it finishes; the service pulls from the subscription with a BigQuery
+connector's Google Cloud credentials (they need Pub/Sub Subscriber on it), and each message runs the agent's *published*
+version on real accounts. The trigger declares the message's fields (from its JSON data, then its attributes), so steps
+use them as `trigger.<field>`, plus `trigger.message_id` and `trigger.published_at`. An optional CEL filter (`when`)
+skips messages that aren't for it. Delivery is at least once, so a message id already seen is skipped; every message is
+acknowledged once handled, and logged (started, skipped, duplicate, failed) on the trigger's panel, where it can be
+paused. Test runs use the trigger's sample message, or one you paste.
+
+**sales-load-check** (`examples/bigquery-sales/`) is the pattern:
+
+1. Three **BigQuery queries** read the loaded tables (monthly trend, revenue by region, by product) **together**, in a
+   Parallel block that keeps going if one fails: a table that can't be read becomes a failed check, not a crashed run.
+2. A **JavaScript** step runs the quality checks (rows present, no missing values, no duplicate keys, no negative
+   revenue, no missing months, average order values add up, revenue and orders reconcile across the three tables) and
+   computes the KPIs (latest month against the prior and a typical month, months past the drop threshold, mix).
+3. If a check fails, an **Act** step emails the data team the failures (checked values only, so no approval) and a
+   **Branch** ends the run.
+4. Otherwise a **model-decided Branch** with memory asks whether anything moved enough to tell sales leadership.
+5. If so, two **Chart** steps draw monthly revenue (months past the threshold in red, a dashed line at a typical month)
+   and revenue by region; an **Ask** step writes a short report from the KPIs; a person **approves** it, seeing the
+   charts; and an Act step emails it with the charts inline, the Looker dashboard's link (a run option) and the load id.
+
+A **Chart** is a Built-in step: bars or a line over a list of rows, with an optional CEL highlight rule and a dashed
+reference line, rendered to a PNG with Vega-Lite (`vl-convert-python`, no browser). No model draws it, so the same
+rows always make the same picture. Its `image` can go in an email (`send_email.charts`, sent as HTML with the images
+inline and a plain-text alternative), and an approver sees every chart the run has drawn.
 
 ## Debugging and testing
 
@@ -315,7 +372,7 @@ familiar ground.
 
 Not built yet:
 
-- Schedules and email triggers that fire on their own
+- Schedules and email triggers that fire on their own (Pub/Sub triggers do)
 - Notifications for approvals
 - The state checkpoint
 - Free-form code execution

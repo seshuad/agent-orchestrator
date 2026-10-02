@@ -168,7 +168,7 @@ export function TakesEditor({ fixed, allowAdd = true }: { fixed?: string[]; allo
 }
 
 /** Which connection a step uses, which of its actions, and the limits the gateway enforces. */
-export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos' | 'datasets' | 'max_bytes' | 'max_rows' | 'tables')[]; mcpTools?: McpTool[] }) {
+export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string[]; limits?: ('senders' | 'lookback_days' | 'only_message' | 'from_domain' | 'only_cited_by' | 'sheets' | 'calendar' | 'repos' | 'datasets' | 'max_bytes' | 'max_rows' | 'tables' | 'recipients')[]; mcpTools?: McpTool[] }) {
   const { step, set, draft, p, block } = useStep()
   const uses: Json | undefined = step.uses
   const conns = Object.keys(draft.connections ?? {})
@@ -183,7 +183,7 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
   }
   const setU = (k: string, v: unknown) => set(['uses'], { ...uses, [k]: v === '' || (Array.isArray(v) && !v.length && k !== 'actions') ? undefined : v })
   const service = draft.connections?.[uses.connection]?.service
-  const actionLabel = (a: string) => service === 'bigquery' ? ({ query: 'run read queries (SELECT)', list_tables: 'list tables', get_schema: 'read table schemas', insert_rows: 'insert rows' } as Record<string, string>)[a] ?? a : service === 'mcp' ? `${a}${mcpTools?.find((t) => t.name === a)?.description ? ': ' + mcpTools.find((t) => t.name === a)!.description : ''}` : service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : a.replace('_', ' ')
+  const actionLabel = (a: string) => service === 'bigquery' ? ({ query: 'run read queries (SELECT)', list_tables: 'list tables', get_schema: 'read table schemas', insert_rows: 'insert rows' } as Record<string, string>)[a] ?? a : service === 'mcp' ? `${a}${mcpTools?.find((t) => t.name === a)?.description ? ': ' + mcpTools.find((t) => t.name === a)!.description : ''}` : service === 'github' ? ({ search: 'search issues and pull requests', open: 'open one, with comments', read: 'read files' } as Record<string, string>)[a] ?? a : service === 'gmail' && a === 'send' ? 'send email' : a.replace('_', ' ')
   const stepIds = (block?.steps ?? []).map((s: Json) => s.id).filter((id: string) => id !== step.id)
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -223,6 +223,8 @@ export function UsesEditor({ actions, limits = [], mcpTools }: { actions: string
           {limits.includes('datasets') && <span className="row"><span className="muted">May read</span><Chips values={uses.datasets ?? []} onChange={(v) => setU('datasets', v)} placeholder="dataset, project.dataset or a table (all the connector allows if none)" /></span>}
           {limits.includes('tables') && <span className="row"><span className="muted">May insert into</span><Chips values={uses.tables ?? []} onChange={(v) => setU('tables', v)} placeholder="project.dataset.table" /></span>}
           {limits.includes('max_bytes') && <span className="row"><span className="muted">At most</span><Text width={80} value={uses.max_bytes ?? ''} onChange={(v) => setU('max_bytes', v)} label="Max bytes" placeholder="1GB" /><span className="muted">scanned per query</span></span>}
+          {limits.includes('recipients') && <span className="row"><span className="muted">May send to</span><Chips values={uses.recipients ?? []} onChange={(v) => setU('recipients', v)} placeholder="name@company.com or @company.com" /></span>}
+          {limits.includes('recipients') && <span className="row"><span className="muted">At most</span><Text width={50} value={uses.max_emails ?? ''} onChange={(v) => setU('max_emails', v ? Number(v) : '')} label="Max emails" placeholder="20" /><span className="muted">emails per run</span></span>}
           {limits.includes('max_rows') && <span className="row"><span className="muted">At most</span><Text width={70} value={uses.max_rows ?? ''} onChange={(v) => setU('max_rows', v ? Number(v) : '')} label="Max rows" placeholder="1000" /><span className="muted">rows back per query</span></span>}
         </div>
       )}

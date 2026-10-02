@@ -74,6 +74,24 @@ def _warehouse(account_id: str | None, accounts: dict[str, dict[str, Any]], conn
     return up, round(left, 4)
 
 
+def message_inputs(agent: Agent, message: dict[str, Any] | None) -> dict[str, str]:
+    """A Pub/Sub message as run inputs: its id, when it was published, and each field the trigger declares (from the
+    message's JSON data, else its attributes). A test run without a message uses the trigger's sample."""
+    if message is None:
+        message = {"message_id": "sample", "published_at": "", "fields": dict(agent.trigger.sample or {})}
+    fields = message.get("fields") or {}
+    out = {"message_id": str(message.get("message_id") or ""), "published_at": str(message.get("published_at") or "")}
+    for name, fd in (agent.trigger.message or {}).items():
+        value = fields.get(name)
+        if value is None:
+            continue
+        if fd.type == "yes/no":
+            out[name] = "true" if value in (True, "true", "True", "1", 1) else "false"
+        else:
+            out[name] = str(value)
+    return out
+
+
 def month_spend(connector_id: str, runs_root: Path) -> float:
     """What a BigQuery connector's queries cost this calendar month, from every run's gateway log."""
     from .runtime.bigquery_api import cost_of
@@ -131,7 +149,7 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             run_id: str | None = None, vault: Path | None = None, trigger_email: dict[str, Any] | None = None,
             live: bool | None = None, accounts: dict[str, dict[str, Any]] | None = None,
             connectors: dict[str, dict[str, Any]] | None = None, transform: Any = None,
-            memory: list[dict[str, Any]] | None = None) -> Prepared:
+            memory: list[dict[str, Any]] | None = None, trigger_message: dict[str, Any] | None = None) -> Prepared:
     """With `live` (default: when there's a `vault`), Gmail and GitHub steps use the real accounts their connections
     name; the rest stay on sample data. MCP steps always use the real system: `accounts` and `connectors` say which
     server, how it signs in and which tools its admin approved, and all of that goes into the signed limits token.
@@ -159,6 +177,8 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
         inputs["email_id"] = email_id
         inputs["sender_domain"] = email["from"].rsplit("@", 1)[-1].strip(" >").lower()
 
+    if agent.trigger.kind == "pubsub":
+        inputs.update(message_inputs(agent, trigger_message))
     key = secrets.token_hex(32)
     env = {**os.environ, "AGENT_SERVICE_RUN_DIR": str(run_dir), "AGENT_SERVICE_SAMPLE_DATA": str(sample_data.resolve()),
            "AGENT_SERVICE_SIGNING_KEY": key}

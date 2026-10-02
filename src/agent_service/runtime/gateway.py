@@ -25,6 +25,7 @@ from .limits import LimitsError, verify
 from .runstate import log_call, step_output
 
 TOKEN_ENV = "AGENT_SERVICE_LIMITS_TOKEN"
+EMAIL = __import__("re").compile(r"[^@\s,<>]+@[^@\s,<>]+\.[^@\s,<>]+")
 
 
 class Refused(Exception):
@@ -50,7 +51,8 @@ def _cited(step: str, field: str) -> set[str]:
 
 
 class Gmail:
-    """Read-only mail. There is no send, delete or label action to grant.
+    """Mail: search and open for Ask steps; send, for Act steps, only to the recipients the step names. There is no
+    delete, label or forward action to grant.
 
     The limits token says where the mail comes from: the sample mailbox, or (source "live") the real
     account of the workspace connection it names. The scope checks below are the same for both."""
@@ -87,6 +89,42 @@ class Gmail:
             domains = [self.limits["from_domain"]]
         hits = self.box.search(domains, keywords, self.limits.get("lookback_days"))
         return [e for e in hits if self._in_scope(e)]
+
+    def send(self, to: list[str], subject: str, body: str, cc: list[str] | None = None, images: list[str] | None = None,
+             dry_run: bool = False) -> dict[str, Any]:
+        """One email, to recipients within the step's list, at most max_emails per run. Every email (sent, or that a dry
+        run or test run would send) goes in the run's outbox. Only a live, non-dry run reaches Gmail."""
+        self._allowed("send")
+        everyone = [a.strip() for a in [*to, *(cc or [])] if a and a.strip()]
+        if not to or not everyone:
+            raise Refused("An email needs at least one recipient.")
+        allowed = [r.strip().lower() for r in self.limits.get("recipients") or []]
+        for address in everyone:
+            if not EMAIL.fullmatch(address):
+                raise Refused(f"{address!r} isn't an email address.")
+            domain = address.lower().rsplit("@", 1)[1]
+            if not any(address.lower() == r or r.lstrip("@") == domain for r in allowed):
+                raise Refused(f"This step may not send email to {address}: only to {', '.join(allowed) or 'nobody'}.")
+        from .runstate import run_dir
+        charts = (run_dir() / "charts").resolve()
+        files = []
+        for image in images or []:                   # only charts this run drew: never another file
+            path = (run_dir() / image).resolve()
+            if path.parent != charts or path.suffix != ".png" or not path.exists():
+                raise Refused(f"{image!r} isn't a chart this run drew.")
+            files.append(path)
+        outbox = sampledata.outbox()
+        sent = [m for m in outbox if m.get("status") == "sent"]
+        if not dry_run and len(sent) >= int(self.limits.get("max_emails") or 20):
+            raise Refused(f"This run has already sent {len(sent)} emails, its limit.")
+        live = self.limits.get("source") == "live"
+        status = "would send" if dry_run else "sent" if live else "sent (test run: not delivered)"
+        message = {"to": to, "cc": cc or [], "subject": subject, "body": body, "images": list(images or []),
+                   "status": "sent" if (live and not dry_run) else status}
+        if live and not dry_run:
+            message["gmail_id"] = self.box.send(to, cc or [], subject, body, files)
+        sampledata.add_to_outbox(message)
+        return {**message, "status": status}
 
     def open(self, message_id: str) -> dict[str, Any]:
         self._allowed("open")

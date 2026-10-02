@@ -2,8 +2,8 @@
 
 The OAuth client belongs to the Google Workspace connector: its admin enters the client ID and secret
 under Connections → Connectors (a client file from before connectors is imported once). Google sends
-the browser back to the designer's own root URL with ?code=…&state=…. Only Gmail read-only is
-requested for now.
+the browser back to the designer's own root URL with ?code=…&state=…. Gmail asks only for what the
+account's permissions need: reading, sending, or both.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import vault
-from ..runtime.gmail_api import SCOPES as GMAIL_SCOPES
+from ..runtime.gmail_api import SCOPES as GMAIL_SCOPES, scopes_for
 
 SCOPES = {"gmail": GMAIL_SCOPES}          # services that can be signed in for real so far
 
@@ -66,7 +66,8 @@ class Pending:
             raise ValueError(f"{connection['service']} can't be signed in for real yet; only Gmail can.")
         if config is None:
             raise ValueError("The Google Workspace connector has no OAuth client yet. An admin sets it up under Connections → Connectors.")
-        flow = Flow.from_client_config(config, scopes=SCOPES[connection["service"]], redirect_uri=origin.rstrip("/") + "/")
+        scopes = scopes_for(connection.get("permissions") or ["read"]) if connection["service"] == "gmail" else SCOPES[connection["service"]]
+        flow = Flow.from_client_config(config, scopes=scopes, redirect_uri=origin.rstrip("/") + "/")
         state = secrets.token_urlsafe(24)
         url, _ = flow.authorization_url(access_type="offline", prompt="consent", state=state, login_hint=connection.get("account"),
                                         include_granted_scopes="false")
@@ -84,4 +85,7 @@ class Pending:
         flow.fetch_token(code=code)
         vault.save(connection_id, json.loads(flow.credentials.to_json()), vault_dir)
         os.environ["AGENT_SERVICE_VAULT"] = str(vault_dir)        # LiveGmail reads the token from the vault
-        return connection_id, LiveGmail(connection_id).profile()
+        try:
+            return connection_id, LiveGmail(connection_id).profile()
+        except Exception:                        # a send-only account can't read its own profile
+            return connection_id, ""

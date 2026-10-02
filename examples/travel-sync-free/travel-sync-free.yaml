@@ -375,27 +375,22 @@ agents:
   type: terminate
   status: failed
   reason: A step failed, so the run stopped rather than carry on without its result.
-- name: tidy_up
-  description: Tidy up
+- name: group_trips
+  description: Group into trips
   type: script
   command: agent-service-steps
   args:
-  - tidy
+  - javascript
   - --step
-  - tidy_up
-  - --operations
-  - '[{"op": "check", "record": "Booking", "required": ["type", "provider", "confirmation", "travelers", "start",
-    "end", "destination", "source_email", "confidence"], "timestamps": ["start", "end"]}, {"op": "remove_duplicates",
-    "identity": "b.type + '':'' + norm(b.confirmation) + '':'' + (b.flight_number != null ? norm(b.flight_number)
-    : date_of(b.start))", "keep_highest": "b.confidence == ''high'' ? 3 : (b.confidence == ''medium'' ? 2 : 1)"},
-    {"op": "filter", "keep": "b.end > run.started"}, {"op": "group", "into": "Trip", "together": "a.confirmation
-    == b.confirmation || b.start - a.end <= duration(''24h'')"}, {"op": "flag", "rules": [{"when": "size(trip.bookings.filter(b,
-    b.type == ''flight'')) == 1", "note": "Only one flight found; no return flight in email."}, {"when": "trip.bookings.exists(b,
-    !b.travelers.exists(t, is_me(t, run.my_name)))", "note": "Someone else''s trip?"}]}]'
+  - group_trips
+  - --code-b64
+  - Ly8gQm9va2luZ3MgZnJvbSB0aGUgcmVhZGVycyAtPiB1cGNvbWluZyB0cmlwcy4gSW4gb3JkZXI6IGRyb3AgaW5jb21wbGV0ZSBib29raW5ncywgcmVtb3ZlIGR1cGxpY2F0ZXMgKGtlZXBpbmcgdGhlIG1vc3QKLy8gY29uZmlkZW50KSwga2VlcCBib29raW5ncyB0aGF0IGhhdmVuJ3QgZW5kZWQsIGdyb3VwIGJvb2tpbmdzIGludG8gdHJpcHMsIGFuZCBmbGFnIHRyaXBzIGEgcGVyc29uIHNob3VsZCBsb29rIGF0Lgpjb25zdCBub3RlcyA9IFtdOwpjb25zdCBEQVkgPSAyNCAqIDYwICogNjAgKiAxMDAwOwpjb25zdCB0aW1lID0gKHMpID0+IG5ldyBEYXRlKHMpLmdldFRpbWUoKTsKY29uc3Qgbm9ybSA9IChzKSA9PiBTdHJpbmcocyA/PyAnJykucmVwbGFjZSgvW1xzLV0vZywgJycpLnRvVXBwZXJDYXNlKCk7ICAgICAgLy8gVUEgMTUyMywgdWExNTIzLCBVQS0xNTIzOiB0aGUgc2FtZQoKLy8gMS4gQ29tcGxldGUgYm9va2luZ3Mgb25seTogZXZlcnkgcmVxdWlyZWQgZmllbGQsIGFuZCB0aW1lcyB3aXRoIGEgdGltZSB6b25lLgpjb25zdCBSRVFVSVJFRCA9IFsndHlwZScsICdwcm92aWRlcicsICdjb25maXJtYXRpb24nLCAndHJhdmVsZXJzJywgJ3N0YXJ0JywgJ2VuZCcsICdkZXN0aW5hdGlvbicsICdzb3VyY2VfZW1haWwnLCAnY29uZmlkZW5jZSddOwpjb25zdCBXSVRIX1pPTkUgPSAvXlxkezR9LVxkezJ9LVxkezJ9VFxkezJ9OlxkezJ9KDpcZHsyfSk/KFsrLV1cZHsyfTpcZHsyfXxaKSQvOwpjb25zdCBjb21wbGV0ZSA9IFtdOwpmb3IgKGNvbnN0IGIgb2YgaW5wdXRzLnJlY29yZHMgPz8gW10pIHsKICBjb25zdCBwcm9ibGVtcyA9IFJFUVVJUkVELmZpbHRlcigoZikgPT4gYltmXSA9PSBudWxsIHx8IGJbZl0gPT09ICcnIHx8IChBcnJheS5pc0FycmF5KGJbZl0pICYmICFiW2ZdLmxlbmd0aCkpLm1hcCgoZikgPT4gYCR7Zn0gbWlzc2luZ2ApCiAgICAuY29uY2F0KFsnc3RhcnQnLCAnZW5kJ10uZmlsdGVyKChmKSA9PiAhKHR5cGVvZiBiW2ZdID09PSAnc3RyaW5nJyAmJiBXSVRIX1pPTkUudGVzdChiW2ZdKSkpLm1hcCgoZikgPT4gYCR7Zn0gaGFzIG5vIHRpbWUgem9uZWApKTsKICBpZiAocHJvYmxlbXMubGVuZ3RoKSBub3Rlcy5wdXNoKGBEcm9wcGVkIGEgYm9va2luZyBmcm9tICR7Yi5zb3VyY2VfZW1haWwgfHwgJ2FuIGVtYWlsJ306ICR7cHJvYmxlbXMuam9pbignLCAnKX1gKTsKICBlbHNlIGNvbXBsZXRlLnB1c2goYik7Cn0KCi8vIDIuIE9uZSBib29raW5nIHBlciBrZXkgKHR5cGUsIGNvbmZpcm1hdGlvbiwgYW5kIHRoZSBmbGlnaHQgbnVtYmVyIG9yIHRoZSBkYXkgaXQgc3RhcnRzKSwgdGhlIG1vc3QgY29uZmlkZW50IG9uZS4KY29uc3QgcmFuayA9IHsgaGlnaDogMywgbWVkaXVtOiAyIH07CmNvbnN0IGJlc3QgPSBuZXcgTWFwKCk7CmZvciAoY29uc3QgYiBvZiBjb21wbGV0ZSkgewogIGNvbnN0IGtleSA9IGAke2IudHlwZX06JHtub3JtKGIuY29uZmlybWF0aW9uKX06JHtiLmZsaWdodF9udW1iZXIgIT0gbnVsbCA/IG5vcm0oYi5mbGlnaHRfbnVtYmVyKSA6IFN0cmluZyhiLnN0YXJ0KS5zbGljZSgwLCAxMCl9YDsKICBjb25zdCBzY29yZSA9IHJhbmtbYi5jb25maWRlbmNlXSA/PyAxOwogIGlmICghYmVzdC5oYXMoa2V5KSB8fCBzY29yZSA+IGJlc3QuZ2V0KGtleSkuc2NvcmUpIGJlc3Quc2V0KGtleSwgeyBzY29yZSwgYm9va2luZzogeyAuLi5iLCBrZXkgfSB9KTsKfQppZiAoYmVzdC5zaXplIDwgY29tcGxldGUubGVuZ3RoKSBub3Rlcy5wdXNoKGBSZW1vdmVkICR7Y29tcGxldGUubGVuZ3RoIC0gYmVzdC5zaXplfSBkdXBsaWNhdGUocykuYCk7CgovLyAzLiBPbmx5IGJvb2tpbmdzIHRoYXQgaGF2ZW4ndCBlbmRlZC4KY29uc3Qgbm93ID0gaW5wdXRzLnN0YXJ0ZWQgPyB0aW1lKGlucHV0cy5zdGFydGVkKSA6IERhdGUubm93KCk7CmNvbnN0IGFsbCA9IFsuLi5iZXN0LnZhbHVlcygpXS5tYXAoKHgpID0+IHguYm9va2luZyk7CmNvbnN0IHVwY29taW5nID0gYWxsLmZpbHRlcigoYikgPT4gdGltZShiLmVuZCkgPiBub3cpOwppZiAodXBjb21pbmcubGVuZ3RoIDwgYWxsLmxlbmd0aCkgbm90ZXMucHVzaChgTGVmdCBvdXQgJHthbGwubGVuZ3RoIC0gdXBjb21pbmcubGVuZ3RofSBib29raW5nKHMpIHRoYXQgaGF2ZSBhbHJlYWR5IGVuZGVkLmApOwoKLy8gNC4gVHJpcHM6IGJvb2tpbmdzIGpvaW4gd2hlbiB0aGV5IHNoYXJlIGEgY29uZmlybWF0aW9uLCBvciBvbmUgc3RhcnRzIHdpdGhpbiBhIGRheSBvZiBhbiBlYXJsaWVyIG9uZSBlbmRpbmcuCmNvbnN0IHNvcnRlZCA9IHVwY29taW5nLnNsaWNlKCkuc29ydCgoYSwgYikgPT4gdGltZShhLnN0YXJ0KSAtIHRpbWUoYi5zdGFydCkpOwpjb25zdCBwYXJlbnQgPSBzb3J0ZWQubWFwKChfLCBpKSA9PiBpKTsKY29uc3QgZmluZCA9IChpKSA9PiB7IHdoaWxlIChwYXJlbnRbaV0gIT09IGkpIHsgcGFyZW50W2ldID0gcGFyZW50W3BhcmVudFtpXV07IGkgPSBwYXJlbnRbaV07IH0gcmV0dXJuIGk7IH07CmZvciAobGV0IGogPSAwOyBqIDwgc29ydGVkLmxlbmd0aDsgaisrKSB7CiAgZm9yIChsZXQgaSA9IDA7IGkgPCBqOyBpKyspIHsKICAgIGNvbnN0IGEgPSBzb3J0ZWRbaV0sIGIgPSBzb3J0ZWRbal07CiAgICBpZiAoZmluZChpKSAhPT0gZmluZChqKSAmJiAoYS5jb25maXJtYXRpb24gPT09IGIuY29uZmlybWF0aW9uIHx8IHRpbWUoYi5zdGFydCkgLSB0aW1lKGEuZW5kKSA8PSBEQVkpKSBwYXJlbnRbZmluZChqKV0gPSBmaW5kKGkpOwogIH0KfQpjb25zdCBncm91cHMgPSBuZXcgTWFwKCk7CnNvcnRlZC5mb3JFYWNoKChiLCBpKSA9PiB7IGNvbnN0IHIgPSBmaW5kKGkpOyBncm91cHMuc2V0KHIsIFsuLi4oZ3JvdXBzLmdldChyKSA/PyBbXSksIGJdKTsgfSk7CgovLyA1LiBGbGFncyBhIHBlcnNvbiBzaG91bGQgbG9vayBhdCBiZWZvcmUgYXBwcm92aW5nLgpjb25zdCB0b2tlbnMgPSAocykgPT4gbmV3IFNldChTdHJpbmcocykudG9Mb3dlckNhc2UoKS5zcGxpdCgvW1xzLyxdKy8pLmZpbHRlcihCb29sZWFuKSk7CmNvbnN0IGlzTWUgPSAodHJhdmVsZXIpID0+IHsKICBjb25zdCB3YW50ZWQgPSB0b2tlbnMoaW5wdXRzLm15X25hbWUgPz8gJycpLCBnb3QgPSB0b2tlbnModHJhdmVsZXIpOwogIGNvbnN0IHNoYXJlZCA9IFsuLi53YW50ZWRdLmZpbHRlcigodCkgPT4gZ290Lmhhcyh0KSkubGVuZ3RoOwogIHJldHVybiBzaGFyZWQgPj0gMiB8fCAod2FudGVkLnNpemUgPT09IDEgJiYgc2hhcmVkID09PSAxKTsKfTsKY29uc3QgdHJpcHMgPSBbLi4uZ3JvdXBzLnZhbHVlcygpXS5tYXAoKG1lbWJlcnMpID0+IHsKICBjb25zdCBmbGlnaHRzID0gbWVtYmVycy5maWx0ZXIoKGIpID0+IGIudHlwZSA9PT0gJ2ZsaWdodCcpOwogIGNvbnN0IGZsYWdzID0gW107CiAgaWYgKGZsaWdodHMubGVuZ3RoID09PSAxKSBmbGFncy5wdXNoKCdPbmx5IG9uZSBmbGlnaHQgZm91bmQ7IG5vIHJldHVybiBmbGlnaHQgaW4gZW1haWwuJyk7CiAgaWYgKG1lbWJlcnMuc29tZSgoYikgPT4gIShiLnRyYXZlbGVycyA/PyBbXSkuc29tZShpc01lKSkpIGZsYWdzLnB1c2goIlNvbWVvbmUgZWxzZSdzIHRyaXA/Iik7CiAgcmV0dXJuIHsKICAgIHRyaXBfaWQ6IHNoYTEoWy4uLm1lbWJlcnMubWFwKChiKSA9PiBiLmtleSldLnNvcnQoKVswXSkuc2xpY2UoMCwgMTApLCAgIC8vIGZyb20gYSBzdGFibGUga2V5LCBub3QgdGV4dCBhIG1vZGVsIHdyb3RlCiAgICBkZXN0aW5hdGlvbjogKGZsaWdodHNbMF0gPz8gbWVtYmVyc1swXSkuZGVzdGluYXRpb24sCiAgICBzdGFydDogbWVtYmVycy5yZWR1Y2UoKG0sIGIpID0+ICh0aW1lKGIuc3RhcnQpIDwgdGltZShtKSA/IGIuc3RhcnQgOiBtKSwgbWVtYmVyc1swXS5zdGFydCksCiAgICBlbmQ6IG1lbWJlcnMucmVkdWNlKChtLCBiKSA9PiAodGltZShiLmVuZCkgPiB0aW1lKG0pID8gYi5lbmQgOiBtKSwgbWVtYmVyc1swXS5lbmQpLAogICAgYm9va2luZ3M6IG1lbWJlcnMsCiAgICBmbGFncywKICB9Owp9KS5zb3J0KChhLCBiKSA9PiB0aW1lKGEuc3RhcnQpIC0gdGltZShiLnN0YXJ0KSk7CnJldHVybiB7IHRyaXBzLCBub3RlcyB9OwoKZnVuY3Rpb24gc2hhMSh0ZXh0KSB7CiAgY29uc3QgYnl0ZXMgPSBbXTsKICBmb3IgKGNvbnN0IGNoIG9mIHVuZXNjYXBlKGVuY29kZVVSSUNvbXBvbmVudCh0ZXh0KSkpIGJ5dGVzLnB1c2goY2guY2hhckNvZGVBdCgwKSk7CiAgY29uc3QgYml0cyA9IGJ5dGVzLmxlbmd0aCAqIDg7CiAgYnl0ZXMucHVzaCgweDgwKTsKICB3aGlsZSAoYnl0ZXMubGVuZ3RoICUgNjQgIT09IDU2KSBieXRlcy5wdXNoKDApOwogIGZvciAobGV0IGkgPSA3OyBpID49IDA7IGktLSkgYnl0ZXMucHVzaChpID4gMyA/IDAgOiAoYml0cyA+Pj4gKGkgKiA4KSkgJiAweGZmKTsKICBsZXQgW2gwLCBoMSwgaDIsIGgzLCBoNF0gPSBbMHg2NzQ1MjMwMSwgMHhlZmNkYWI4OSwgMHg5OGJhZGNmZSwgMHgxMDMyNTQ3NiwgMHhjM2QyZTFmMF07CiAgY29uc3Qgcm90bCA9ICh4LCBuKSA9PiAoeCA8PCBuKSB8ICh4ID4+PiAoMzIgLSBuKSk7CiAgZm9yIChsZXQgb2ZmID0gMDsgb2ZmIDwgYnl0ZXMubGVuZ3RoOyBvZmYgKz0gNjQpIHsKICAgIGNvbnN0IHcgPSBbXTsKICAgIGZvciAobGV0IGkgPSAwOyBpIDwgMTY7IGkrKykgd1tpXSA9IChieXRlc1tvZmYgKyA0ICogaV0gPDwgMjQpIHwgKGJ5dGVzW29mZiArIDQgKiBpICsgMV0gPDwgMTYpIHwgKGJ5dGVzW29mZiArIDQgKiBpICsgMl0gPDwgOCkgfCBieXRlc1tvZmYgKyA0ICogaSArIDNdOwogICAgZm9yIChsZXQgaSA9IDE2OyBpIDwgODA7IGkrKykgd1tpXSA9IHJvdGwod1tpIC0gM10gXiB3W2kgLSA4XSBeIHdbaSAtIDE0XSBeIHdbaSAtIDE2XSwgMSk7CiAgICBsZXQgW2EsIGIsIGMsIGQsIGVdID0gW2gwLCBoMSwgaDIsIGgzLCBoNF07CiAgICBmb3IgKGxldCBpID0gMDsgaSA8IDgwOyBpKyspIHsKICAgICAgY29uc3QgW2YsIGtdID0gaSA8IDIwID8gWyhiICYgYykgfCAofmIgJiBkKSwgMHg1YTgyNzk5OV0gOiBpIDwgNDAgPyBbYiBeIGMgXiBkLCAweDZlZDllYmExXQogICAgICAgIDogaSA8IDYwID8gWyhiICYgYykgfCAoYiAmIGQpIHwgKGMgJiBkKSwgMHg4ZjFiYmNkY10gOiBbYiBeIGMgXiBkLCAweGNhNjJjMWQ2XTsKICAgICAgY29uc3QgdCA9IChyb3RsKGEsIDUpICsgZiArIGUgKyBrICsgd1tpXSkgfCAwOwogICAgICBbZSwgZCwgYywgYiwgYV0gPSBbZCwgYywgcm90bChiLCAzMCksIGEsIHRdOwogICAgfQogICAgW2gwLCBoMSwgaDIsIGgzLCBoNF0gPSBbKGgwICsgYSkgfCAwLCAoaDEgKyBiKSB8IDAsIChoMiArIGMpIHwgMCwgKGgzICsgZCkgfCAwLCAoaDQgKyBlKSB8IDBdOwogIH0KICByZXR1cm4gW2gwLCBoMSwgaDIsIGgzLCBoNF0ubWFwKChoKSA9PiAoaCA+Pj4gMCkudG9TdHJpbmcoMTYpLnBhZFN0YXJ0KDgsICcwJykpLmpvaW4oJycpOwp9Cg==
+  - --returns
+  - trips,notes
   input:
   - collect.output?
-  stdin: '{{ {"records": ((((collect.output if collect is defined else none) or {}).get(''bookings'')) or []), "run":
-    {"dry_run": workflow.input.dry_run, "my_name": workflow.input.my_name}} | tojson }}'
+  stdin: '{{ {"records": (((collect.output if collect is defined else none) or {}).get(''bookings'')), "my_name":
+    workflow.input.my_name, "started": workflow.input.started} | tojson }}'
   routes:
   - to: stop_step_failed
     when: '{{ output.exit_code is defined and output.exit_code != 0 }}'
@@ -406,8 +401,8 @@ agents:
   tools:
   - gmail-double-check__read_email
   input:
+  - group_trips.output?
   - plan.output?
-  - tidy_up.output?
   system_prompt: |-
     For each booking whose key is listed, open its source email and compare every field: dates, times and time zones, flight number, confirmation and travelers. Don't trust the extracted values.
 
@@ -415,7 +410,7 @@ agents:
   prompt: |
     Check the bookings whose keys are listed.
 
-    {% if (((((tidy_up.output if tidy_up is defined else none) or {}).get('trips')) or []) | map(attribute='bookings') | sum(start=[])) not in [none, '', []] %}bookings: {{ (((((tidy_up.output if tidy_up is defined else none) or {}).get('trips')) or []) | map(attribute='bookings') | sum(start=[])) | tojson }}{% endif %}
+    {% if (((((group_trips.output if group_trips is defined else none) or {}).get('trips')) or []) | map(attribute='bookings') | sum(start=[])) not in [none, '', []] %}bookings: {{ (((((group_trips.output if group_trips is defined else none) or {}).get('trips')) or []) | map(attribute='bookings') | sum(start=[])) | tojson }}{% endif %}
     {% if (((plan.output if plan is defined else none) or {}).get('verify_keys')) not in [none, '', []] %}keys: {{ (((plan.output if plan is defined else none) or {}).get('verify_keys')) | tojson }}{% endif %}
   output:
     checks:
@@ -533,8 +528,9 @@ agents:
       (((double_check.output if double_check is defined else none) or {}).get(''checks'')) or [] %}{% endif %}{{
       ((((collect.output if collect is defined else none) or {}).get(''checks'') or []) + add) | tojson }}'
   routes:
-  - to: tidy_up
+  - to: group_trips
     when: '{{ (((((collect.output if collect is defined else none) or {}).get(''bookings'')) not in [none, '''',
+      []])) and ((workflow.input.my_name not in [none, '''', []])) and ((workflow.input.started not in [none, '''',
       []])) and context.history[-2] in [''find_and_check_together_record'', ''read_airline'', ''read_hotel'', ''read_portal'']
       }}'
   - to: plan
@@ -546,18 +542,18 @@ agents:
   - collect.output?
   - find_and_check_together.errors?
   - finish_check.output?
+  - group_trips.output?
   - not_ready.output?
-  - tidy_up.output?
   system_prompt: |
     You plan the steps of the "Find and check bookings" block. Goal:
     Find every upcoming trip in my email and double-check each booking. If a trip looks incomplete, such as a hotel with no flight, search again, focused on that city and dates.
 
     Steps you can run, and what each needs:
-    - read_airline (Read airline emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after tidy_up (gap found).
-    - read_hotel (Read hotel emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after tidy_up (gap found).
-    - read_portal (Read portal & car emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after tidy_up (gap found).
-    - tidy_up (Tidy up): needs collected.bookings. Returns trips, notes. Runs by itself when what it needs changes.
-    - double_check (Double-check bookings): needs tidy_up.trips[*].bookings, planner.verify_keys. Returns checks.
+    - read_airline (Read airline emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after group_trips (gap found).
+    - read_hotel (Read hotel emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after group_trips (gap found).
+    - read_portal (Read portal & car emails): needs planner.focus (optional). Returns bookings, skipped. You can run it again, setting `focus`, usually after group_trips (gap found).
+    - group_trips (Group into trips): needs collected.bookings, run.my_name, run.started. Returns trips, notes. Runs by itself when what it needs changes.
+    - double_check (Double-check bookings): needs group_trips.trips[*].bookings, planner.verify_keys. Returns checks.
     - find_and_check_together: runs read_airline, read_hotel, read_portal at the same time, without a focus. When all of them should run, this is faster than running them one by one.
 
     Set `next` to the step (or group) to run, or to "finish".
@@ -577,7 +573,7 @@ agents:
     {% if collect is defined %}Collected bookings: {{ (collect.output if collect is defined else none).get('bookings') | tojson }}{% endif %}
     {% if collect is defined %}Collected skipped: {{ (collect.output if collect is defined else none).get('skipped') | tojson }}{% endif %}
     {% if collect is defined %}Collected checks: {{ (collect.output if collect is defined else none).get('checks') | tojson }}{% endif %}
-    {% if tidy_up is defined %}tidy_up: {{ {"trips": tidy_up.output.get('trips'), "notes": tidy_up.output.get('notes')} | tojson }}{% endif %}
+    {% if group_trips is defined %}group_trips: {{ {"trips": group_trips.output.get('trips'), "notes": group_trips.output.get('notes')} | tojson }}{% endif %}
 
     What next?
   output:
@@ -587,7 +583,7 @@ agents:
       - read_airline
       - read_hotel
       - read_portal
-      - tidy_up
+      - group_trips
       - double_check
       - find_and_check_together
       - finish
@@ -631,13 +627,15 @@ agents:
     when: '{{ plan.output.next == ''read_hotel'' }}'
   - to: read_portal
     when: '{{ plan.output.next == ''read_portal'' }}'
-  - to: tidy_up
-    when: '{{ plan.output.next == ''tidy_up'' and (((((collect.output if collect is defined else none) or {}).get(''bookings''))
+  - to: group_trips
+    when: '{{ plan.output.next == ''group_trips'' and (((((collect.output if collect is defined else none) or {}).get(''bookings''))
+      not in [none, '''', []])) and ((workflow.input.my_name not in [none, '''', []])) and ((workflow.input.started
       not in [none, '''', []])) }}'
   - to: double_check
-    when: '{{ plan.output.next == ''double_check'' and (((((((tidy_up.output if tidy_up is defined else none) or
-      {}).get(''trips'')) or []) | map(attribute=''bookings'') | sum(start=[])) not in [none, '''', []])) and (((((plan.output
-      if plan is defined else none) or {}).get(''verify_keys'')) not in [none, '''', []])) }}'
+    when: '{{ plan.output.next == ''double_check'' and (((((((group_trips.output if group_trips is defined else
+      none) or {}).get(''trips'')) or []) | map(attribute=''bookings'') | sum(start=[])) not in [none, '''', []]))
+      and (((((plan.output if plan is defined else none) or {}).get(''verify_keys'')) not in [none, '''', []]))
+      }}'
   - to: find_and_check_together
     when: '{{ plan.output.next == ''find_and_check_together'' }}'
   - to: not_ready
@@ -654,17 +652,17 @@ agents:
       plan.output.next == ''read_airline'' %}read_airline can''t run yet: it needs , and one of those doesn''t exist
       yet.{% elif plan.output.next == ''read_hotel'' %}read_hotel can''t run yet: it needs , and one of those doesn''t
       exist yet.{% elif plan.output.next == ''read_portal'' %}read_portal can''t run yet: it needs , and one of
-      those doesn''t exist yet.{% elif plan.output.next == ''tidy_up'' %}tidy_up can''t run yet: it needs collected.bookings,
-      and one of those doesn''t exist yet.{% elif plan.output.next == ''double_check'' %}double_check can''t run
-      yet: it needs tidy_up.trips[*].bookings, planner.verify_keys, and one of those doesn''t exist yet.{% elif
-      plan.output.next == ''find_and_check_together'' and ((context.history | select(''in'', [''read_airline'',
-      ''read_hotel'', ''read_portal'', ''double_check'']) | list | length) + 3 * (context.history | select(''equalto'',
-      ''find_and_check_together'') | list | length)) + 3 > 8 %}find_and_check_together runs 3 Ask steps, and only
-      {{ 8 - ((context.history | select(''in'', [''read_airline'', ''read_hotel'', ''read_portal'', ''double_check''])
-      | list | length) + 3 * (context.history | select(''equalto'', ''find_and_check_together'') | list | length))
-      }} of the limit of 8 are left. Run the steps you need one by one, or finish.{% elif plan.output.next == ''find_and_check_together''
-      %}find_and_check_together can''t run yet: one of its steps is missing what it needs.{% endif %}{% endset %}{{
-      m | tojson }}'
+      those doesn''t exist yet.{% elif plan.output.next == ''group_trips'' %}group_trips can''t run yet: it needs
+      collected.bookings, run.my_name, run.started, and one of those doesn''t exist yet.{% elif plan.output.next
+      == ''double_check'' %}double_check can''t run yet: it needs group_trips.trips[*].bookings, planner.verify_keys,
+      and one of those doesn''t exist yet.{% elif plan.output.next == ''find_and_check_together'' and ((context.history
+      | select(''in'', [''read_airline'', ''read_hotel'', ''read_portal'', ''double_check'']) | list | length) +
+      3 * (context.history | select(''equalto'', ''find_and_check_together'') | list | length)) + 3 > 8 %}find_and_check_together
+      runs 3 Ask steps, and only {{ 8 - ((context.history | select(''in'', [''read_airline'', ''read_hotel'', ''read_portal'',
+      ''double_check'']) | list | length) + 3 * (context.history | select(''equalto'', ''find_and_check_together'')
+      | list | length)) }} of the limit of 8 are left. Run the steps you need one by one, or finish.{% elif plan.output.next
+      == ''find_and_check_together'' %}find_and_check_together can''t run yet: one of its steps is missing what
+      it needs.{% endif %}{% endset %}{{ m | tojson }}'
   routes:
   - to: plan
 - name: stop_rule_error
@@ -681,8 +679,8 @@ agents:
   tool: evaluate
   input:
   - collect.output?
+  - group_trips.output?
   - plan.output?
-  - tidy_up.output?
   - workflow.input.dry_run
   - workflow.input.my_name
   - workflow.input.started
@@ -690,17 +688,17 @@ agents:
     expressions: |
       - name: rule_1
         require: Double-check every booking in the trips you propose before finishing.
-        cel: '!has(steps.tidy_up) || steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids).all(t, t.bookings.all(b, collected.checks.exists(c, c.booking == b.key)))'
+        cel: '!has(steps.group_trips) || steps.group_trips.trips.filter(t, t.trip_id in planner.propose_trip_ids).all(t, t.bookings.all(b, collected.checks.exists(c, c.booking == b.key)))'
       - name: trips
-        cel: '!has(steps.tidy_up) ? [] : steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids)'
+        cel: '!has(steps.group_trips) ? [] : steps.group_trips.trips.filter(t, t.trip_id in planner.propose_trip_ids)'
       - name: checks
         cel: collected.checks
       - name: notes
-        cel: '(!has(steps.tidy_up) ? [] : steps.tidy_up.notes) + planner.notes'
-    data: '{{ {"steps": {"tidy_up": (tidy_up.output if tidy_up is defined else none)}, "run": {"dry_run": workflow.input.dry_run,
-      "my_name": workflow.input.my_name, "started": workflow.input.started}, "planner": (plan.output if plan is
-      defined else none), "collected": ((collect.output if collect is defined else none) or {"bookings": [], "skipped":
-      [], "checks": []})} | tojson }}'
+        cel: '(!has(steps.group_trips) ? [] : steps.group_trips.notes) + planner.notes'
+    data: '{{ {"steps": {"group_trips": (group_trips.output if group_trips is defined else none)}, "run": {"dry_run":
+      workflow.input.dry_run, "my_name": workflow.input.my_name, "started": workflow.input.started}, "planner":
+      (plan.output if plan is defined else none), "collected": ((collect.output if collect is defined else none)
+      or {"bookings": [], "skipped": [], "checks": []})} | tojson }}'
     step: finish_check
   output:
     passed:

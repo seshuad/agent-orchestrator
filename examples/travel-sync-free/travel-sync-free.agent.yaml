@@ -43,6 +43,14 @@ records:
       pick_up_location: {type: text, optional: true, when_type: car}
     # Same booking when these match; spaces, dashes and capitals ignored.
     identity: "b.type + ':' + norm(b.confirmation) + ':' + (b.flight_number != null ? norm(b.flight_number) : date_of(b.start))"
+  Trip:
+    fields:
+      trip_id: {type: text, hint: "From the first booking's key; stable across runs."}
+      destination: {type: text}
+      start: {type: date & time with time zone}
+      end: {type: date & time with time zone}
+      bookings: {type: list of Booking}
+      flags: {type: list of text, hint: 'Things a person should look at before approving.'}
   Skipped email:
     fields:
       email: {type: text}
@@ -87,7 +95,7 @@ steps:
         uses: {connection: gmail, actions: [search, open], lookback_days: 180,
                senders: [united.com, delta.com, aa.com, southwest.com, alaskaair.com, jetblue.com,
                          cathaypacific.com, britishairways.com, lufthansa.com, emirates.com]}
-        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        repeat: {planner_sets: focus, usually_after: group_trips, when: gap found}
         instructions: {shared: Reader instructions}
         task: "Your scope: flight bookings and e-tickets. Return each flight leg as its own booking."
         returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
@@ -99,7 +107,7 @@ steps:
         takes: {focus: "planner.focus?"}
         uses: {connection: gmail, actions: [search, open], lookback_days: 180,
                senders: [marriott.com, email-marriott.com, res-marriott.com, hilton.com, hyatt.com, ihg.com, airbnb.com]}
-        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        repeat: {planner_sets: focus, usually_after: group_trips, when: gap found}
         instructions: {shared: Reader instructions}
         task: "Your scope: hotel reservations."
         returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
@@ -111,32 +119,123 @@ steps:
         takes: {focus: "planner.focus?"}
         uses: {connection: gmail, actions: [search, open], lookback_days: 180,
                senders: [chasetravel.com, expedia.com, booking.com, amextravel.com, hertz.com, avis.com, nationalcar.com, enterprise.com]}
-        repeat: {planner_sets: focus, usually_after: tidy_up, when: gap found}
+        repeat: {planner_sets: focus, usually_after: group_trips, when: gap found}
         instructions: {shared: Reader instructions}
         task: "Your scope: bookings made through travel portals and car rentals."
         returns: {bookings: {type: list of Booking}, skipped: {type: list of Skipped email}}
 
-      - id: tidy_up
+      - id: group_trips
         kind: built-in
-        name: Tidy up
-        takes: {records: collected.bookings}
+        name: Group into trips
+        takes: {records: collected.bookings, my_name: run.my_name, started: run.started}
         reruns_by_itself: true
         operation:
-          tidy:
-            - {check: Booking}
-            - {remove_duplicates: {same: Booking identity, keep_highest: "b.confidence == 'high' ? 3 : (b.confidence == 'medium' ? 2 : 1)"}}
-            - {filter: {keep: "b.end > run.started"}}
-            - {group: {into: Trip, together: "a.confirmation == b.confirmation || b.start - a.end <= duration('24h')"}}
-            - flag:
-                - {when: "size(trip.bookings.filter(b, b.type == 'flight')) == 1", note: "Only one flight found; no return flight in email."}
-                - {when: "trip.bookings.exists(b, !b.travelers.exists(t, is_me(t, run.my_name)))", note: "Someone else's trip?"}
+          javascript:
+            code: |
+              // Bookings from the readers -> upcoming trips. In order: drop incomplete bookings, remove duplicates (keeping the most
+              // confident), keep bookings that haven't ended, group bookings into trips, and flag trips a person should look at.
+              const notes = [];
+              const DAY = 24 * 60 * 60 * 1000;
+              const time = (s) => new Date(s).getTime();
+              const norm = (s) => String(s ?? '').replace(/[\s-]/g, '').toUpperCase();      // UA 1523, ua1523, UA-1523: the same
+
+              // 1. Complete bookings only: every required field, and times with a time zone.
+              const REQUIRED = ['type', 'provider', 'confirmation', 'travelers', 'start', 'end', 'destination', 'source_email', 'confidence'];
+              const WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)$/;
+              const complete = [];
+              for (const b of inputs.records ?? []) {
+                const problems = REQUIRED.filter((f) => b[f] == null || b[f] === '' || (Array.isArray(b[f]) && !b[f].length)).map((f) => `${f} missing`)
+                  .concat(['start', 'end'].filter((f) => !(typeof b[f] === 'string' && WITH_ZONE.test(b[f]))).map((f) => `${f} has no time zone`));
+                if (problems.length) notes.push(`Dropped a booking from ${b.source_email || 'an email'}: ${problems.join(', ')}`);
+                else complete.push(b);
+              }
+
+              // 2. One booking per key (type, confirmation, and the flight number or the day it starts), the most confident one.
+              const rank = { high: 3, medium: 2 };
+              const best = new Map();
+              for (const b of complete) {
+                const key = `${b.type}:${norm(b.confirmation)}:${b.flight_number != null ? norm(b.flight_number) : String(b.start).slice(0, 10)}`;
+                const score = rank[b.confidence] ?? 1;
+                if (!best.has(key) || score > best.get(key).score) best.set(key, { score, booking: { ...b, key } });
+              }
+              if (best.size < complete.length) notes.push(`Removed ${complete.length - best.size} duplicate(s).`);
+
+              // 3. Only bookings that haven't ended.
+              const now = inputs.started ? time(inputs.started) : Date.now();
+              const all = [...best.values()].map((x) => x.booking);
+              const upcoming = all.filter((b) => time(b.end) > now);
+              if (upcoming.length < all.length) notes.push(`Left out ${all.length - upcoming.length} booking(s) that have already ended.`);
+
+              // 4. Trips: bookings join when they share a confirmation, or one starts within a day of an earlier one ending.
+              const sorted = upcoming.slice().sort((a, b) => time(a.start) - time(b.start));
+              const parent = sorted.map((_, i) => i);
+              const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+              for (let j = 0; j < sorted.length; j++) {
+                for (let i = 0; i < j; i++) {
+                  const a = sorted[i], b = sorted[j];
+                  if (find(i) !== find(j) && (a.confirmation === b.confirmation || time(b.start) - time(a.end) <= DAY)) parent[find(j)] = find(i);
+                }
+              }
+              const groups = new Map();
+              sorted.forEach((b, i) => { const r = find(i); groups.set(r, [...(groups.get(r) ?? []), b]); });
+
+              // 5. Flags a person should look at before approving.
+              const tokens = (s) => new Set(String(s).toLowerCase().split(/[\s/,]+/).filter(Boolean));
+              const isMe = (traveler) => {
+                const wanted = tokens(inputs.my_name ?? ''), got = tokens(traveler);
+                const shared = [...wanted].filter((t) => got.has(t)).length;
+                return shared >= 2 || (wanted.size === 1 && shared === 1);
+              };
+              const trips = [...groups.values()].map((members) => {
+                const flights = members.filter((b) => b.type === 'flight');
+                const flags = [];
+                if (flights.length === 1) flags.push('Only one flight found; no return flight in email.');
+                if (members.some((b) => !(b.travelers ?? []).some(isMe))) flags.push("Someone else's trip?");
+                return {
+                  trip_id: sha1([...members.map((b) => b.key)].sort()[0]).slice(0, 10),   // from a stable key, not text a model wrote
+                  destination: (flights[0] ?? members[0]).destination,
+                  start: members.reduce((m, b) => (time(b.start) < time(m) ? b.start : m), members[0].start),
+                  end: members.reduce((m, b) => (time(b.end) > time(m) ? b.end : m), members[0].end),
+                  bookings: members,
+                  flags,
+                };
+              }).sort((a, b) => time(a.start) - time(b.start));
+              return { trips, notes };
+
+              function sha1(text) {
+                const bytes = [];
+                for (const ch of unescape(encodeURIComponent(text))) bytes.push(ch.charCodeAt(0));
+                const bits = bytes.length * 8;
+                bytes.push(0x80);
+                while (bytes.length % 64 !== 56) bytes.push(0);
+                for (let i = 7; i >= 0; i--) bytes.push(i > 3 ? 0 : (bits >>> (i * 8)) & 0xff);
+                let [h0, h1, h2, h3, h4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
+                const rotl = (x, n) => (x << n) | (x >>> (32 - n));
+                for (let off = 0; off < bytes.length; off += 64) {
+                  const w = [];
+                  for (let i = 0; i < 16; i++) w[i] = (bytes[off + 4 * i] << 24) | (bytes[off + 4 * i + 1] << 16) | (bytes[off + 4 * i + 2] << 8) | bytes[off + 4 * i + 3];
+                  for (let i = 16; i < 80; i++) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+                  let [a, b, c, d, e] = [h0, h1, h2, h3, h4];
+                  for (let i = 0; i < 80; i++) {
+                    const [f, k] = i < 20 ? [(b & c) | (~b & d), 0x5a827999] : i < 40 ? [b ^ c ^ d, 0x6ed9eba1]
+                      : i < 60 ? [(b & c) | (b & d) | (c & d), 0x8f1bbcdc] : [b ^ c ^ d, 0xca62c1d6];
+                    const t = (rotl(a, 5) + f + e + k + w[i]) | 0;
+                    [e, d, c, b, a] = [d, c, rotl(b, 30), a, t];
+                  }
+                  [h0, h1, h2, h3, h4] = [(h0 + a) | 0, (h1 + b) | 0, (h2 + c) | 0, (h3 + d) | 0, (h4 + e) | 0];
+                }
+                return [h0, h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, '0')).join('');
+              }
+        returns:
+          trips: {type: list of Trip, hint: 'Upcoming trips, earliest first, each with its bookings and flags.'}
+          notes: {type: list of text, hint: What was dropped and why.}
 
       - id: double_check
         kind: ask
         name: Double-check bookings
         model: claude-opus-5
-        takes: {bookings: "tidy_up.trips[*].bookings", keys: planner.verify_keys}
-        uses: {connection: gmail, actions: [open], only_cited_by: tidy_up}
+        takes: {bookings: "group_trips.trips[*].bookings", keys: planner.verify_keys}
+        uses: {connection: gmail, actions: [open], only_cited_by: group_trips}
         instructions: >-
           For each booking whose key is listed, open its source email and compare every field: dates,
           times and time zones, flight number, confirmation and travelers. Don't trust the extracted values.
@@ -144,13 +243,13 @@ steps:
         returns: {checks: {type: list of Check}}
 
     before_finishing:
-      - rule: "!has(steps.tidy_up) || steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids).all(t, t.bookings.all(b, collected.checks.exists(c, c.booking == b.key)))"
+      - rule: "!has(steps.group_trips) || steps.group_trips.trips.filter(t, t.trip_id in planner.propose_trip_ids).all(t, t.bookings.all(b, collected.checks.exists(c, c.booking == b.key)))"
         message: Double-check every booking in the trips you propose before finishing.
 
     returns:
-      trips: "!has(steps.tidy_up) ? [] : steps.tidy_up.trips.filter(t, t.trip_id in planner.propose_trip_ids)"
+      trips: "!has(steps.group_trips) ? [] : steps.group_trips.trips.filter(t, t.trip_id in planner.propose_trip_ids)"
       checks: collected.checks
-      notes: "(!has(steps.tidy_up) ? [] : steps.tidy_up.notes) + planner.notes"
+      notes: "(!has(steps.group_trips) ? [] : steps.group_trips.notes) + planner.notes"
 
   - id: any_trips_found
     kind: branch

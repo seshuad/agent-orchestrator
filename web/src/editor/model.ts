@@ -25,7 +25,7 @@ export type Selection =
 
 export const STEP_KINDS = [
   { kind: 'ask', name: 'Ask', text: 'A model reads and extracts. It can never change anything.' },
-  { kind: 'built-in', name: 'Built-in', text: 'Fixed operations, no model: tidy up, look up, compare, match, or your own JavaScript.' },
+  { kind: 'built-in', name: 'Built-in', text: 'No model. CEL operators over a list, your own JavaScript, or a BigQuery query; or a chart or fixed operation.' },
   { kind: 'approve', name: 'Approve', text: 'A person decides before anything changes.' },
   { kind: 'act', name: 'Act', text: 'Changes something outside the agent, using only checked fields.' },
 ] as const
@@ -62,8 +62,7 @@ export function newStep(kind: string, draft: Json): Json {
       return { id: uniqueId(draft, 'read'), kind, name: 'New Ask step', model: 'claude-sonnet-5', takes: {}, instructions: '', task: '',
         returns: { result: { type: 'text' } } }
     case 'built-in':
-      return { id: uniqueId(draft, 'look_up'), kind, name: 'New Built-in step', operation: { lookup: { sheet: '', column: '', as: 'row' } },
-        takes: { any_of: [] } }
+      return { id: uniqueId(draft, 'transform'), kind, name: 'New Built-in step', operation: { cel: [{ keep: '' }] }, takes: { items: '' } }
     case 'approve':
       return { id: uniqueId(draft, 'approve'), kind, name: 'Approve', approver: 'you', notify: ['email', 'web'], timeout_hours: 24,
         review: '## Go ahead?\n', choices: [{ label: 'Do nothing', passes: 'none' }, { label: 'Go ahead', passes: 'all' }] }
@@ -87,8 +86,8 @@ export const KIND_LABEL: Record<string, string> = {
 
 export const TYPES = ['text', 'number', 'yes/no', 'choice', 'date & time with time zone', 'list of text']
 
-/** Which steps a block can hold: Free-form, Ask and Built-in; Parallel together, Ask; Parallel for each item, any step but Approve. */
+/** Which steps a block can hold: Free-form, Ask and Built-in; Parallel together, Ask and Built-in; Parallel for each item, any step but Approve. */
 export function allowedInside(block: Json): string[] {
-  if (block.kind === 'parallel') return block.for_each ? ['ask', 'built-in', 'act', 'branch'] : ['ask']
+  if (block.kind === 'parallel') return block.for_each ? ['ask', 'built-in', 'act', 'branch'] : ['ask', 'built-in']
   return ['ask', 'built-in']
 }

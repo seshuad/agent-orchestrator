@@ -19,6 +19,7 @@ Approve's pre-selection `item`.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
@@ -53,11 +54,31 @@ class RunOption(Strict):
 
 
 class Trigger(Strict):
-    kind: Literal["schedule", "email", "webhook", "manual"]
+    kind: Literal["schedule", "email", "webhook", "manual", "pubsub"]
     every: str | None = None
     at: str | None = None
     time_zone: str | None = None
     to: str | None = None
+    subscription: str | None = None          # pubsub: projects/<project>/subscriptions/<name>
+    account: str | None = None               # pubsub: the workspace account whose Google Cloud credentials pull from it
+    message: dict[str, "FieldDef"] | None = None   # pubsub: the message's fields (its JSON data, then its attributes)
+    when: str | None = None                  # pubsub: CEL over `message`; only messages it's true for start a run
+    sample: dict[str, Any] | None = None     # pubsub: the message a test run uses
+
+    @model_validator(mode="after")
+    def _pubsub(self) -> "Trigger":
+        if self.kind != "pubsub":
+            return self
+        if not re.fullmatch(r"projects/[\w.:-]+/subscriptions/[\w.~+%-]+", self.subscription or ""):
+            raise ValueError("Name the Pub/Sub subscription as projects/<project>/subscriptions/<name>")
+        if not self.message:
+            raise ValueError("Say which fields the message carries, so later steps can use them")
+        for name, fd in self.message.items():
+            if not name.isidentifier() or name in ("message_id", "published_at"):
+                raise ValueError(f"{name!r} can't name a message field: use a plain word, not message_id or published_at")
+            if fd.type not in SCALAR_TYPES:
+                raise ValueError(f"The message field {name!r} must be text, a number, yes/no or a date & time")
+        return self
 
 
 class Limits(Strict):
@@ -88,6 +109,8 @@ class Uses(Strict):
     max_bytes: str | int | None = None       # BigQuery: the most one query may scan, e.g. "1GB"
     max_rows: int | None = None              # BigQuery: rows returned per query
     tables: list[str] | None = None          # BigQuery: tables an Act step may insert into
+    recipients: list[str] | None = None      # Gmail sending: the only addresses (or @domains) it may send to
+    max_emails: int | None = None            # Gmail sending: at most this many emails per run (default 20)
 
 
 class Repeat(Strict):
@@ -130,7 +153,8 @@ class AskStep(Step):
 
 class BuiltInStep(Step):
     kind: Literal["built-in"]
-    operation: dict[str, Any]                # exactly one of: tidy, lookup, filter-rows, compare, three-way-match, show, javascript
+    operation: dict[str, Any]                # exactly one of: cel (operators), javascript, bigquery; chart, lookup, filter-rows,
+                                             # compare, three-way-match, show; tidy (travel-sync's, kept for it)
     takes: Takes = Field(default_factory=dict)
     uses: Uses | None = None
     reruns_by_itself: bool = False
@@ -139,7 +163,7 @@ class BuiltInStep(Step):
     @field_validator("operation")
     @classmethod
     def _one_operation(cls, v: dict[str, Any]) -> dict[str, Any]:
-        known = {"tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery"}
+        known = {"cel", "tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery", "chart"}
         if len(v) != 1 or next(iter(v)) not in known:
             raise ValueError(f"operation must be exactly one of {sorted(known)}")
         return v
@@ -287,12 +311,13 @@ class ActStep(Step):
     add_row: dict[str, Any] | None = None
     call_tool: dict[str, Any] | None = None      # MCP: {tool, arguments: {arg: "{field}" or text}, for_each}
     insert_rows: dict[str, Any] | None = None    # BigQuery: {table, for_each, row: {column: "{field}"}}
+    send_email: dict[str, Any] | None = None     # Gmail: {to: [...], cc?, subject, body, for_each?}: templates over "{name}"
     follows_dry_run: str | None = None          # a yes/no run option; none: it always makes its changes
 
     @model_validator(mode="after")
     def _one_action(self) -> ActStep:
-        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool, self.insert_rows)) != 1:
-            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row, call_tool or insert_rows")
+        if sum(x is not None for x in (self.create_events, self.add_row, self.call_tool, self.insert_rows, self.send_email)) != 1:
+            raise ValueError(f"{self.name}: an Act step does exactly one thing: create_events, add_row, call_tool, insert_rows or send_email")
         return self
 
 
@@ -315,10 +340,10 @@ class ParallelBlock(Step):
         if self.for_each is None:
             if len(self.steps) < 2:
                 raise ValueError(f"{self.name}: add at least two steps to run together")
-            others = [s.name for s in self.steps if not isinstance(s, AskStep)]
+            others = [s.name for s in self.steps if not isinstance(s, (AskStep, BuiltInStep))]
             if others:
-                raise ValueError(f"{self.name}: only Ask steps run together; put {', '.join(others)} before or after the block, "
-                                 "or run the block for each item of a list")
+                raise ValueError(f"{self.name}: only Ask and Built-in steps run together (they only read or compute); put "
+                                 f"{', '.join(others)} before or after the block, or run the block for each item of a list")
             return self
         if not self.steps:
             raise ValueError(f"{self.name}: add the steps to run for each {self.for_each.as_}")
@@ -363,6 +388,9 @@ class Agent(Strict):
                 raise ValueError(f"{s.name}: {'Ask steps' if isinstance(s, AskStep) else 'a Branch'} can only read; move {uses.actions} to an Act step")
             if isinstance(s, AskStep) and isinstance(s.instructions, Instructions) and s.instructions.shared not in self.shared_instructions:
                 raise ValueError(f"{s.name}: no shared instructions called {s.instructions.shared!r}")
+        clash = set(self.trigger.message or {}) & set(self.run_options)
+        if clash:
+            raise ValueError(f"{', '.join(sorted(clash))}: both a run option and a message field; rename one")
         ids = [s.id for s in self.all_steps()]
         if len(set(ids)) != len(ids):
             raise ValueError(f"two steps are called {next(i for i in ids if ids.count(i) > 1)!r}: step ids must be different")

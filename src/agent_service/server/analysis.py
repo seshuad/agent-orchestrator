@@ -50,6 +50,27 @@ def _cel_sites(raw: dict[str, Any]) -> list[tuple[str, str]]:
             sites.append((f"{path}.rules_first.{j}.when", r.get("when", "")))
         if s.get("pre_select"):
             sites.append((f"{path}.pre_select", s["pre_select"]))
+        for j, op in enumerate((s.get("operation") or {}).get("cel") or []):
+            if not isinstance(op, dict) or len(op) != 1:
+                continue
+            (kind, c), = op.items()
+            base = f"{path}.operation.cel.{j}.{kind}"
+            if kind == "keep" and isinstance(c, str):
+                sites.append((base, c))
+            elif kind == "add_fields" and isinstance(c, dict):
+                sites.extend((f"{base}.{n}", e) for n, e in c.items() if isinstance(e, str))
+            elif kind == "check" and isinstance(c, list):
+                sites.extend((f"{base}.{k}.rule", x.get("rule", "")) for k, x in enumerate(c) if isinstance(x, dict))
+            elif isinstance(c, dict):
+                for key in ("key", "keep_highest", "by", "other_key", "together"):
+                    if c.get(key):
+                        sites.append((f"{base}.{key}", c[key]))
+                for n, e in (c.get("group_by") or {}).items():
+                    sites.append((f"{base}.group_by.{n}", e))
+                for n, e in (c.get("totals") or {}).items():
+                    m = re.match(r"^\s*(?:count|sum|avg|min|max)\s*\((.*)\)\s*$", e or "", re.S)
+                    if m and m.group(1).strip():
+                        sites.append((f"{base}.totals.{n}", m.group(1)))
         for j, op in enumerate((s.get("operation") or {}).get("tidy") or []):
             (kind, conf), = op.items() if isinstance(op, dict) and len(op) == 1 else ((None, None),)
             if kind == "flag":
@@ -64,6 +85,8 @@ def _cel_sites(raw: dict[str, Any]) -> list[tuple[str, str]]:
 
     for i, s in enumerate(raw.get("steps") or []):
         step_sites(s, f"steps.{i}")
+    if (raw.get("trigger") or {}).get("when"):
+        sites.append(("trigger.when", raw["trigger"]["when"]))
     return sites
 
 
@@ -90,16 +113,28 @@ def _run_option_refs(raw: dict[str, Any]) -> list[dict[str, str]]:
     return errors
 
 
+def _flat_values(values: Any) -> list[str]:
+    return [x for v in values for x in (v if isinstance(v, list) else [v])]
+
+
 def _policy(agent: definition.Agent) -> list[dict[str, str]]:
     """Human approval is the builder's choice, not the service's. An agent that changes something outside itself
     after reading content other people wrote, with no Approve step first, gets a warning (shown again on publish)."""
     warnings = []
     reads_untrusted = any(getattr(s, "uses", None) and agent.connections[s.uses.connection].service in UNTRUSTED
-                          for s in agent.all_steps())
+                          and not isinstance(s, ActStep) for s in agent.all_steps())     # sending email reads nothing
     approved = False
     for i, s in enumerate(agent.steps):
         if isinstance(s, ApproveStep):
             approved = True
+        if isinstance(s, ActStep) and s.send_email is not None and not approved:
+            model_steps = {x.id for x in agent.all_steps() if isinstance(x, (AskStep, FreeFormBlock))
+                           or (isinstance(x, BranchBlock) and x.decide == "model")}
+            refs = [v for v in _flat_values(s.takes.values()) + [s.send_email.get("for_each") or ""]]
+            if any(r.rstrip("?").split(".")[0] in model_steps for r in refs if r):
+                warnings.append({"path": f"steps.{i}", "message": f"{s.name} emails text a model wrote. Add an Approve step before it, "
+                                 "so a person reads the email before it goes out."})
+                continue
         if isinstance(s, ActStep) and reads_untrusted and not approved:
             warnings.append({"path": f"steps.{i}", "message": f"{s.name} changes something outside the agent with no approval "
                              "first, using values from content other people wrote (email, GitHub, MCP tools). Add an Approve step if a person should check them."})
@@ -147,6 +182,16 @@ def _type_of_returns(step: Any) -> list[tuple[str, str]]:
         return [(n, f.type) for n, f in step.returns.items()]
     if isinstance(step, BuiltInStep) and step.op == "javascript":
         return [(n, f.type) for n, f in step.returns.items()]
+    if isinstance(step, BuiltInStep) and step.op == "chart":
+        return [("image", "chart"), ("title", "text")]
+    if isinstance(step, BuiltInStep) and step.op == "cel":
+        declared = step.returns.get("items")
+        out = [("items", declared.type if declared else "list of records"), ("notes", "list of text")]
+        for o in step.operation.get("cel") or []:
+            c = (o or {}).get("summarize") if isinstance(o, dict) else None
+            if c and c.get("save_as"):
+                out.append((c["save_as"], "list of records" if c.get("group_by") else "record"))
+        return out
     if isinstance(step, BuiltInStep) and step.op == "bigquery":
         rows = step.returns.get("rows")
         return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),
@@ -167,6 +212,10 @@ def references(raw: dict[str, Any], step_id: str | None) -> list[dict[str, str]]
     refs: list[dict[str, str]] = []
     for n, opt in agent.run_options.items():
         refs.append({"ref": f"run.{n}", "label": f"Run option › {n}", "type": opt.type})
+    if agent.trigger.kind == "pubsub":
+        refs += [{"ref": "trigger.message_id", "label": "Trigger › the Pub/Sub message", "type": "text"},
+                 {"ref": "trigger.published_at", "label": "Trigger › when it was published", "type": "date & time with time zone"}]
+        refs += [{"ref": f"trigger.{n}", "label": f"Trigger › message › {n}", "type": fd.type} for n, fd in (agent.trigger.message or {}).items()]
     if agent.trigger.kind == "email":
         refs += [{"ref": "trigger.email_id", "label": "Trigger › the email", "type": "text"},
                  {"ref": "trigger.sender_domain", "label": "Trigger › its sender's domain", "type": "text"}]

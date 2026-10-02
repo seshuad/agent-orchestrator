@@ -30,7 +30,9 @@ function access(draft: Json): string {
     const u = s.uses
     if (u) {
       const service = draft.connections?.[u.connection]?.service
-      if (service === 'gmail') {
+      if (service === 'gmail' && (u.actions ?? []).includes('send')) {
+        writes.push(`send email to ${(u.recipients ?? []).join(', ') || 'no one yet'}`)
+      } else if (service === 'gmail') {
         if (u.senders) senders += u.senders.length
         else if (u.only_message) reads.push('read the email that started the run')
         else if (u.from_domain) reads.push('read earlier emails from the same sender')

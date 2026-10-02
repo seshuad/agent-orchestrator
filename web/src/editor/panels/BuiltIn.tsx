@@ -1,14 +1,16 @@
-// Built-in step: fixed operations, no model. Every condition is CEL, checked on every save.
+// Built-in step: no model. Three engines (CEL operators over a list, JavaScript, a BigQuery query), plus charts and a
+// few fixed operations. Every CEL expression is checked on every save.
 import { useState } from 'react'
 import { api, type Json } from '../../api'
-import { Block, Cel, Check, FieldErrors, Icon, Segmented, Select, Text } from '../../ui'
+import { Block, Cel, Check, FieldErrors, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
 import { FieldsEditor, StepHeader, TakesEditor, UsesEditor, useStep } from './common'
 
-const OPS = ['tidy', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'javascript', 'bigquery'] as const
-const OP_LABEL: Record<string, string> = { tidy: 'Tidy up', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript', bigquery: 'BigQuery query' }
+const OTHER = ['chart', 'lookup', 'filter-rows', 'compare', 'three-way-match', 'show', 'tidy'] as const
+const ENGINE_OF = (op: string) => (op === 'cel' ? 'cel' : op === 'javascript' ? 'javascript' : op === 'bigquery' ? 'bigquery' : 'other')
+const OP_LABEL: Record<string, string> = { cel: 'CEL rules', tidy: 'Tidy up (retired)', lookup: 'Look up', 'filter-rows': 'Filter rows', compare: 'Compare', 'three-way-match': 'Three-way match', show: 'Show value', javascript: 'JavaScript', bigquery: 'BigQuery query', chart: 'Chart' }
 const OP_TAKES: Record<string, Json> = {
   tidy: { records: '' }, lookup: { any_of: [] }, 'filter-rows': { equals: '' }, compare: { value: '', on_file: '' },
-  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' }, bigquery: {},
+  'three-way-match': { invoice: '', purchase_order: '', receipts: '' }, show: { value: '' }, javascript: { items: '' }, bigquery: {}, chart: { rows: '' }, cel: { items: '' },
 }
 const JS_TEMPLATE = `// \`inputs\` holds what this step takes, by name (see Takes).
 // Return an object with every field listed under Returns.
@@ -18,6 +20,8 @@ const OP_DEFAULT: Record<string, Json> = {
   tidy: [], lookup: { sheet: '', column: '', as: 'row' }, 'filter-rows': { sheet: '', column: '', as: 'rows' }, compare: {}, 'three-way-match': {}, show: {},
   javascript: { code: JS_TEMPLATE },
   bigquery: { sql: 'SELECT column, COUNT(*) AS n\nFROM `project.dataset.table`\nWHERE column = @value\nGROUP BY column\nORDER BY n DESC' },
+  chart: { kind: 'bar', x: '', y: '', title: '' },
+  cel: [{ keep: '' }],
 }
 
 /** A fixed BigQuery query: the SQL, the step's Takes as @parameters, its limits, and a free cost estimate. */
@@ -209,10 +213,19 @@ export default function BuiltIn() {
   return (
     <>
       <StepHeader />
-      <Block title="Operation">
-        <Segmented options={[...OPS]} value={op as (typeof OPS)[number]} onChange={setOp} labels={OP_LABEL} />
+      <Block title="Engine">
+        <Segmented options={['cel', 'javascript', 'bigquery', 'other']} value={ENGINE_OF(op)}
+          onChange={(e) => { if (e !== ENGINE_OF(op)) setOp(e === 'other' ? 'chart' : e) }}
+          labels={{ cel: 'CEL rules', javascript: 'JavaScript', bigquery: 'BigQuery SQL', other: 'Other' }} />
+        <span className="faint">{({ cel: 'Operators over a list: keep, add fields, check, remove duplicates, sort, summarize, match, link. You write one small rule per operator; it does the iterating. No code, always ends, checked as you type.',
+          javascript: 'Your own function, in a sandbox, for logic the CEL operators can\u2019t express.',
+          bigquery: 'One fixed SELECT on your warehouse, checked and capped before it runs.',
+          other: 'A chart, a sheet look-up, or a fixed operation.' } as Record<string, string>)[ENGINE_OF(op)]}</span>
+        {ENGINE_OF(op) === 'other' && <Segmented options={OTHER.filter((o) => o !== 'tidy' || op === 'tidy')} value={op as (typeof OTHER)[number]} onChange={setOp} labels={OP_LABEL} />}
+        {op === 'tidy' && <span className="faint">Tidy up is retired: use CEL rules for checks, duplicates and filters, or JavaScript. It still runs here so this step keeps working.</span>}
         <FieldErrors path={p('operation')} exact />
       </Block>
+      {op === 'cel' && <CelOperators />}
       {(op === 'lookup' || op === 'filter-rows') && (
         <Block title={op === 'lookup' ? 'Find the first row' : 'Find every row'}>
           <span className="row"><span className="muted">in the sheet</span><Text width={150} value={conf.sheet} onChange={(v) => set(['operation', op, 'sheet'], v)} label="Sheet" />
@@ -228,8 +241,9 @@ export default function BuiltIn() {
           <span className="muted">Writes the value you pick into the run's log, in full, so you can see exactly what a step produced. It changes nothing, costs nothing, and passes the value on unchanged as <code className="mono">{step.id}.value</code>. Handy while building; delete it when you're done.</span>
         </Block>
       )}
+      {op === 'chart' && <ChartSettings />}
       {op === 'three-way-match' && <Block title="Three-way match"><span className="muted">Prices against the purchase order; quantities against the order and, for goods, what was received. Returns <code className="mono">passed</code> and <code className="mono">differences</code>.</span></Block>}
-      <Block title="Takes" aside={op === 'bigquery' ? 'the query\u2019s @parameters' : undefined}><TakesEditor fixed={op === 'javascript' || op === 'bigquery' ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
+      <Block title="Takes" aside={op === 'bigquery' ? 'the query\u2019s @parameters' : op === 'chart' ? 'rows, and values the rule or line reads' : op === 'cel' ? 'items: the list; other inputs by name' : undefined}><TakesEditor fixed={op === 'javascript' || op === 'bigquery' || op === 'chart' || op === 'cel' ? undefined : Object.keys(OP_TAKES[op] ?? {})} /></Block>
       {op === 'bigquery' && <BigQueryQuery />}
       {op === 'javascript' && <JavaScript />}
       {(op === 'lookup' || op === 'filter-rows') && <Block title="Can use"><UsesEditor actions={['read']} limits={['sheets']} /></Block>}
@@ -240,5 +254,176 @@ export default function BuiltIn() {
         </Block>
       )}
     </>
+  )
+}
+
+/** Chart: bars or a line over a list of rows, drawn to a PNG with no model. Rows a CEL rule matches are highlighted;
+    a value from Takes can draw a dashed reference line. */
+function ChartSettings() {
+  const { step, set, p, refs, draft } = useStep()
+  const conf: Json = step.operation?.chart ?? {}
+  const rowsType = refs.find((r) => r.ref === String(step.takes?.rows ?? '').replace(/\?$/, ''))?.type.replace(/^list of /, '') ?? ''
+  const fields = Object.keys(draft.records?.[rowsType]?.fields ?? {})
+  const values = Object.keys(step.takes ?? {}).filter((k) => k !== 'rows')
+  const c = (k: string, v: unknown) => set(['operation', 'chart', k], v === '' ? undefined : v)
+  return (
+    <Block title="Chart" aside="drawn from checked rows; no model">
+      <span className="row"><span className="muted" style={{ width: 70 }}>Rows</span>
+        <RefPicker value={step.takes?.rows ?? ''} refs={refs.filter((r) => r.type.startsWith('list'))} onChange={(v) => set(['takes', 'rows'], v)} path={p('takes', 'rows')} /></span>
+      <span className="row"><span className="muted" style={{ width: 70 }}>As</span>
+        <Segmented options={['bar', 'line']} value={conf.kind ?? 'bar'} onChange={(v) => c('kind', v)} labels={{ bar: 'Bars', line: 'A line' }} /></span>
+      <span className="row"><span className="muted" style={{ width: 70 }}>Across</span>
+        {fields.length ? <Select value={conf.x ?? ''} options={['', ...fields]} onChange={(v) => c('x', v)} label="X field" labels={{ '': 'Pick a field' }} />
+          : <Text width={140} value={conf.x ?? ''} onChange={(v) => c('x', v)} label="X field" />}
+        <span className="muted">up</span>
+        {fields.length ? <Select value={conf.y ?? ''} options={['', ...fields]} onChange={(v) => c('y', v)} label="Y field" labels={{ '': 'Pick a field' }} />
+          : <Text width={140} value={conf.y ?? ''} onChange={(v) => c('y', v)} label="Y field" />}</span>
+      <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 70 }}>Title</span>
+        <input className="input grow" value={conf.title ?? ''} aria-label="Title" placeholder="e.g. Monthly revenue" onChange={(e) => c('title', e.target.value)} /></span>
+      <span className="row"><span className="muted" style={{ width: 70 }}>Numbers</span>
+        <Select value={conf.y_format ?? ''} options={['', '$,.0f', ',.0f', '.1%']} onChange={(v) => c('y_format', v)} label="Number format"
+          labels={{ '': 'As they are', '$,.0f': 'Dollars ($12,345)', ',.0f': 'Whole numbers (12,345)', '.1%': 'Percent (12.3%)' }} /></span>
+      <span className="eyebrow">Highlight rows where</span>
+      <Cel value={conf.highlight} onChange={(v) => c('highlight', v)} path={p('operation', 'chart', 'highlight')}
+        placeholder={`row.${conf.y || 'total_revenue'} < typical * 0.7`} />
+      <span className="faint">Optional. CEL over <code className="mono">row</code> and this step's other inputs{values.length ? ` (${values.join(', ')})` : ''}.</span>
+      <span className="row"><span className="muted">Reference line at</span>
+        <Select value={conf.reference ?? ''} options={['', ...values]} onChange={(v) => c('reference', v)} label="Reference" labels={{ '': 'None' }} />
+        {conf.reference && <><span className="muted">labelled</span><Text width={140} value={conf.reference_label ?? ''} onChange={(v) => c('reference_label', v)} label="Reference label" /></>}</span>
+      <span className="faint">Returns <code className="mono">image</code>: an Act step's email can include it, and an approver sees it.</span>
+      <FieldErrors path={p('operation', 'chart')} />
+    </Block>
+  )
+}
+
+const CEL_OPS: { kind: string; label: string; text: string; init: unknown }[] = [
+  { kind: 'keep', label: 'Keep', text: 'Only the items a rule is true for.', init: '' },
+  { kind: 'add_fields', label: 'Add fields', text: 'New fields computed on each item.', init: { field: '' } },
+  { kind: 'check', label: 'Check', text: 'Rules each item (or the whole list) must pass: drop, flag, or fail the run.', init: [{ rule: '', message: '', on_fail: 'drop' }] },
+  { kind: 'remove_duplicates', label: 'Remove duplicates', text: 'One item per key, keeping the best.', init: { key: '' } },
+  { kind: 'sort', label: 'Sort and take', text: 'Order by a value; optionally keep the first N.', init: { by: '', descending: true } },
+  { kind: 'summarize', label: 'Summarize', text: 'Totals (count, sum, avg, min, max), overall or by group.', init: { totals: { count: 'count()' } } },
+  { kind: 'match', label: 'Match', text: 'Find each item\u2019s match in another list, by key.', init: { with: '', key: '', other_key: '', as: 'match' } },
+  { kind: 'link', label: 'Link related', text: 'Join items into clusters when a pair rule holds.', init: { together: '', as: 'members' } },
+]
+
+/** The CEL engine: operators over `items`, in order. The operator iterates, sorts and totals; each rule judges one item. */
+function CelOperators() {
+  const { step, set, p } = useStep()
+  const ops: Json[] = Array.isArray(step.operation?.cel) ? step.operation.cel : []
+  const [adding, setAdding] = useState(false)
+  const inputs = Object.keys(step.takes ?? {}).filter((k) => k !== 'items')
+  const saved = ops.map((o) => o.summarize?.save_as).filter(Boolean) as string[]
+  const put = (next: Json[]) => set(['operation', 'cel'], next)
+  const move = (i: number, d: number) => { const n = [...ops]; const [x] = n.splice(i, 1); n.splice(i + d, 0, x); put(n) }
+  const at = (i: number, ...rest: (string | number)[]) => ['operation', 'cel', i, ...rest]
+  const pairs = (obj: Json, onChange: (o: Json) => void, path: (k: string) => string, placeholder: string, nameHint: string) => (
+    <div className="stack" style={{ gap: 4 }}>
+      {Object.entries(obj ?? {}).map(([name, expr]) => (
+        <span key={name} className="row" style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+          <input className="input mono" style={{ width: 110, flex: 'none' }} value={name} aria-label="Name"
+            onChange={(e) => { const v = e.target.value.replace(/\W/g, '_'); const n: Json = {}; for (const [k, x] of Object.entries(obj)) n[k === name ? v : k] = x; onChange(n) }} />
+          <span className="grow"><Cel value={expr as string} onChange={(v) => onChange({ ...obj, [name]: v })} path={path(name)} placeholder={placeholder} /></span>
+          <button className="icon-btn" aria-label={`Remove ${name}`} onClick={() => { const n = { ...obj }; delete n[name]; onChange(n) }}><Icon name="x" size={12} /></button>
+        </span>
+      ))}
+      <button className="link" style={{ alignSelf: 'flex-start' }} onClick={() => { let k = nameHint, i = 2; while ((obj ?? {})[k] !== undefined) k = `${nameHint}_${i++}`; onChange({ ...(obj ?? {}), [k]: '' }) }}>
+        <Icon name="plus" size={13} width={2} />Add</button>
+    </div>
+  )
+  const body = (o: Json, i: number) => {
+    const [[kind, c]] = Object.entries(o)
+    const path = (...r: (string | number)[]) => p('operation', 'cel', i, kind, ...r)
+    switch (kind) {
+      case 'keep': return <Cel value={c} onChange={(v) => set(at(i, 'keep'), v)} path={path()} placeholder="item.amount > 0" />
+      case 'add_fields': return pairs(c, (v) => set(at(i, 'add_fields'), v), (n) => path(n), 'item.revenue / item.orders', 'field')
+      case 'check': return (
+        <div className="stack" style={{ gap: 6 }}>
+          {(c ?? []).map((r: Json, k: number) => (
+            <div key={k} className="stack" style={{ gap: 4, paddingLeft: 8, borderLeft: '2px solid var(--line)' }}>
+              <Cel value={r.rule} onChange={(v) => set(at(i, 'check', k, 'rule'), v)} path={path(k, 'rule')} placeholder={r.once ? 'size(items) > 0' : 'has(item.region)'} />
+              <span className="row" style={{ flexWrap: 'nowrap' }}>
+                <input className="input grow" value={r.message ?? ''} placeholder="Message when it fails" aria-label="Message" onChange={(e) => set(at(i, 'check', k, 'message'), e.target.value)} />
+                <Select value={r.on_fail ?? 'drop'} options={['drop', 'flag', 'fail']} labels={{ drop: 'Drop it', flag: 'Flag it', fail: 'Fail the run' }} onChange={(v) => set(at(i, 'check', k, 'on_fail'), v)} label="On fail" />
+                <button className="icon-btn" aria-label="Remove rule" onClick={() => set(at(i, 'check'), c.filter((_: Json, j: number) => j !== k))}><Icon name="x" size={12} /></button>
+              </span>
+              <Check checked={!!r.once} onChange={(on) => set(at(i, 'check', k, 'once'), on || undefined)}>Once, on the whole list (<code className="mono">items</code>)</Check>
+            </div>
+          ))}
+          <button className="link" style={{ alignSelf: 'flex-start' }} onClick={() => set(at(i, 'check'), [...(c ?? []), { rule: '', message: '', on_fail: 'drop' }])}><Icon name="plus" size={13} width={2} />Add a rule</button>
+        </div>)
+      case 'remove_duplicates': return (
+        <>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>Same when</span><span className="grow"><Cel value={c.key} onChange={(v) => set(at(i, kind, 'key'), v)} path={path('key')} placeholder="item.order_id" /></span></span>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>Keep highest</span><span className="grow"><Cel value={c.keep_highest} onChange={(v) => set(at(i, kind, 'keep_highest'), v || undefined)} path={path('keep_highest')} placeholder="optional: item.updated_at" /></span></span>
+        </>)
+      case 'sort': return (
+        <>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>By</span><span className="grow"><Cel value={c.by} onChange={(v) => set(at(i, kind, 'by'), v)} path={path('by')} placeholder="item.total_revenue" /></span></span>
+          <span className="row"><Segmented options={['desc', 'asc']} value={c.descending ? 'desc' : 'asc'} onChange={(v) => set(at(i, kind, 'descending'), v === 'desc')} labels={{ desc: 'Highest first', asc: 'Lowest first' }} />
+            <span className="muted">take</span><Text width={50} value={c.take ?? ''} onChange={(v) => set(at(i, kind, 'take'), v ? Number(v) : undefined)} label="Take" placeholder="all" /></span>
+        </>)
+      case 'summarize': return (
+        <>
+          <span className="row"><span className="muted" style={{ width: 90 }}>Of</span>
+            <Select value={c.of ?? 'items'} options={['items', ...inputs]} onChange={(v) => set(at(i, kind, 'of'), v === 'items' ? undefined : v)} label="Of" /></span>
+          <span className="eyebrow">Group by (optional)</span>
+          {pairs(c.group_by ?? {}, (v) => set(at(i, kind, 'group_by'), Object.keys(v).length ? v : undefined), (n) => path('group_by', n), 'item.region', 'group')}
+          <span className="eyebrow">Totals</span>
+          {pairs(c.totals ?? {}, (v) => set(at(i, kind, 'totals'), v), (n) => path('totals', n), 'sum(item.revenue)', 'total')}
+          <span className="faint">count(), count(rule), sum(…), avg(…), min(…), max(…) of an expression over <code className="mono">item</code>.</span>
+          <span className="row"><span className="muted">Save as</span><Text width={120} value={c.save_as ?? ''} onChange={(v) => set(at(i, kind, 'save_as'), v.replace(/\W/g, '_') || undefined)} label="Save as" placeholder="optional" />
+            <span className="faint">{c.save_as ? `The list goes on unchanged; later rules read ${c.save_as}.<total>.` : 'Empty: the totals replace the list.'}</span></span>
+        </>)
+      case 'match': return (
+        <>
+          <span className="row"><span className="muted" style={{ width: 90 }}>With</span>
+            <Select value={c.with ?? ''} options={['', ...inputs]} labels={{ '': 'Pick an input' }} onChange={(v) => set(at(i, kind, 'with'), v)} label="With" /></span>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>Item key</span><span className="grow"><Cel value={c.key} onChange={(v) => set(at(i, kind, 'key'), v)} path={path('key')} placeholder="item.customer_id" /></span></span>
+          <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 90 }}>Other key</span><span className="grow"><Cel value={c.other_key} onChange={(v) => set(at(i, kind, 'other_key'), v)} path={path('other_key')} placeholder="other.id" /></span></span>
+          <span className="row"><span className="muted" style={{ width: 90 }}>As</span><Text width={120} value={c.as ?? 'match'} onChange={(v) => set(at(i, kind, 'as'), v.replace(/\W/g, '_'))} label="As" />
+            <span className="faint">Absent when nothing matched: test with <code className="mono">has(item.{c.as ?? 'match'})</code>.</span></span>
+        </>)
+      case 'link': return (
+        <>
+          <Cel value={c.together} onChange={(v) => set(at(i, kind, 'together'), v)} path={path('together')} placeholder="a.confirmation == b.confirmation" />
+          <span className="faint">Items join a cluster when the rule holds for a pair (<code className="mono">a</code>, <code className="mono">b</code>). Each cluster becomes an item with <code className="mono">{c.as ?? 'members'}</code> and <code className="mono">size</code>.</span>
+        </>)
+    }
+    return null
+  }
+  return (
+    <Block title="Operators" aside="in order, each feeding the next">
+      <span className="faint">Each rule sees <code className="mono">item</code> (one record), <code className="mono">run</code>
+        {inputs.length ? <>, {inputs.map((x) => <code key={x} className="mono" style={{ marginRight: 4 }}>{x}</code>)}</> : null}
+        {saved.length ? <> and what Summarize saved ({saved.join(', ')})</> : null}. Numbers mix freely; dividing two whole numbers gives a whole number.</span>
+      {ops.map((o, i) => {
+        const kind = Object.keys(o)[0]
+        const meta = CEL_OPS.find((x) => x.kind === kind)
+        return (
+          <div key={i} className="op">
+            <span className="spread"><span className="row" style={{ gap: 6 }}><span className="numbered">{i + 1}</span><strong>{meta?.label ?? kind}</strong><span className="faint">{meta?.text}</span></span>
+              <span className="row" style={{ gap: 2, flexWrap: 'nowrap' }}>
+                <button className="icon-btn" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><Icon name="up" size={12} /></button>
+                <button className="icon-btn" aria-label="Move down" disabled={i === ops.length - 1} onClick={() => move(i, 1)}><Icon name="down" size={12} /></button>
+                <button className="icon-btn" aria-label="Remove operator" onClick={() => put(ops.filter((_, k) => k !== i))}><Icon name="x" size={12} /></button>
+              </span></span>
+            {body(o, i)}
+          </div>
+        )
+      })}
+      {adding ? (
+        <div className="stack" style={{ gap: 4 }}>
+          {CEL_OPS.map((x) => (
+            <button key={x.kind} type="button" className="row link" style={{ gap: 8, justifyContent: 'flex-start', flexWrap: 'nowrap', alignItems: 'flex-start', textAlign: 'left' }}
+              onClick={() => { put([...ops, { [x.kind]: x.init }]); setAdding(false) }}>
+              <strong style={{ width: 130, flex: 'none' }}>{x.label}</strong><span className="faint">{x.text}</span></button>
+          ))}
+          <button className="link" style={{ color: 'var(--faint)', alignSelf: 'flex-start' }} onClick={() => setAdding(false)}>Cancel</button>
+        </div>
+      ) : <button className="link" style={{ alignSelf: 'flex-start' }} onClick={() => setAdding(true)}><Icon name="plus" size={13} width={2} />Add an operator</button>}
+      <span className="faint">Returns <code className="mono">items</code>, <code className="mono">notes</code> (what each operator dropped or changed){saved.length ? <> and {saved.map((x) => <code key={x} className="mono" style={{ marginLeft: 4 }}>{x}</code>)}</> : null}.</span>
+      <FieldErrors path={p('operation', 'cel')} />
+    </Block>
   )
 }

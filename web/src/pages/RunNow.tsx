@@ -14,10 +14,11 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
   const [emails, setEmails] = useState<{ id: string; from: string; subject: string }[]>([])
   const [email, setEmail] = useState('')
   const [scripted, setScripted] = useState(false)
-  const [source, setSource] = useState<'sample' | 'live'>('sample')
+  const [source, setSource] = useState<'sample' | 'live'>('live')
   const [accounts, setAccounts] = useState<Connection[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
     api.agent(agent).then((d) => {
@@ -28,6 +29,7 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
       setInputs(Object.fromEntries(Object.entries(opts).map(([k, o]: [string, any]) => [k, String(o.default ?? '')])))
       api.connections().then(setAccounts)
       if (!session?.claude_api && d.meta.replay) setScripted(true)
+      if (d.draft.trigger?.kind === 'pubsub') setMessage(JSON.stringify(d.draft.trigger.sample ?? {}, null, 1))
     }).catch((e) => setError(e.message))
   }, [agent, draftOnly, session?.claude_api])
 
@@ -47,7 +49,11 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
   const start = async () => {
     setBusy(true); setError(null)
     try {
-      const run = await api.startRun(agent, { version: version === 'draft' ? null : Number(version), inputs, email_id: email || null, scripted, source })
+      let parsed = null
+      if (d.trigger?.kind === 'pubsub') {
+        try { parsed = JSON.parse(message || '{}') } catch { throw new Error('The message isn\u2019t valid JSON.') }
+      }
+      const run = await api.startRun(agent, { version: version === 'draft' ? null : Number(version), inputs, email_id: email || null, scripted, source, message: parsed })
       onStarted(run)
     } catch (e: any) { setError(e.message) } finally { setBusy(false) }
   }
@@ -60,6 +66,12 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
         <Block title="Run it on this email" aside={source === 'live' ? 'from your inbox, last 14 days' : 'from the sample data'}>
           <Select value={email} options={emails.map((e) => e.id)} onChange={setEmail} label="Email"
             labels={Object.fromEntries(emails.map((e) => [e.id, `${e.subject} · ${e.from}`]))} />
+        </Block>
+      )}
+      {d.trigger?.kind === 'pubsub' && (
+        <Block title="Run it on this message" aside="its fields, as JSON">
+          <textarea className="input mono" rows={5} value={message} onChange={(e) => setMessage(e.target.value)} aria-label="Message" />
+          <span className="faint">Starts as if this had arrived on {(d.trigger.subscription ?? '').split('/').pop() || 'the subscription'}. Filled in from the trigger's sample.</span>
         </Block>
       )}
       {Object.entries(d.run_options ?? {}).map(([name, opt]: [string, any]) => (
@@ -87,7 +99,7 @@ export default function RunNow({ agent, draftOnly, onClose, onStarted }: {
                       : a.sign_in === 'shared' ? 'an admin adds the connector\u2019s token' : 'sign it in on its card'
                     return <span key={i}>{i > 0 && '; '}<Link to="/connections">{a?.label ?? c.account ?? `a ${c.service} connection`}</Link> ({how})</span>
                   })}. Or run on sample data.</span>
-                : <span className="muted">{live.map((c) => `${c.service === 'github' ? 'GitHub steps read as' : 'Gmail steps read'} ${acct(c)?.signed_in_as}`).join('; ')}, read only, within each step's limits.</span>}
+                : <span className="muted">{live.map((c) => `${c.service === 'github' ? 'GitHub steps read as' : (acct(c)?.permissions ?? []).includes('send') ? 'Gmail steps use' : 'Gmail steps read'} ${acct(c)?.signed_in_as}`).join('; ')}, within each step's limits.{(d.steps ?? []).some((x: any) => x.send_email) ? ' Email is sent for real (unless it\u2019s a dry run), only to each step\u2019s recipients.' : ''}</span>}
               <span className="faint">Sheets and Calendar steps still use sample data, so nothing is written to your real accounts.</span>
             </>
           )

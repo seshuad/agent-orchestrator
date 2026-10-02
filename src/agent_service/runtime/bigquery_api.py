@@ -100,8 +100,10 @@ def allowed(table: str, allow: list[str], default_project: str) -> bool:
 
 # ------------------------------------------------------------------ credentials and clients
 
-def credentials(up: dict[str, Any]):
-    """google-auth credentials for the connector: a service account key, the gcloud account, or ADC."""
+def credentials(up: dict[str, Any], scopes: list[str] | None = None):
+    """google-auth credentials for the connector: a service account key, the gcloud account, or ADC. BigQuery's scope
+    unless another is asked for (the Pub/Sub trigger pulls with the same credentials)."""
+    scopes = scopes or ["https://www.googleapis.com/auth/bigquery"]
     kind = (up.get("auth") or {}).get("kind", "gcloud")
     if kind == "service_account":
         from google.oauth2 import service_account
@@ -109,7 +111,7 @@ def credentials(up: dict[str, Any]):
         if not key:
             raise PermissionError("The BigQuery connector has no service account key. An admin adds it under Connectors.")
         info = key if isinstance(key, dict) else json.loads(key)
-        return service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/bigquery"])
+        return service_account.Credentials.from_service_account_info(info, scopes=scopes)
     if kind == "gcloud":
         from google.oauth2.credentials import Credentials
         out = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, timeout=30)
@@ -117,7 +119,7 @@ def credentials(up: dict[str, Any]):
             raise PermissionError(f"The gcloud command couldn't give a token: {out.stderr.strip()[-200:]}")
         return Credentials(out.stdout.strip())
     import google.auth
-    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/bigquery"])
+    creds, _ = google.auth.default(scopes=scopes)
     return creds
 
 

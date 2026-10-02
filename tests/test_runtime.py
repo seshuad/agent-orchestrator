@@ -504,3 +504,42 @@ def test_runs_start_conductor_with_prompt_caching_on(monkeypatch):
     assert out.stdout.strip() == "True", out.stderr
     monkeypatch.setenv("AGENT_SERVICE_PROMPT_CACHE", "0")
     assert runner.conductor_command() == ["conductor"]
+
+
+def test_cel_numbers_mix_ints_and_doubles():
+    assert Rule("r", "a / b > 500").evaluate({"a": 146683.71, "b": 208}) is True        # BigQuery: revenue double, orders int
+    assert Rule("r", "a == 1").evaluate({"a": 1.0}) is True
+    assert Rule("r", "7 / 2").evaluate({}) == 3                                         # whole numbers stay whole
+
+
+def test_cel_operators_keep_add_check_summarize_sort():
+    months = [{"month": m, "orders": o, "revenue": r} for m, o, r in [("2024-09", 64, 34518.15), ("2024-10", 67, 50888), ("2024-11", 54, 21483.49), ("2024-12", 66, 49537.93)]]
+    out = steps.cel_pipeline([
+        {"summarize": {"totals": {"avg": "avg(item.revenue)", "n": "count()"}, "save_as": "overall"}},
+        {"add_fields": {"drop_pct": "(overall.avg - item.revenue) / overall.avg * 100", "aov": "item.revenue / item.orders"}},
+        {"check": [{"rule": "item.aov < 700", "message": "order value high", "on_fail": "flag"},
+                   {"rule": "size(items) >= 3", "message": "too few months", "once": True, "on_fail": "fail"}]},
+        {"keep": "item.drop_pct >= double(run.threshold)"},
+        {"sort": {"by": "item.drop_pct", "descending": True, "take": 1}},
+    ], {"items": months, "run": {"threshold": 20}})
+    assert [m["month"] for m in out["items"]] == ["2024-11"] and out["overall"]["n"] == 4
+    assert "flags" not in out["items"][0] and any(n.startswith("Keep: left out 3") for n in out["notes"])
+    with pytest.raises(steps.ScriptError, match="too few months"):
+        steps.cel_pipeline([{"check": [{"rule": "size(items) >= 9", "message": "too few months", "once": True, "on_fail": "fail"}]}],
+                           {"items": months})
+
+
+def test_cel_operators_dedupe_match_group_link():
+    issues = [{"n": 1, "author": "ana", "labels": ["bug"]}, {"n": 2, "author": "bo", "labels": []}, {"n": 3, "author": "ana", "labels": ["bug"]},
+              {"n": 1, "author": "ana", "labels": ["bug"]}]
+    out = steps.cel_pipeline([
+        {"remove_duplicates": {"key": "item.n"}},
+        {"match": {"with": "people", "key": "item.author", "other_key": "other.login", "as": "person"}},
+        {"add_fields": {"team": "has(item.person) ? item.person.team : 'unknown'"}},
+        {"summarize": {"group_by": {"team": "item.team"}, "totals": {"issues": "count()", "bugs": "count('bug' in item.labels)"}}},
+        {"sort": {"by": "item.issues", "descending": True}},
+    ], {"items": issues, "people": [{"login": "ana", "team": "core"}]})
+    assert out["items"] == [{"team": "core", "issues": 2, "bugs": 2}, {"team": "unknown", "issues": 1, "bugs": 0}]
+    assert out["notes"] == ["Remove duplicates: dropped 1.", "Match: 1 of 3 had nothing in people."]
+    linked = steps.cel_pipeline([{"link": {"together": "a.conf == b.conf"}}], {"items": [{"conf": "X"}, {"conf": "Y"}, {"conf": "X"}]})
+    assert [c["size"] for c in linked["items"]] == [2, 1]

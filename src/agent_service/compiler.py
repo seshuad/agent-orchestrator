@@ -280,7 +280,8 @@ def limits_of(uses: Uses, agent: Agent) -> dict[str, Any]:
     spec: dict[str, Any] = {"connection": conn.service, "actions": uses.actions, "agent": agent.name}
     if conn.account:
         spec["account"] = conn.account          # the workspace connection, for runs on real accounts
-    for key in ("senders", "lookback_days", "only_message", "from_domain", "only_cited_by", "sheets", "calendar", "repos", "arg_limits", "datasets", "max_bytes", "max_rows", "tables"):
+    for key in ("senders", "lookback_days", "only_message", "from_domain", "only_cited_by", "sheets", "calendar", "repos", "arg_limits", "datasets", "max_bytes", "max_rows", "tables",
+                "recipients", "max_emails"):
         value = getattr(uses, key)
         if value is None:
             continue
@@ -376,6 +377,11 @@ class Compiler:
             out["email_id"] = {"type": "string", "description": f"The email to {self.agent.trigger.to} that started the run."}
             out["sender_domain"] = {"type": "string", "description": "Its sender's domain, from the email's headers."}
         kinds = {"yes/no": "boolean", "text": "string", "number": "number"}
+        if self.agent.trigger.kind == "pubsub":
+            out["message_id"] = {"type": "string", "required": False, "description": "The Pub/Sub message that started the run."}
+            out["published_at"] = {"type": "string", "required": False, "description": "When it was published (UTC, ISO 8601)."}
+            for name, fd in (self.agent.trigger.message or {}).items():
+                out[name] = {"type": kinds.get(fd.type, "string"), "required": False, "description": fd.hint or f"The message's {name}."}
         for name, opt in self.agent.run_options.items():
             out[name] = {"type": kinds[opt.type], "required": False, "default": default_of(name, opt), "description": opt.description}
         if uses_started(self.agent) and "started" not in out:
@@ -500,6 +506,35 @@ class Compiler:
                 raise CompileError(f"{step.name}: write its SQL.")
             if not step.uses or self.agent.connections[step.uses.connection].service != "bigquery":
                 raise CompileError(f"{step.name}: pick the BigQuery connection it queries.")
+        if op == "cel":
+            if "items" not in step.takes:
+                raise CompileError(f"{step.name}: pick the list it works on (Takes: items).")
+            if not conf:
+                raise CompileError(f"{step.name}: add at least one operator.")
+            need = {"keep": [], "add_fields": [], "check": [], "remove_duplicates": ["key"], "sort": ["by"], "summarize": ["totals"],
+                    "match": ["with", "key", "other_key"], "link": ["together"]}
+            for n, o in enumerate(conf, 1):
+                if not isinstance(o, dict) or len(o) != 1 or next(iter(o)) not in need:
+                    raise CompileError(f"{step.name}: operator {n} must be one of {', '.join(need)}.")
+                (kind, c), = o.items()
+                missing = [k for k in need[kind] if not (c or {}).get(k)]
+                if missing or c in (None, "", [], {}):
+                    raise CompileError(f"{step.name}: operator {n} ({kind.replace('_', ' ')}) needs {', '.join(missing) or 'its settings'}.")
+                if kind == "match" and c["with"] not in step.takes:
+                    raise CompileError(f"{step.name}: operator {n} matches with {c['with']!r}: add it under Takes.")
+                if kind == "summarize" and c.get("of", "items") not in step.takes:
+                    raise CompileError(f"{step.name}: operator {n} summarizes {c['of']!r}: add it under Takes.")
+                for name, spec in ((c.get("totals") or {}).items() if kind == "summarize" else []):
+                    if not re.match(r"^\s*(count|sum|avg|min|max)\s*\((.*)\)\s*$", str(spec), re.S):
+                        raise CompileError(f"{step.name}: the total {name!r} must be count(), count(<rule>), sum(<expr>), avg, min or max.")
+        if op == "chart":
+            conf = conf or {}
+            if "rows" not in step.takes:
+                raise CompileError(f"{step.name}: pick the rows it charts (Takes: rows).")
+            if not conf.get("spec") and not (conf.get("x") and conf.get("y")):
+                raise CompileError(f"{step.name}: pick the fields for its x and y axes.")
+            if conf.get("reference") and conf["reference"] not in step.takes:
+                raise CompileError(f"{step.name}: its reference line reads {conf['reference']!r}: add it under Takes.")
         if op == "javascript":
             if not str((conf or {}).get("code") or "").strip():
                 raise CompileError(f"{step.name}: write its JavaScript.")
@@ -529,6 +564,14 @@ class Compiler:
             stdin = tojson_dict(takes)
         elif op == "bigquery":
             args += ["--sql-b64", base64.b64encode(conf["sql"].encode()).decode()]     # base64: never read as a template
+            stdin = tojson_dict(takes)
+        elif op == "cel":
+            args += ["--ops-b64", base64.b64encode(json.dumps(conf, ensure_ascii=False).encode()).decode()]    # never read as a template
+            run = "{" + ", ".join([f"{json.dumps(n)}: workflow.input.{n}" for n in self.agent.run_options]
+                                  + (['"started": workflow.input.started'] if uses_started(self.agent) else [])) + "}"
+            stdin = "{{ {" + ", ".join([f"{json.dumps(k)}: {v}" for k, v in takes.items()] + [f'"run": {run}']) + "} | tojson }}"
+        elif op == "chart":
+            args += ["--chart-b64", base64.b64encode(json.dumps(conf, ensure_ascii=False).encode()).decode()]   # never read as a template
             stdin = tojson_dict(takes)
         elif op == "javascript":
             # Base64, so nothing in the code is read as a template by the workflow engine.
@@ -986,21 +1029,47 @@ class Compiler:
         ids = [s.id for s in block.steps]
         for s in block.steps:
             self.grouped.add(s.id)
+            if isinstance(s, BuiltInStep):
+                self._built_in_in_group(s)
+                continue
             self._ask(s, Scope(self.agent, None), [])
             self.agents[-1].pop("routes", None)             # members of a group don't route; the group does
         record = f"{block.id}_record"
         self.parallel.append({"name": block.id, "description": block.name, "agents": ids,
                               "failure_mode": "fail_fast" if block.failure == "stop" else "continue_on_error",
                               "routes": [{"to": record}]})
+        # A Built-in member's error comes back as a result (is_error), which Conductor counts as success: with "stop",
+        # the run stops here; with "continue", that member just hands on nothing.
+        built = [s.id for s in block.steps if isinstance(s, BuiltInStep)]
+        stops = [{"to": self._step_failed(), "when": "{{ " + " or ".join(
+            f"(({block.id}.outputs.get('{m}') or {{}}).get('is_error') == true)" for m in built) + " }}"}] if built and block.failure == "stop" else []
         if self.replay:                                      # scripted answers record themselves
             self.agents.append({"name": record, "type": "set", "description": "Scripted answers record themselves.",
-                                "input": [], "values": {"recorded": "true"}, "routes": [{"to": after}]})
+                                "input": [f"{block.id}.outputs"] if stops else [], "values": {"recorded": "true"}, "routes": stops + [{"to": after}]})
             return
         self.servers.setdefault("cel-evaluator", {"command": "agent-service-cel", "env": {v: "${" + v + "}" for v in RUNTIME_ENV}})
+        asks = [s.id for s in block.steps if isinstance(s, AskStep)]      # Built-in steps record their own output
         self.agents.append({"name": record, "type": "mcp", "server": "cel-evaluator", "tool": "record",
                             "description": "Keeps each answer for the run log.", "input": [f"{block.id}.outputs"],
-                            "arguments": {"outputs": "{{ {" + ", ".join(f"{json.dumps(m)}: {block.id}.outputs.get('{m}')" for m in ids) + "} | tojson }}"},
-                            "output": {"recorded": {"type": "array", "items": {"type": "string"}}}, "routes": [{"to": after}]})
+                            "arguments": {"outputs": "{{ {" + ", ".join(f"{json.dumps(m)}: {block.id}.outputs.get('{m}')" for m in asks) + "} | tojson }}"},
+                            "output": {"recorded": {"type": "array", "items": {"type": "string"}}}, "routes": stops + [{"to": after}]})
+
+    def _step_failed(self) -> str:
+        self._script_routes([])                             # makes sure the run's "a step failed" stop exists
+        return STEP_FAILED
+
+    def _built_in_in_group(self, step: BuiltInStep) -> None:
+        """A Built-in step as a member of a parallel group. Conductor runs only model, set and MCP steps in groups, so it
+        becomes a call to the step library's MCP server (agent-service-steps --mcp): the same arguments and inputs the
+        script would get, on a server of its own that carries the step's signed limits."""
+        self._built_in(step, Scope(self.agent, None), [])
+        script = self.agents.pop()
+        server = f"steps-{step.id}"
+        env = {**{v: "${" + v + "}" for v in RUNTIME_ENV}, **{v: "${" + v + ":-}" for v in OPTIONAL_ENV},
+               "AGENT_SERVICE_STEP": step.id, **(script.get("env") or {})}
+        self.servers[server] = {"command": "agent-service-steps", "args": ["--mcp"], "env": env}
+        self.agents.append({"name": step.id, "description": step.name, "type": "mcp", "server": server, "tool": "run",
+                            "input": script["input"], "arguments": {"argv": script["args"], "data": script["stdin"]}})
 
     def _parallel_each(self, block: ParallelBlock, after: str) -> None:
         """Its steps, once for each item of a list, several items at a time. The steps compile to a workflow of their own
@@ -1115,6 +1184,26 @@ class Compiler:
         if step.call_tool is not None:
             self._call_tool(step, scope, after, dry_flag, dry_input)
             return
+        if step.send_email is not None:
+            se = step.send_email
+            if not (se.get("to") and se.get("subject") and se.get("body")):
+                raise CompileError(f"{step.name}: fill in who it goes to, the subject and the body.")
+            if not step.uses.recipients:
+                raise CompileError(f"{step.name}: name the addresses (or @domains) it may send to, under Uses.")
+            _, env_var = self._server(step.uses, step.id, actions_tools=False)
+            values = {k: jinja_value(v, scope) for k, v in step.takes.items()}
+            records = f"({jinja_value(se['for_each'], scope)} or [])" if se.get("for_each") else "none"
+            charts = "[" + ", ".join(jinja_value(c, scope) for c in se.get("charts") or []) + "]"
+            stdin = tojson_dict({"values": "{" + ", ".join(f"{json.dumps(k)}: {v}" for k, v in values.items()) + "}", "records": records,
+                                 "charts": charts})
+            self.agents.append({
+                "name": step.id, "description": step.name, "type": "script", "command": "agent-service-steps",
+                "args": ["send-email", "--step", step.id, "--email", json.dumps({k: se.get(k) for k in ("to", "cc", "subject", "body")}, ensure_ascii=False),
+                         "--dry-run", dry_flag],
+                "env": {"AGENT_SERVICE_LIMITS_TOKEN": "${" + env_var + "}", **{v: "${" + v + ":-}" for v in OPTIONAL_ENV}},
+                "input": inputs_of(scope, dry_input + [f"workflow.input.{v.split('.', 1)[1]}" for v in _flat(step.takes.values()) if v.startswith(("run.", "trigger."))]),
+                "stdin": stdin, "routes": self._script_routes([{"to": after}])})
+            return
         if step.insert_rows is not None:
             ir = step.insert_rows
             if not ir.get("table"):
@@ -1202,11 +1291,21 @@ def output_fields(step: Any) -> list[str]:
         return list(step.returns)
     if step.op == "bigquery":
         return ["rows", "row_count", "truncated", "bytes_billed", "cost_usd"]
+    if step.op == "chart":
+        return ["image", "title"]
+    if step.op == "cel":
+        saved = [c["save_as"] for o in conf_list(step) for k, c in o.items() if k == "summarize" and (c or {}).get("save_as")]
+        return ["items", "notes", *saved]
     conf = step.operation[step.op]
     grouped = step.op == "tidy" and any("group" in op for op in conf)
     return {"tidy": ["trips" if grouped else "records", "notes"], "lookup": ["found", conf.get("as", "row") if isinstance(conf, dict) else "row"],
             "filter-rows": [conf.get("as", "rows") if isinstance(conf, dict) else "rows"], "compare": ["status"],
             "three-way-match": ["passed", "differences"], "show": ["value"]}[step.op]
+
+
+def conf_list(step: Any) -> list[dict[str, Any]]:
+    ops = step.operation.get("cel") or []
+    return [o for o in ops if isinstance(o, dict)]
 
 
 def default_of(name: str, opt: Any) -> Any:

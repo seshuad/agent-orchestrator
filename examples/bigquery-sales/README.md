@@ -4,6 +4,10 @@ Test runs of agents with a BigQuery connection query these tables in DuckDB inst
 table: `bigquery/<dataset>/<table>.json`. Made up; nothing here is real.
 
 - `sales_processed.monthly_trend`, `revenue_by_region`, `revenue_by_product`: shaped like the real tables of the same
-  names (the sample year has one weak month, August, for monthly-revenue-watch to catch)
+  names, and like them they reconcile: $543,673.80 over 731 orders in all three (the sample year has one weak month, August, for monthly-revenue-watch to catch)
 - `sales_processed.orders`: 120 orders
 - `credit.customer_limits`
+
+`sales-load-check.agent.yaml` is the ETL example (see the main README): it runs when a Pub/Sub message says
+`sales_processed` finished loading, checks the load, and reports what moved. `replay-load-check.yaml` scripts its two
+model steps for test runs on this sample.
