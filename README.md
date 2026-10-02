@@ -433,3 +433,7 @@ correctness: a generated fix reads as fluent and certain whether or not it's rig
 
 The design rationale behind the core concepts is in [Agent Service — Architecture & Design
 Rationale](https://claude.ai/artifact/GyVUqEEixzToawAWo3vcf4).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
