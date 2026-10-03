@@ -143,7 +143,7 @@ def test_connections_lifecycle(api):
     assert api.put("/api/connections/finance-sheets", json={**body, "force": True}).json()["permissions"] == ["read"]
     errors = api.get("/api/agents/invoice-check").json()["feedback"]["errors"]
     assert any(e["path"] == "steps.2.uses.actions" and "append row" in e["message"] for e in errors)   # the Act step
-    assert api.delete("/api/connections/seshu-gmail").status_code == 409
+    assert api.delete("/api/connections/my-gmail").status_code == 409
     added = api.post("/api/connections", json={"service": "gmail", "account": "sam@northpeak.co", "label": "Sam's Gmail", "permissions": ["read"]}).json()
     assert added["id"] == "sams-gmail" and added["used_by"] == []
     assert api.delete("/api/connections/sams-gmail").json() == {"deleted": "sams-gmail"}
@@ -163,9 +163,9 @@ def test_an_older_workspace_gets_its_connections(tmp_path):
 
 def test_real_accounts_need_a_google_sign_in(api):
     r = api.post("/api/agents/travel-sync/runs", json={"version": 1, "scripted": True, "source": "live"})
-    assert r.status_code == 422 and "Sign these connections in first" in r.json()["detail"] and "seshu-gmail" in r.json()["detail"]
+    assert r.status_code == 422 and "Sign these connections in first" in r.json()["detail"] and "my-gmail" in r.json()["detail"]
     conns = {c["id"]: c for c in api.get("/api/connections").json()}
-    assert conns["seshu-gmail"]["can_sign_in"] and not conns["seshu-gmail"]["signed_in"]
+    assert conns["my-gmail"]["can_sign_in"] and not conns["my-gmail"]["signed_in"]
     assert not conns["finance-sheets"]["can_sign_in"]                    # only Gmail and GitHub, for now
 
 
@@ -248,19 +248,19 @@ def test_a_missing_run_option_reads_as_a_builder_problem():
 
 def test_a_github_connection_takes_a_checked_token(api, tmp_path, monkeypatch):
     from agent_service.runtime import github_api
-    conn = api.post("/api/connections", json={"service": "github", "account": "seshuad", "label": "Seshu's GitHub", "permissions": ["read"]}).json()
+    conn = api.post("/api/connections", json={"service": "github", "account": "octocat", "label": "My GitHub", "permissions": ["read"]}).json()
     assert conn["can_sign_in"] and conn["sign_in"] == "token" and not conn["signed_in"]
     assert conn["allowed"] == ["open", "read", "search"]
 
     def whoami(token, api=None):
         if token != "github_pat_good":
             raise github_api.GitHubError("GitHub said 401: Bad credentials")
-        return "seshuad"
+        return "octocat"
     monkeypatch.setattr(github_api, "whoami", whoami)
     bad = api.post(f"/api/connections/{conn['id']}/github/token", json={"token": "nope"})
     assert bad.status_code == 422 and "Bad credentials" in bad.json()["detail"]
     ok = api.post(f"/api/connections/{conn['id']}/github/token", json={"token": " github_pat_good "}).json()
-    assert ok["signed_in"] and ok["signed_in_as"] == "seshuad" and "github_pat_good" not in str(ok)
+    assert ok["signed_in"] and ok["signed_in_as"] == "octocat" and "github_pat_good" not in str(ok)
     assert "github_pat_good" not in str(api.get("/api/connections").json())
     assert (tmp_path / "vault" / f"{conn['id']}.json").exists()
     api.delete(f"/api/connections/{conn['id']}")
@@ -268,7 +268,7 @@ def test_a_github_connection_takes_a_checked_token(api, tmp_path, monkeypatch):
 
 
 def test_an_ask_step_reads_github_within_its_repositories(api):
-    conn = api.post("/api/connections", json={"service": "github", "account": "seshuad", "permissions": ["read"]}).json()
+    conn = api.post("/api/connections", json={"service": "github", "account": "octocat", "permissions": ["read"]}).json()
     api.post("/api/agents", json={"name": "issue-digest", "sample_set": "GitHub issues"})
     draft = api.get("/api/agents/issue-digest").json()["draft"]
     draft["connections"] = {"github": {"service": "github", "permission": "read", "account": conn["id"]}}
@@ -475,7 +475,7 @@ run_options:
   dry_run: {{type: yes/no, default: true}}
 limits: {{budget_usd: 1.0}}
 connections:
-  gmail: {{service: gmail, permission: read, account: seshu-gmail}}
+  gmail: {{service: gmail, permission: read, account: my-gmail}}
 records:
   Leak:
     fields:
@@ -516,7 +516,7 @@ def test_describe_it_drafts_checks_and_fixes_an_agent(api, monkeypatch):
     assert d["attempts"] == 2 and d["result"]["errors"] == [] and d["result"]["agent"] == "leak-log"
     text = lambda m: m["content"] if isinstance(m["content"], str) else "".join(b.get("text", "") for b in m["content"])
     assert "can only read" in text(fake.asked[1]["messages"][-1])              # the check's error went back to Claude
-    assert "seshu-gmail" in text(fake.asked[0]["messages"][0])                 # it was told the workspace's accounts
+    assert "my-gmail" in text(fake.asked[0]["messages"][0])                 # it was told the workspace's accounts
     marked = [i for i, m in enumerate(fake.asked[1]["messages"]) if not isinstance(m["content"], str)
               and any(isinstance(b, dict) and b.get("cache_control") for b in m["content"])]
     assert marked == [len(fake.asked[1]["messages"]) - 1]                    # the next round reads the rest from the cache
@@ -847,7 +847,7 @@ def test_memory_needs_a_judgment():
 def test_a_branch_decides_for_each_item_and_remembers_each(api, tmp_path):
     import yaml as _yaml
     from agent_service.server.store import Store
-    conn = api.post("/api/connections", json={"service": "github", "account": "seshuad", "permissions": ["read"]}).json()
+    conn = api.post("/api/connections", json={"service": "github", "account": "octocat", "permissions": ["read"]}).json()
     api.post("/api/agents", json={"name": "triage", "sample_set": "GitHub issues"})
     draft = api.get("/api/agents/triage").json()["draft"]
     draft["connections"] = {"github": {"service": "github", "permission": "read", "account": conn["id"]}}
@@ -1100,9 +1100,9 @@ def test_sales_load_check_reports_a_passing_load_after_approval(api, tmp_path):
     import yaml as _yaml
     from agent_service.server.store import EXAMPLES, Store
     c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
-        "auth": {"kind": "gcloud"}, "billing_project": "project-0a33b36a-f359-40ab-93b", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+        "auth": {"kind": "gcloud"}, "billing_project": "your-gcp-project", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
     bq = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
-    mail = api.post("/api/connections", json={"service": "gmail", "account": "seshu.adunuthula@gmail.com", "permissions": ["send"]}).json()
+    mail = api.post("/api/connections", json={"service": "gmail", "account": "reports@example.com", "permissions": ["send"]}).json()
     api.post("/api/agents", json={"name": "sales-load-check", "sample_set": "Sales (BigQuery)"})
     draft = _yaml.safe_load((EXAMPLES / "bigquery-sales/sales-load-check.agent.yaml").read_text())
     draft["trigger"]["account"] = bq["id"]
@@ -1122,7 +1122,7 @@ def test_sales_load_check_reports_a_passing_load_after_approval(api, tmp_path):
     assert checked["kpis"]["total_revenue"] == 543673.8 and checked["kpis"]["total_orders"] == 731
     [m] = d["outcome"]["emails"]
     assert m["status"] == "would send" and m["subject"] == "Sales: August revenue fell 59% below a typical month"
-    assert "Load: sample-load" in m["body"] and m["to"] == ["seshu.adunuthula@gmail.com"]
+    assert "Load: sample-load" in m["body"] and m["to"] == ["reports@example.com"]
     assert m["images"] == ["charts/monthly_chart.png", "charts/region_chart.png"]                 # the charts go with it
     drawn = [e for e in d["log"] if e.get("image")]
     assert [e["detail"] for e in drawn] == ["Drew Monthly revenue", "Drew Revenue by region"]
@@ -1188,15 +1188,15 @@ def test_sales_load_check_alerts_when_one_table_cant_be_read(api, tmp_path):
     import yaml as _yaml
     from agent_service.server.store import EXAMPLES, Store
     c = api.post("/api/connectors", json={"type": "bigquery", "name": "Warehouse", "settings": {
-        "auth": {"kind": "gcloud"}, "billing_project": "project-0a33b36a-f359-40ab-93b", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
+        "auth": {"kind": "gcloud"}, "billing_project": "your-gcp-project", "allowed": ["sales_processed"], "max_bytes_cap": "10GB"}}).json()
     bq = api.post("/api/connections", json={"connector": c["id"], "service": "bigquery", "label": "Sales warehouse", "permissions": ["read"]}).json()
-    mail = api.post("/api/connections", json={"service": "gmail", "account": "seshu.adunuthula@gmail.com", "permissions": ["send"]}).json()
+    mail = api.post("/api/connections", json={"service": "gmail", "account": "reports@example.com", "permissions": ["send"]}).json()
     api.post("/api/agents", json={"name": "sales-load-check", "sample_set": "Sales (BigQuery)"})
     draft = _yaml.safe_load((EXAMPLES / "bigquery-sales/sales-load-check.agent.yaml").read_text())
     draft["trigger"]["account"] = bq["id"]
     draft["connections"]["bq"]["account"], draft["connections"]["mail"]["account"] = bq["id"], mail["id"]
     products = next(s for s in draft["steps"][0]["steps"] if s["id"] == "products")
-    products["operation"]["bigquery"]["sql"] = "SELECT * FROM `project-0a33b36a-f359-40ab-93b.credit.customer_limits`"
+    products["operation"]["bigquery"]["sql"] = "SELECT * FROM `your-gcp-project.credit.customer_limits`"
     products["uses"]["datasets"] = ["credit"]                     # outside what the connector allows: refused
     fb = api.put("/api/agents/sales-load-check", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
@@ -1339,7 +1339,7 @@ steps:
     sent = fake.asked[2]["messages"][-1]["content"][0]["content"]                 # the tool result Claude got
     assert '"sample_rows"' in sent and "2025-01" in sent
     assert {e["name"] for e in chat["explored"]} == {"sales_processed", "demo-project.sales_processed.monthly_trend"}
-    assert "bigquery-2" not in fake.asked[0]["system"][1]["text"] and bq["id"] in fake.asked[0]["system"][1]["text"]    # what it may look at
+    assert bq["id"] in fake.asked[0]["system"][1]["text"] and "sales_processed" in fake.asked[0]["system"][1]["text"]    # what it may look at
     chat = wait_chat(api, api.post(f"/api/build/{chat['id']}/message", json={"text": "Build the weak-month check."}).json()["id"])
     assert chat["status"] == "idle" and chat["agent"] == "weak-month-check", chat
     drafts = [t for t in chat["transcript"] if t.get("tool") == "save_draft"]

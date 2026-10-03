@@ -266,10 +266,10 @@ def test_github_actions_and_repositories_come_from_the_token(run, monkeypatch):
 
 class FakeGitHub:
     def __init__(self, connection):
-        assert connection == "seshu-github"
+        assert connection == "my-github"
 
     def search(self, repos, keywords, days, state=None, label=None):
-        return [{"repo": "seshuad/agent-orchestrator", "number": 1, "kind": "issue", "title": "t", "state": "open", "author": "a",
+        return [{"repo": "northpeak/billing-api", "number": 1, "kind": "issue", "title": "t", "state": "open", "author": "a",
                  "labels": [], "created_at": "2026-09-24T00:00:00Z", "updated_at": "2026-09-24T00:00:00Z"},
                 {"repo": "someone/else", "number": 2, "kind": "issue", "title": "x", "state": "open", "author": "a",
                  "labels": [], "created_at": "2026-09-24T00:00:00Z", "updated_at": "2026-09-24T00:00:00Z"}]
@@ -278,8 +278,8 @@ class FakeGitHub:
 def test_live_github_keeps_the_same_limits(run, monkeypatch):
     from agent_service.runtime import github_api
     monkeypatch.setattr(github_api, "LiveGitHub", FakeGitHub)
-    gh = github(repos=["seshuad/agent-orchestrator"], source="live", account="seshu-github")
-    assert [it["repo"] for it in gateway.call(gh, "github", "search", {"keywords": []})] == ["seshuad/agent-orchestrator"]
+    gh = github(repos=["northpeak/billing-api"], source="live", account="my-github")
+    assert [it["repo"] for it in gateway.call(gh, "github", "search", {"keywords": []})] == ["northpeak/billing-api"]
 
 
 # ------------------------------------------------------------------ MCP connectors

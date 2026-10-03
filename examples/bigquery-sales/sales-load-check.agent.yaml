@@ -1,3 +1,6 @@
+# An example: before using it, replace the placeholders with your own: the GCP project (your-gcp-project, in the
+# subscription and the SQL), the accounts (sales-warehouse, reports-gmail: ids from Connections), and the recipients
+# (reports@example.com).
 format: agent-service/v1
 name: sales-load-check
 description: When the sales_processed ETL finishes, check the load (completeness, duplicates, reconciliation across tables)
@@ -5,8 +8,8 @@ description: When the sales_processed ETL finishes, check the load (completeness
   so write a short report, have a person approve it, and email it.
 trigger:
   kind: pubsub
-  subscription: projects/project-0a33b36a-f359-40ab-93b/subscriptions/sales-etl-done-agent
-  account: bigquery-2
+  subscription: projects/your-gcp-project/subscriptions/sales-etl-done-agent
+  account: sales-warehouse
   message:
     dataset:
       type: text
@@ -42,11 +45,11 @@ connections:
   bq:
     service: bigquery
     permission: run read queries
-    account: bigquery-2
+    account: sales-warehouse
   mail:
     service: gmail
     permission: send email
-    account: seshu-gmail
+    account: reports-gmail
 records:
   Month:
     fields:
@@ -108,7 +111,7 @@ steps:
         bigquery:
           sql: |-
             SELECT month, total_orders, total_revenue
-            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.monthly_trend`
+            FROM `your-gcp-project.sales_processed.monthly_trend`
             ORDER BY month
       uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 500}
       returns:
@@ -120,7 +123,7 @@ steps:
         bigquery:
           sql: |-
             SELECT region, total_orders, total_revenue, avg_order_value
-            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.revenue_by_region`
+            FROM `your-gcp-project.sales_processed.revenue_by_region`
             ORDER BY total_revenue DESC
       uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 200}
       returns:
@@ -132,7 +135,7 @@ steps:
         bigquery:
           sql: |-
             SELECT product_id, product_name, category, units_sold, total_revenue
-            FROM `project-0a33b36a-f359-40ab-93b.sales_processed.revenue_by_product`
+            FROM `your-gcp-project.sales_processed.revenue_by_product`
             ORDER BY total_revenue DESC
       uses: {connection: bq, actions: [query], datasets: [sales_processed], max_bytes: 100MB, max_rows: 500}
       returns:
@@ -225,10 +228,10 @@ steps:
   uses:
     connection: mail
     actions: [send]
-    recipients: [seshu.adunuthula@gmail.com]
+    recipients: [reports@example.com]
     max_emails: 5
   send_email:
-    to: [seshu.adunuthula@gmail.com]
+    to: [reports@example.com]
     subject: '{subject}'
     body: '{body}'
     for_each: check_load.alerts
@@ -343,13 +346,13 @@ steps:
   uses:
     connection: mail
     actions: [send]
-    recipients: [seshu.adunuthula@gmail.com]
+    recipients: [reports@example.com]
     max_emails: 5
   takes:
     dashboard: run.dashboard_url
     load_id: trigger.load_id
   send_email:
-    to: [seshu.adunuthula@gmail.com]
+    to: [reports@example.com]
     subject: 'Sales: {subject}'
     body: "{body}\n\nDashboard: {dashboard}\nLoad: {load_id}"
     charts: [monthly_chart.image, region_chart.image]

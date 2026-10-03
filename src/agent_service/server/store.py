@@ -33,14 +33,14 @@ EXAMPLES = ROOT / "examples"
 WORKSPACE = {
     "name": "Northpeak Operations",
     "kind": "team",
-    "user": {"name": "Seshu Adunuthula", "initials": "SA", "email": "seshu.adunuthula@gmail.com", "role": "Admin"},
-    "members": [{"name": "Seshu Adunuthula", "initials": "SA", "role": "Admin"},
+    "user": {"name": "Jordan Lee", "initials": "JL", "email": "jordan@example.com", "role": "Admin"},
+    "members": [{"name": "Jordan Lee", "initials": "JL", "role": "Admin"},
                 {"name": "Priya Shah", "initials": "PS", "role": "Admin"}],
     "spend_limit_usd": 50.0,
 }
 
 SEEDS = [  # (definition, sample data, replay script, owner)
-    ("travel-sync-free/travel-sync-free.agent.yaml", "travel-sync-free/sample-data", "travel-sync-free/replay-sample.yaml", "Seshu Adunuthula"),
+    ("travel-sync-free/travel-sync-free.agent.yaml", "travel-sync-free/sample-data", "travel-sync-free/replay-sample.yaml", "Jordan Lee"),
     ("invoice-check/invoice-check.agent.yaml", "invoice-check/sample-data", "invoice-check/replay-northwind.yaml", "Priya Shah"),
 ]
 

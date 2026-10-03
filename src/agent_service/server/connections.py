@@ -75,13 +75,13 @@ SERVICES: dict[str, dict[str, Any]] = {
 }
 
 SEED: list[dict[str, Any]] = [
-    {"id": "seshu-gmail", "service": "gmail", "label": "Seshu's Gmail", "account": "seshu.adunuthula@gmail.com", "permissions": ["read"]},
-    {"id": "seshu-calendar", "service": "google-calendar", "label": "Seshu's calendar", "account": "seshu.adunuthula@gmail.com", "permissions": ["create events"]},
+    {"id": "my-gmail", "service": "gmail", "label": "My Gmail", "account": "jordan@example.com", "permissions": ["read"]},
+    {"id": "my-calendar", "service": "google-calendar", "label": "My calendar", "account": "jordan@example.com", "permissions": ["create events"]},
     {"id": "invoices-inbox", "service": "gmail", "label": "Invoices inbox", "account": "invoices@northpeak.co", "permissions": ["read"]},
     {"id": "finance-sheets", "service": "google-sheets", "label": "Finance sheets", "account": "finance@northpeak.co", "permissions": ["read", "add rows"]},
 ]
 SEED_LINKS = {  # the example agents' connections -> the seeded accounts
-    ("travel-sync", "gmail"): "seshu-gmail", ("travel-sync", "calendar"): "seshu-calendar",
+    ("travel-sync", "gmail"): "my-gmail", ("travel-sync", "calendar"): "my-calendar",
     ("invoice-check", "gmail"): "invoices-inbox", ("invoice-check", "sheets"): "finance-sheets",
 }
 

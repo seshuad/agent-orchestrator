@@ -55,7 +55,7 @@ def page(base):
 def test_home_lists_the_workspace_agents(page, base):
     page.goto(base + "/")
     page.wait_for_selector("text=travel-sync")
-    assert page.locator("text=Northpeak Operations").count() >= 1 and page.locator("text=Seshu Adunuthula").count() >= 1
+    assert page.locator("text=Northpeak Operations").count() >= 1 and page.locator("text=Jordan Lee").count() >= 1
     assert page.locator("button:has-text('Run now')").count() == 2
 
 
