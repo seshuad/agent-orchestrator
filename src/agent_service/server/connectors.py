@@ -10,9 +10,14 @@ Three layers decide what an agent can do with a system:
     step        (builder)  actions and limits within the account's permissions, checked by the gateway
 
 Types:
-    google   Gmail, Google Sheets, Google Calendar through one OAuth client
-    github   GitHub's REST API with a fine-grained token per account
-    mcp      any MCP server; each of its tools is marked read (Ask steps), act (Act steps) or off
+    google        Gmail, Google Sheets, Google Calendar through one OAuth client
+    github        GitHub's REST API with a fine-grained token per account
+    mcp           any MCP server; each of its tools is marked read (Ask steps), act (Act steps) or off
+    bigquery      BigQuery, as a service account, gcloud, or the machine's credentials
+    gcs           Cloud Storage, the same ways
+    microsoft365  SharePoint through Microsoft Graph, as an Entra ID app (Sites.Selected); email through an SMTP server
+    trino         a Trino server (e.g. Dataproc's Trino component), as one user: read queries
+    dataproc      Spark SQL as Dataproc jobs, on a cluster or Dataproc Serverless: read queries
 """
 
 from __future__ import annotations
@@ -33,6 +38,10 @@ TYPES: dict[str, dict[str, Any]] = {
     "mcp": {"name": "MCP server", "icon": "plug", "services": ["mcp"], "reach": "Any system with an MCP server"},
     "bigquery": {"name": "BigQuery", "icon": "database", "services": ["bigquery"], "reach": "BigQuery: read queries, optionally inserts"},
     "gcs": {"name": "Cloud Storage", "icon": "folder", "services": ["gcs"], "reach": "Cloud Storage: read files, optionally write new ones"},
+    "trino": {"name": "Trino", "icon": "database", "services": ["trino"], "reach": "Trino: read queries"},
+    "dataproc": {"name": "Spark SQL (Dataproc)", "icon": "database", "services": ["spark-sql"], "reach": "Spark SQL on Dataproc: read queries"},
+    "microsoft365": {"name": "Microsoft 365", "icon": "folder", "services": ["sharepoint", "smtp"],
+                     "reach": "SharePoint files and lists · email through SMTP"},
 }
 
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -91,6 +100,8 @@ def public(connector: dict[str, Any], vault_dir: Path, accounts: list[dict[str, 
     out = {**connector, "type_name": TYPES[connector["type"]]["name"], "icon": TYPES[connector["type"]]["icon"],
            "reach": reach(connector), "secret_set": bool(secret), "secret_set_at": secret.get("_set_at"),
            "accounts": len([a for a in accounts if a.get("connector") == connector["id"]])}
+    if connector["type"] == "microsoft365":     # which of its two secrets are in the vault (never the secrets)
+        out["secrets_set"] = {k: bool(secret.get(k)) for k in ("client_secret", "smtp_password")}
     if connector["type"] == "mcp":
         out["permissions"] = mcp_permissions(connector)
         out["admin_signed_in"] = bool((vault.load(secret_key(connector["id"]) + "-admin", vault_dir) or {}).get("tokens"))
@@ -104,6 +115,20 @@ def reach(connector: dict[str, Any]) -> str:
     if connector["type"] == "gcs":
         allowed = (connector.get("settings") or {}).get("allowed") or []
         return "Cloud Storage · " + (", ".join(allowed) if allowed else "no buckets yet")
+    if connector["type"] == "trino":
+        st = connector.get("settings") or {}
+        host = (st.get("server") or "").split("//")[-1] or "no server yet"
+        return f"Trino · {host}" + (f" · {', '.join(st.get('allowed') or [])}" if st.get("allowed") else "")
+    if connector["type"] == "dataproc":
+        st = connector.get("settings") or {}
+        where = f"cluster {st.get('cluster')}" if st.get("mode") == "cluster" else "Serverless"
+        return f"Spark SQL · {where} · {st.get('region') or 'no region yet'}" + (f" · {', '.join(st.get('allowed') or [])}" if st.get("allowed") else "")
+    if connector["type"] == "microsoft365":
+        st = connector.get("settings") or {}
+        where = [", ".join(st.get("allowed") or []) or ("SharePoint" if st.get("client_id") else "")]
+        if (st.get("smtp") or {}).get("host"):
+            where.append(f"email via {st['smtp']['host']}")
+        return "Microsoft 365 · " + (" · ".join(w for w in where if w) or "not set up yet")
     if connector["type"] == "mcp":
         server = (connector.get("settings") or {}).get("server") or {}
         where = server.get("url", "").split("//")[-1].split("/")[0] if server.get("transport") == "url" else server.get("command", "")
@@ -119,7 +144,7 @@ def sign_in_kind(connector: dict[str, Any] | None) -> str:
         return "google"
     if connector["type"] == "github":
         return "token"
-    if connector["type"] in ("bigquery", "gcs"):
+    if connector["type"] in ("bigquery", "gcs", "microsoft365", "trino", "dataproc"):
         return "shared"
     kind = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "none")
     return {"oauth": "oauth", "bearer": "shared", "header": "shared"}.get(kind, "none")
@@ -204,6 +229,46 @@ def test_gcs(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str]:
         return True, gcs_api.identity_and_check({**st, "connector": connector["id"]})
     except Exception as exc:
         return False, f"Cloud Storage refused: {str(exc).splitlines()[0][:240]}"
+
+
+def test_microsoft(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str]:
+    """SharePoint (if its app is set): signs in as the app and lists each allowed folder or list. Email (if its server is
+    set): connects and signs in, sending nothing. Both must work for the connector to be ready."""
+    import os
+    os.environ.setdefault("AGENT_SERVICE_VAULT", str(vault_dir))
+    from ..runtime import sharepoint_api, smtp_api
+    st = connector.get("settings") or {}
+    up = {**st, "connector": connector["id"]}
+    sharepoint, smtp = bool(st.get("tenant_id") or st.get("client_id")), bool((st.get("smtp") or {}).get("host"))
+    if not sharepoint and not smtp:
+        return False, "Set up SharePoint (the Entra ID app), email (the SMTP server), or both, first."
+    notes, ok = [], True
+    if sharepoint:
+        try:
+            notes.append("SharePoint: " + sharepoint_api.identity_and_check(up))
+        except Exception as exc:
+            ok = False
+            notes.append(f"SharePoint refused: {str(exc).splitlines()[0][:240]}")
+    if smtp:
+        try:
+            notes.append("Email: " + smtp_api.check(up))
+        except Exception as exc:
+            ok = False
+            notes.append(f"Email failed: {type(exc).__name__ if not str(exc) else str(exc).splitlines()[0][:240]}")
+    return ok, " ".join(notes)
+
+
+def test_sql_engine(connector: dict[str, Any], vault_dir: Path) -> tuple[bool, str]:
+    """Trino: SHOW CATALOGS as the connector's user. Spark SQL: a SELECT 1 job on the cluster or as a serverless batch
+    (which takes a minute or two, and costs a few cents)."""
+    import os
+    os.environ.setdefault("AGENT_SERVICE_VAULT", str(vault_dir))
+    from ..runtime import sql_engines
+    service = "trino" if connector["type"] == "trino" else "spark-sql"
+    try:
+        return True, sql_engines.check_connection(service, {**(connector.get("settings") or {}), "connector": connector["id"]})
+    except Exception as exc:
+        return False, f"{sql_engines.NAME[service]} failed: {str(exc).splitlines()[0][:300] or type(exc).__name__}"
 
 
 def mcp_credentials(connector: dict[str, Any], vault_dir: Path, account: str | None = None) -> dict[str, Any]:

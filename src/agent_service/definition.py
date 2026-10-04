@@ -87,7 +87,7 @@ class Limits(Strict):
 
 
 class Connection(Strict):
-    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp", "bigquery", "gcs"]
+    service: Literal["gmail", "google-sheets", "google-calendar", "github", "mcp", "bigquery", "gcs", "sharepoint", "smtp", "trino", "spark-sql"]
     permission: str
     account: str | None = None               # the workspace connection (account) it uses
 
@@ -105,13 +105,13 @@ class Uses(Strict):
     calendar: str | None = None
     repos: list[str] | None = None           # GitHub: the repositories (owner/name) it may read
     arg_limits: dict[str, list[str]] | None = None   # MCP: argument -> the only values a call may pass
-    datasets: list[str] | None = None        # BigQuery: dataset, project.dataset or project.dataset.table it may read
+    datasets: list[str] | None = None        # BigQuery: dataset, project.dataset or a table; Trino: catalog[.schema[.table]]; Spark: schema[.table]
     max_bytes: str | int | None = None       # BigQuery: the most one query may scan, e.g. "1GB"
     max_rows: int | None = None              # BigQuery: rows returned per query; Cloud Storage: rows read per file
-    paths: list[str] | None = None           # Cloud Storage: bucket or bucket/prefix it may list, read or write under
+    paths: list[str] | None = None           # Cloud Storage: bucket or bucket/prefix; SharePoint: site/library/folder or site/Lists/<title>
     tables: list[str] | None = None          # BigQuery: tables an Act step may insert into
-    recipients: list[str] | None = None      # Gmail sending: the only addresses (or @domains) it may send to
-    max_emails: int | None = None            # Gmail sending: at most this many emails per run (default 20)
+    recipients: list[str] | None = None      # sending email (Gmail, SMTP): the only addresses (or @domains) it may send to
+    max_emails: int | None = None            # sending email: at most this many emails per run (default 20)
 
 
 class Repeat(Strict):
@@ -154,7 +154,7 @@ class AskStep(Step):
 
 class BuiltInStep(Step):
     kind: Literal["built-in"]
-    operation: dict[str, Any]                # exactly one of: cel (operators), javascript, bigquery; chart, lookup, filter-rows,
+    operation: dict[str, Any]                # exactly one of: cel (operators), javascript, bigquery, trino, spark-sql; chart, lookup, filter-rows,
                                              # compare, three-way-match, show; tidy (travel-sync's, kept for it)
     takes: Takes = Field(default_factory=dict)
     uses: Uses | None = None
@@ -165,7 +165,7 @@ class BuiltInStep(Step):
     @classmethod
     def _one_operation(cls, v: dict[str, Any]) -> dict[str, Any]:
         known = {"cel", "tidy", "lookup", "filter-rows", "compare", "three-way-match", "show", "javascript", "bigquery", "chart",
-                 "gcs-list", "gcs-read"}
+                 "gcs-list", "gcs-read", "sharepoint-list", "sharepoint-read", "sharepoint-items", "trino", "spark-sql"}
         if len(v) != 1 or next(iter(v)) not in known:
             raise ValueError(f"operation must be exactly one of {sorted(known)}")
         return v
@@ -313,8 +313,8 @@ class ActStep(Step):
     add_row: dict[str, Any] | None = None
     call_tool: dict[str, Any] | None = None      # MCP: {tool, arguments: {arg: "{field}" or text}, for_each}
     insert_rows: dict[str, Any] | None = None    # BigQuery: {table, for_each, row: {column: "{field}"}}
-    send_email: dict[str, Any] | None = None     # Gmail: {to: [...], cc?, subject, body, for_each?}: templates over "{name}"
-    write_object: dict[str, Any] | None = None   # Cloud Storage: {path: "bucket/prefix/{name}.json", format: json|jsonl|csv|text|png}; takes: {content: ref}
+    send_email: dict[str, Any] | None = None     # Gmail or SMTP: {to: [...], cc?, subject, body, for_each?}: templates over "{name}"
+    write_object: dict[str, Any] | None = None   # Cloud Storage or SharePoint: {path: ".../{name}.json", format: json|jsonl|csv|text|png}; takes: {content: ref}
     follows_dry_run: str | None = None          # a yes/no run option; none: it always makes its changes
 
     @model_validator(mode="after")

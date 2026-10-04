@@ -4,7 +4,7 @@ import { api, type Connector } from '../api'
 import { Block, Check, Dialog, Icon, Segmented } from '../ui'
 
 const STATE: Record<string, [string, string]> = { ready: ['Ready', '#2E8B57'], attention: ['Needs attention', '#C2553A'], setup: ['Not set up', '#8A8A80'] }
-const SERVICE_NAME: Record<string, string> = { gmail: 'Gmail', 'google-sheets': 'Google Sheets', 'google-calendar': 'Google Calendar', bigquery: 'BigQuery', gcs: 'Cloud Storage' }
+const SERVICE_NAME: Record<string, string> = { gmail: 'Gmail', 'google-sheets': 'Google Sheets', 'google-calendar': 'Google Calendar', bigquery: 'BigQuery', gcs: 'Cloud Storage', sharepoint: 'SharePoint', smtp: 'Email (SMTP)', trino: 'Trino', 'spark-sql': 'Spark SQL' }
 
 export function StatusDot({ state }: { state: string }) {
   const [text, color] = STATE[state] ?? STATE.setup
@@ -50,6 +50,10 @@ export default function ConnectAccount({ isAdmin, onClose, onDone }: { isAdmin: 
     : connector.sign_in === 'google' ? 'Runs use sample data for it; only Gmail signs in for real so far.'
     : connector.sign_in === 'token' ? 'Next: add a read-only token on its card. GitHub reports whose it is.'
     : connector.type === 'bigquery' ? `It queries as ${connector.name}'s credential, within the data and cost limits its admin set.`
+    : connector.type === 'trino' ? `It queries as ${connector.name}'s user, within the catalogs its admin allows.`
+    : connector.type === 'dataproc' ? `It runs Spark SQL as ${connector.name}'s credential, within the schemas its admin allows.`
+    : connector.type === 'microsoft365' ? (service === 'smtp' ? `Email goes from ${connector.settings.smtp?.from_address || 'the connector\u2019s address'} through ${connector.name}'s mail server.`
+        : `It reads SharePoint as ${connector.name}'s app, only in the sites its admin allows.`)
     : connector.sign_in === 'shared' ? `It uses ${connector.name}'s shared credential: nothing to sign in to.` : 'Nothing to sign in to.'
 
   return (
@@ -83,7 +87,7 @@ export default function ConnectAccount({ isAdmin, onClose, onDone }: { isAdmin: 
       )}
       {connector && (
         <Block title="3. Name">
-          <input className="input" value={label} placeholder={`e.g. ${connector.type === 'google' ? 'Finance sheets' : `Team ${connector.name}`}`} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
+          <input className="input" value={label} placeholder={`e.g. ${connector.type === 'google' ? 'Finance sheets' : connector.type === 'microsoft365' ? (service === 'smtp' ? 'Reports mailbox' : 'Finance site') : `Team ${connector.name}`}`} onChange={(e) => setLabel(e.target.value)} aria-label="Name" />
           <span className="faint">{next}</span>
         </Block>
       )}

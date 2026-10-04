@@ -37,7 +37,8 @@ WRITE_SCOPE = "https://www.googleapis.com/auth/devstorage.read_write"
 DEFAULT_MAX_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_ROWS = 5000
 FORMATS = {".csv": "csv", ".json": "json", ".jsonl": "jsonl", ".ndjson": "jsonl", ".parquet": "parquet",
-           ".txt": "text", ".md": "text", ".log": "text"}
+           ".txt": "text", ".md": "text", ".log": "text", ".xlsx": "xlsx", ".docx": "docx", ".pdf": "pdf"}
+WHOLE = {"json", "parquet", "xlsx", "docx", "pdf"}          # formats that can't be read in part
 
 
 class StorageRefused(Exception):
@@ -108,9 +109,71 @@ def format_of(path: str, fmt: str | None) -> str:
     return FORMATS.get(Path(split(path)[1]).suffix.lower(), "text")
 
 
+def _xlsx(raw: bytes) -> list[dict[str, Any]]:
+    """Each sheet's rows under its first non-empty row as the header; with several sheets, each row says its _sheet."""
+    import openpyxl
+    try:
+        book = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception as exc:
+        raise StorageRefused(f"Couldn't read it as an Excel workbook: {str(exc).splitlines()[0][:200]}") from None
+    rows: list[dict[str, Any]] = []
+    for sheet in book.worksheets:
+        header: list[str] | None = None
+        for values in sheet.iter_rows(values_only=True):
+            if header is None:
+                if any(v not in (None, "") for v in values):
+                    header = [str(v).strip() if v not in (None, "") else f"column_{i + 1}" for i, v in enumerate(values)]
+                continue
+            if all(v in (None, "") for v in values):
+                continue
+            row = {h: _plain(v) for h, v in zip(header, values)}
+            rows.append({**row, "_sheet": sheet.title} if len(book.worksheets) > 1 else row)
+    book.close()
+    return rows
+
+
+def _docx(raw: bytes) -> str:
+    """A Word document's text: one line per paragraph, table cells separated by " | "."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    try:
+        root = ET.fromstring(zipfile.ZipFile(io.BytesIO(raw)).read("word/document.xml"))
+    except Exception as exc:
+        raise StorageRefused(f"Couldn't read it as a Word document: {str(exc).splitlines()[0][:200]}") from None
+
+    def text(el: Any) -> str:
+        return "".join(t.text or "" if t.tag == w + "t" else "\t" if t.tag == w + "tab" else "\n" if t.tag == w + "br" else ""
+                       for t in el.iter() if t.tag in (w + "t", w + "tab", w + "br"))
+
+    lines = []
+    body = root.find(w + "body")
+    for block in (body if body is not None else []):
+        if block.tag == w + "tbl":
+            lines += [" | ".join(text(tc).strip() for tc in tr.iter(w + "tc")) for tr in block.iter(w + "tr")]
+        elif block.tag == w + "p":
+            lines.append(text(block))
+    return "\n".join(lines).strip()
+
+
+def _pdf(raw: bytes) -> str:
+    """A PDF's text, page by page. Scanned pages (images) have none."""
+    import pypdf
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(raw))
+        return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+    except Exception as exc:
+        raise StorageRefused(f"Couldn't read it as a PDF: {str(exc).splitlines()[0][:200]}") from None
+
+
 def parse(raw: bytes, fmt: str, max_rows: int, truncated: bool) -> dict[str, Any]:
-    """Bytes as rows (or text), at most max_rows; `truncated` if the bytes or the rows were cut."""
-    if fmt == "parquet":
+    """Bytes as rows (or text), at most max_rows; `truncated` if the bytes or the rows were cut. Excel workbooks become
+    rows; Word documents and PDFs, text."""
+    if fmt in ("docx", "pdf"):
+        return {"text": _docx(raw) if fmt == "docx" else _pdf(raw), "rows": [], "row_count": 0, "truncated": truncated}
+    if fmt == "xlsx":
+        rows = _xlsx(raw)
+    elif fmt == "parquet":
         import duckdb
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
             f.write(raw)
@@ -144,7 +207,7 @@ def parse(raw: bytes, fmt: str, max_rows: int, truncated: bool) -> dict[str, Any
                 raise StorageRefused(f"It isn't valid JSON: {exc}") from None
             rows = data if isinstance(data, list) else [data]
         else:
-            raise StorageRefused(f"Unknown format {fmt!r}: use auto, csv, json, jsonl, parquet or text.")
+            raise StorageRefused(f"Unknown format {fmt!r}: use auto, csv, json, jsonl, parquet, xlsx, docx, pdf or text.")
     cut = len(rows) > max_rows
     rows = rows[:max_rows]
     return {"rows": [r if isinstance(r, dict) else {"value": r} for r in rows], "row_count": len(rows),
@@ -314,9 +377,9 @@ class Storage:
         fmt = format_of(path, fmt)
         size = int(info.get("size") or 0)
         too_big = size > self.max_bytes
-        if too_big and fmt in ("json", "parquet"):
+        if too_big and fmt in WHOLE:
             raise StorageRefused(f"{bucket}/{name} is {size:,} bytes, over this step's limit of {self.max_bytes:,}; "
-                                 "a JSON or Parquet file can't be read in part.")
+                                 f"a {fmt} file can't be read in part.")
         raw = self.store.read(bucket, name, min(size, self.max_bytes) if size else self.max_bytes)
         if too_big and b"\n" in raw:
             raw = raw[: raw.rfind(b"\n") + 1]                 # whole lines only

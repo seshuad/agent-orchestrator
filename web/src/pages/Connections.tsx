@@ -27,7 +27,7 @@ export function ConnectionsHeader({ tab, action }: { tab: 'Accounts' | 'Connecto
   )
 }
 
-export const SERVICE_ICON: Record<string, string> = { gmail: 'mail', 'google-sheets': 'group', 'google-calendar': 'calendar', github: 'code', mcp: 'plug', bigquery: 'database', gcs: 'folder' }
+export const SERVICE_ICON: Record<string, string> = { gmail: 'mail', 'google-sheets': 'group', 'google-calendar': 'calendar', github: 'code', mcp: 'plug', bigquery: 'database', gcs: 'folder', sharepoint: 'folder', smtp: 'mail', trino: 'database', 'spark-sql': 'database' }
 
 export default function Connections() {
   const navigate = useNavigate()

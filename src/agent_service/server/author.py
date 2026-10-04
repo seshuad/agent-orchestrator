@@ -97,6 +97,12 @@ ask: a model reads and extracts. It can never change anything.
     github: actions search, open, read. Limits: repos [owner/name] (required), lookback_days.
     bigquery: actions query, list_tables, get_schema. Limits: datasets [dataset | project.dataset | project.dataset.table],
            max_bytes ("1GB"), max_rows. Only single SELECTs run; the model sees a run_query tool.
+    trino, spark-sql: actions query, list_tables, get_schema. Limits: datasets (Trino: catalog | catalog.schema |
+           catalog.schema.table; Spark: schema | schema.table), max_rows. Only single SELECTs run. Spark SQL runs each query
+           as a Dataproc job (a minute or more): prefer a Built-in spark-sql step with a fixed query over an Ask step.
+    gcs: actions list_objects, read_object. Limits: paths [bucket/prefix/] (required), max_bytes, max_rows.
+    sharepoint: actions list_objects, read_object, read_list. Limits: paths [site/library/folder | site/Lists/<title>]
+           (required), max_bytes, max_rows. The model sees list_files, read_file and read_list tools.
     mcp: actions are the connector's tool names marked read. Limit: arg_limits {argument: [allowed values]} for the
          arguments the admin lets steps limit. A limited argument must be passed on every call.
 
@@ -110,6 +116,10 @@ built-in: no model. Three engines (cel operators over a list, javascript, bigque
     bigquery: {sql: "SELECT ... WHERE x = @name"}   takes: {name: <ref>} (the @parameters)   uses: {connection: bq, actions: [query],
                 datasets: [..], max_bytes: "1GB"}   returns: {rows: {type: list of <Record>}}   -> rows, row_count, truncated, bytes_billed
                 Prefer this over an Ask step when the query is known ahead: no model writes SQL.
+    trino: {sql: "SELECT ... FROM iceberg.sales.orders WHERE region = @region"}   takes: {region: <ref>}
+                uses: {connection: trino, actions: [query], datasets: [iceberg.sales], max_rows: 1000}   -> rows, row_count, truncated, elapsed_seconds
+    spark-sql: {sql: "SELECT ... FROM sales.orders"}   (the same shape, Spark SQL dialect; runs as a Dataproc job, so it takes a minute or more)
+                uses: {connection: spark, actions: [query], datasets: [sales]}
     cel: [<operators, in order, over takes.items>]   takes: {items: <list ref>, other: <ref>, ...}   -> items, notes, saved names
           - keep: "item.amount > 0"
           - add_fields: {aov: "item.revenue / item.orders"}
@@ -136,6 +146,14 @@ built-in: no model. Three engines (cel operators over a list, javascript, bigque
     gcs-read: {format: auto|csv|json|jsonl|parquet|text}   takes: {files: <list.files> | path: <ref> | bucket, name: <refs>}
                 uses: {connection: gcs, actions: [read_object], paths: [..], max_bytes: "50MB", max_rows: 5000}
                 -> rows (with _file when several), row_count, truncated, files, text. Cloud Storage files, no model.
+                CSV, JSON, JSON lines, Parquet and Excel (.xlsx) come back as rows; Word, PDF and text as text.
+    sharepoint-list: {prefix: "Site/Shared Documents/folder", match?: "*.xlsx"}   (like gcs-list; paths are site/library/folder)
+                uses: {connection: sp, actions: [list_objects], paths: ["Site/Shared Documents/folder"]}   -> files, count
+    sharepoint-read: {format: auto|csv|xlsx|docx|pdf|...}   takes: {files: <list.files> | path: <ref>}   (like gcs-read)
+                uses: {connection: sp, actions: [read_object], paths: [..], max_bytes: "20MB"}   -> rows, row_count, truncated, files, text
+    sharepoint-items: {list: "Site/Lists/<list title>"}   takes: {list?: <ref>}
+                uses: {connection: sp, actions: [read_list], paths: ["Site/Lists/<list title>"]}   -> rows, row_count, truncated
+                A SharePoint list's items as rows (one field per column).
   Outputs: lookup -> found, <as>; filter-rows -> <as>; show -> value;
            javascript -> its returns; chart -> image, title; cel -> items, notes and each save_as.
 
@@ -230,10 +248,12 @@ act: changes something outside the agent, using only checked fields (never free 
     send_email:    {to: [address or "{field}"], cc?: [..], subject: "...{name}...", body: "...{name}...", for_each?: <list ref>,
                     charts?: [<chart step>.image]}                   # inline images in the email (HTML)
                    takes: {name: <ref>, ...}   uses: {connection: gmail, actions: [send], recipients: [a@company.com, "@company.com"], max_emails: 5}
+                   The connection is Gmail (sends from that account) or smtp (Microsoft 365 connector: sends from its address).
                    The gateway sends only to `recipients`. Lists fill in as bullet lines. If the body uses text a model wrote,
                    put an Approve step first (items: the report, then for_each: <approve>.approved) so a person reads it.
     write_object:  {path: "bucket/prefix/{name}.json", format: json|jsonl|csv|text|png}   takes: {content: <ref>, name: <ref>}
                    uses: {connection: gcs, actions: [write_object], paths: [bucket/prefix/]}   # new files only, never overwrites
+                   Or SharePoint: path "Site/Shared Documents/folder/{name}.csv", paths: ["Site/Shared Documents/folder"].
     follows_dry_run: run.dry_run                             # optional: on a dry run it lists what it would do
 
 ## Rules (CEL)
@@ -305,6 +325,15 @@ def describe_sample(path: Path) -> str:
     for sheet in sorted((path / "sheets").glob("*.json")) if (path / "sheets").exists() else []:
         rows = json.loads(sheet.read_text())
         parts.append(f"sheet {sheet.stem!r} with columns {list(rows[0]) if rows else []}")
+    for t in sorted((path / "sql").glob("*/*.json")) if (path / "sql").exists() else []:
+        rows = json.loads(t.read_text())
+        parts.append(f"Trino/Spark table {t.parent.name}.{t.stem} with columns {list(rows[0]) if rows else []}")
+    sp = path / "sharepoint"
+    if sp.exists():
+        files = [f.relative_to(sp).as_posix() for f in sorted(sp.rglob("*")) if f.is_file() and f.parent.name != "Lists"]
+        lists = [f"{f.parent.parent.name}/Lists/{f.stem}" for f in sorted(sp.glob("*/Lists/*.json"))]
+        parts.append("SharePoint " + "; ".join(x for x in [f"files {', '.join(files[:6])}" if files else "",
+                                                          f"lists {', '.join(lists)}" if lists else ""] if x))
     gh = path / "github.json"
     if gh.exists():
         repos = sorted({i["repo"] for i in json.loads(gh.read_text())["issues"]})

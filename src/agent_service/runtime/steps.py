@@ -453,7 +453,7 @@ def chart(step: str, conf: dict, data: dict) -> dict:
     return {"image": f"charts/{step}.png", "title": conf.get("title") or ""}
 
 
-# ------------------------------------------------------------------ Cloud Storage: list, read, write new files
+# ------------------------------------------------------------------ files (Cloud Storage, SharePoint): list, read, write new ones
 
 def _paths(value: Any) -> list[str]:
     """Paths from a step's input: one path, a list of them, or files from a listing (each with `path`)."""
@@ -469,28 +469,28 @@ def _paths(value: Any) -> list[str]:
     return out
 
 
-def gcs_list(conf: dict, data: dict) -> dict:
+def gcs_list(conf: dict, data: dict, service: str = "gcs") -> dict:
     """Files under the prefix (the step's setting, or its `prefix` input), optionally only those modified after a time
-    (`modified_after`) and matching a name pattern (`match`, e.g. *.csv)."""
+    (`modified_after`) and matching a name pattern (`match`, e.g. *.csv). Cloud Storage or SharePoint (`service`)."""
     import fnmatch
-    conn = gateway.connect("gcs")
+    conn = gateway.connect(service)
     prefix = data.get("prefix") or conf.get("prefix") or ""
-    files = gateway.call(conn, "gcs", "list_objects", {"prefix": prefix, "modified_after": data.get("modified_after") or None,
+    files = gateway.call(conn, service, "list_objects", {"prefix": prefix, "modified_after": data.get("modified_after") or None,
                                                       "limit": int(conf.get("limit") or 1000)})
     if conf.get("match"):
         files = [f for f in files if fnmatch.fnmatch(f["path"].rsplit("/", 1)[-1], conf["match"])]
     return {"files": files, "count": len(files)}
 
 
-def gcs_read(conf: dict, data: dict) -> dict:
+def gcs_read(conf: dict, data: dict, service: str = "gcs") -> dict:
     """One file, or several (a list of paths or a listing's files): their rows together, each marked with its _file."""
-    conn = gateway.connect("gcs")
+    conn = gateway.connect(service)
     paths = _paths(data.get("path") if data.get("path") is not None else data.get("files") if data.get("files") is not None else conf.get("path"))
     if data.get("bucket") and data.get("name") and not paths:
         paths = [f"{data['bucket']}/{data['name']}"]
     rows, files, truncated, text = [], [], False, None
     for path in paths:
-        out = gateway.call(conn, "gcs", "read_object", {"path": path, "format": conf.get("format") or "auto"})
+        out = gateway.call(conn, service, "read_object", {"path": path, "format": conf.get("format") or "auto"})
         rows += [{**r, "_file": out["path"]} if len(paths) > 1 else r for r in out["rows"]]
         files.append({"path": out["path"], "format": out["format"], "bytes": out["bytes"], "row_count": out["row_count"], "truncated": out["truncated"]})
         truncated = truncated or out["truncated"]
@@ -499,14 +499,24 @@ def gcs_read(conf: dict, data: dict) -> dict:
     return {"rows": rows, "row_count": len(rows), "truncated": truncated, "files": files, "text": text}
 
 
+def sharepoint_items(conf: dict, data: dict) -> dict:
+    """A SharePoint list's items as rows: the step's list (site/Lists/<title>), or its `list` input."""
+    conn = gateway.connect("sharepoint")
+    path = data.get("list") or conf.get("list") or ""
+    out = gateway.call(conn, "sharepoint", "read_list", {"path": path, "limit": conf.get("limit")})
+    return {"rows": out["rows"], "row_count": out["row_count"], "truncated": out["truncated"]}
+
+
 def write_objects(conf: dict, dry_run: bool, data: dict) -> dict:
     """A new file at the path template (filled from the step's inputs), holding its `content` input as JSON, JSON lines,
-    CSV, text, or a chart's PNG. The gateway refuses a path outside the step's prefixes, or one that already exists."""
+    CSV, text, or a chart's PNG, in Cloud Storage or SharePoint (whichever the step's connection is). The gateway refuses
+    a path outside the step's prefixes, or one that already exists."""
     from .gcs_api import serialize
-    conn = gateway.connect("gcs")
+    service = gateway.connection_of()
+    conn = gateway.connect(service)
     path = _fill_text(conf.get("path", ""), {k: v for k, v in data.items() if k != "content"})
     body, content_type = serialize(data.get("content"), conf.get("format") or "json")
-    out = gateway.call(conn, "gcs", "write_object", {"path": path, "data": body, "content_type": content_type, "dry_run": dry_run})
+    out = gateway.call(conn, service, "write_object", {"path": path, "data": body, "content_type": content_type, "dry_run": dry_run})
     done = f"{out.get('path') or out.get('would_write')} ({len(body):,} bytes)"
     return {"created": [] if dry_run else [done], "would_create": [done] if dry_run else [], "skipped": [], "path": out.get("path") or out.get("would_write")}
 
@@ -532,8 +542,9 @@ def _fill_text(template: str, record: dict) -> str:
 
 def send_emails(spec: dict, dry_run: bool, data: dict) -> dict:
     """Fill the step's To, Cc, subject and body templates from its inputs (and each item's fields, one email per
-    item), and send each through the gateway, which checks the recipients."""
-    conn = gateway.connect("gmail")
+    item), and send each through the gateway, which checks the recipients: from Gmail, or through SMTP."""
+    service = gateway.connection_of()
+    conn = gateway.connect(service)
     values = data.get("values") or {}
     records = data.get("records")
     sent, would = [], []
@@ -544,7 +555,7 @@ def send_emails(spec: dict, dry_run: bool, data: dict) -> dict:
         subject = _fill_text(spec.get("subject", ""), rec)
         body = _fill_text(spec.get("body", ""), rec)
         images = [c for c in data.get("charts") or [] if isinstance(c, str) and c]
-        gateway.call(conn, "gmail", "send", {"to": to, "cc": cc, "subject": subject, "body": body, "images": images, "dry_run": dry_run})
+        gateway.call(conn, service, "send", {"to": to, "cc": cc, "subject": subject, "body": body, "images": images, "dry_run": dry_run})
         (would if dry_run else sent).append(f"To {', '.join(to)}: {subject}")
     return {"created": sent, "would_create": would, "skipped": [], "emails": len(sent) + len(would)}
 
@@ -602,8 +613,9 @@ def call_tools(tool: str, arguments: dict, dry_run: bool, data: dict) -> dict:
 
 def bigquery(sql: str, data: dict) -> dict:
     """A fixed query, with the step's Takes as @parameters, through the gateway's checks."""
-    conn = gateway.connect("bigquery")
-    return gateway.call(conn, "bigquery", "query", {"sql": sql, "params": {k: v for k, v in data.items() if v is not None}})
+    service = gateway.connection_of()                  # BigQuery, Trino or Spark SQL: whichever the step's connection is
+    conn = gateway.connect(service)
+    return gateway.call(conn, service, "query", {"sql": sql, "params": {k: v for k, v in data.items() if v is not None}})
 
 
 def insert_rows(table: str, row: dict, dry_run: bool, data: dict) -> dict:
@@ -808,7 +820,7 @@ def show(data: dict) -> dict:
 def execute(argv: list[str], data: dict) -> dict:
     """One operation, from the same arguments a script step passes, on its inputs. Records the output (or the error)."""
     p = argparse.ArgumentParser(prog="agent-service-steps")
-    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect", "send-email", "chart", "cel", "gcs-list", "gcs-read", "write-object"])
+    p.add_argument("operation", choices=["tidy", "lookup", "filter-rows", "compare", "three-way-match", "create-events", "add-rows", "show", "call-tools", "javascript", "bigquery", "insert-rows", "memory-recall", "decide-prep", "decide-collect", "each-collect", "send-email", "chart", "cel", "gcs-list", "gcs-read", "write-object", "sharepoint-list", "sharepoint-read", "sharepoint-items", "trino", "spark-sql"])
     p.add_argument("--step", required=True, help="The step's name in the workflow; its output is recorded under it.")
     p.add_argument("--operations", help="tidy: the operations, as JSON.")
     p.add_argument("--sheet")
@@ -831,7 +843,7 @@ def execute(argv: list[str], data: dict) -> dict:
     p.add_argument("--steps", help="each-collect: the block's step ids, as JSON.")
     p.add_argument("--email", help="send-email: {to, cc, subject, body}, as JSON.")
     p.add_argument("--ops-b64", help="cel: the operators, JSON in base64.")
-    p.add_argument("--gcs-b64", help="gcs-list, gcs-read, write-object: the settings, JSON in base64.")
+    p.add_argument("--gcs-b64", help="gcs-*, sharepoint-*, write-object: the settings, JSON in base64.")
     p.add_argument("--chart-b64", help="chart: its settings (kind, x, y, title, highlight, reference ...), JSON in base64.")
     p.add_argument("--returns", default="", help="javascript: the fields it returns, comma-separated.")
     p.add_argument("--arguments", help="call-tools: argument -> template over each record, as JSON.")
@@ -853,18 +865,22 @@ def execute(argv: list[str], data: dict) -> dict:
         out = show(data)
     elif a.operation == "add-rows":
         out = add_rows(a.sheet, json.loads(a.row), a.dry_run == "true", data)
-    elif a.operation in ("gcs-list", "gcs-read", "write-object"):
+    elif a.operation in ("gcs-list", "gcs-read", "write-object", "sharepoint-list", "sharepoint-read", "sharepoint-items"):
         import base64
         conf = json.loads(base64.b64decode(a.gcs_b64).decode()) if a.gcs_b64 else {}
+        system = "SharePoint" if a.operation.startswith("sharepoint") else "Cloud Storage"
         try:
             out = (gcs_list(conf, data) if a.operation == "gcs-list" else gcs_read(conf, data) if a.operation == "gcs-read"
+                   else gcs_list(conf, data, "sharepoint") if a.operation == "sharepoint-list"
+                   else gcs_read(conf, data, "sharepoint") if a.operation == "sharepoint-read"
+                   else sharepoint_items(conf, data) if a.operation == "sharepoint-items"
                    else write_objects(conf, a.dry_run == "true", data))
         except gateway.Refused as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
             raise StepFailed(f"Refused: {exc}")
         except Exception as exc:
             record_step(a.step, {"error": str(exc)}, inputs=data)
-            raise StepFailed(f"Cloud Storage failed: {str(exc).splitlines()[0][:400]}")
+            raise StepFailed(f"{system if a.operation != 'write-object' else 'Writing the file'} failed: {str(exc).splitlines()[0][:400]}")
     elif a.operation == "cel":
         import base64
         try:
@@ -897,6 +913,16 @@ def execute(argv: list[str], data: dict) -> dict:
     elif a.operation == "memory-recall":
         from .memory import recall
         out = recall(a.for_step, data, a.max_cases)
+    elif a.operation in ("trino", "spark-sql"):
+        import base64
+        try:
+            out = bigquery(base64.b64decode(a.sql_b64).decode(), data)
+        except gateway.Refused as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(f"Refused: {exc}")
+        except gateway.LimitsError as exc:
+            record_step(a.step, {"error": str(exc)}, inputs=data)
+            raise StepFailed(str(exc))
     elif a.operation in ("bigquery", "insert-rows"):
         import base64
         try:

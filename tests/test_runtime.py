@@ -574,3 +574,417 @@ def test_javascript_dates_read_like_a_browser():
             ' g: iso(Date.parse("not a date")), h: new Date(2021, 0, 5).getMonth()};')
     assert steps.javascript(code, list("abcdefgh"), {}) == {"a": "2021-05-22T00:00", "b": "2021-05-22T00:00", "c": "2021-05-22T00:00",
                                                            "d": "2021-05-22T00:00", "e": "2021-05-22T22:30", "f": 10, "g": None, "h": 0}
+
+
+# ------------------------------------------------------------------ Microsoft 365: SharePoint and SMTP
+
+def _docx(paragraphs, table):
+    import io
+    import zipfile
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    p = "".join(f"<w:p><w:r><w:t>{t}</w:t></w:r></w:p>" for t in paragraphs)
+    rows = "".join("<w:tr>" + "".join(f"<w:tc><w:p><w:r><w:t>{c}</w:t></w:r></w:p></w:tc>" for c in r) + "</w:tr>" for r in table)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", f"<w:document {w}><w:body>{p}<w:tbl>{rows}</w:tbl></w:body></w:document>")
+    return buf.getvalue()
+
+
+def _pdf(text):
+    """A one-page PDF with a line of text, written by hand (pypdf reads; it doesn't typeset)."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for n, o in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % n + o + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % x for x in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)
+
+
+def test_sharepoint_paths_match_whole_segments_and_ignore_case():
+    from agent_service.runtime import sharepoint_api as sp
+    assert sp.within("finance/shared documents/Reports/q3.xlsx", ["Finance/Shared Documents/Reports"])
+    assert not sp.within("Finance/Shared Documents/ReportsOld/q3.xlsx", ["Finance/Shared Documents/Reports"])
+    assert sp.allowed(["Finance/Lists/Region Owners", "HR/Shared Documents"], ["Finance"]) == ["Finance/Lists/Region Owners"]
+    for bad in ("Finance/../HR/x.docx", "Finance//x", ""):
+        with pytest.raises(sp.StorageRefused):
+            sp.parts(bad)
+    assert sp.clean_fields({"Title": "East", "@odata.etag": "1", "_UIVersionString": "1.0", "ContentType": "Item", "Owner": "A"}) == {"Title": "East", "Owner": "A"}
+
+
+def test_excel_word_and_pdf_files_read_as_rows_or_text():
+    from agent_service.runtime import gcs_api as g
+    xlsx = EXAMPLES / "bigquery-sales/sample-data/sharepoint/Finance/Shared Documents/Targets/regional-targets-q4-2026.xlsx"
+    out = g.parse(xlsx.read_bytes(), "xlsx", 100, False)
+    assert out["rows"][0] == {"region": "East", "month": "2026-10", "revenue_target": 41000, "orders_target": 98, "_sheet": "Q4 2026"}
+    assert out["row_count"] == 16 and out["rows"][-1]["_sheet"] == "Notes"
+    doc = g.parse(_docx(["Data quality checks", "Loads arrive by 07:00 UTC."], [["Region", "Owner"], ["East", "Avery"]]), "docx", 10, False)
+    assert doc["text"] == "Data quality checks\nLoads arrive by 07:00 UTC.\nRegion | Owner\nEast | Avery" and doc["rows"] == []
+    assert g.parse(_pdf("Quarterly targets"), "pdf", 10, False)["text"] == "Quarterly targets"
+    with pytest.raises(g.StorageRefused, match="Excel"):
+        g.parse(b"not a workbook", "xlsx", 10, False)
+    assert g.format_of("bkt/a/b.XLSX", None) == "xlsx" and g.format_of("bkt/a/b.pdf", "auto") == "pdf"
+
+
+def test_sharepoint_sample_files_lists_and_new_files(run, monkeypatch):
+    use_sample(monkeypatch, "bigquery-sales")
+    sp = gateway.connect("sharepoint", limits.mint({"connection": "sharepoint", "actions": ["list_objects", "read_object", "read_list", "write_object"],
+                                                     "paths": ["Finance/Shared Documents/Targets", "Finance/Lists/Region Owners",
+                                                               "Finance/Shared Documents/Reports"], "source": "sample"}))
+    assert len(sp.list_objects("finance/shared documents/targets")) == 1          # names ignore case, as in SharePoint
+    files = sp.list_objects("Finance/Shared Documents/Targets")
+    assert [f["path"] for f in files] == ["Finance/Shared Documents/Targets/regional-targets-q4-2026.xlsx"] and files[0]["format"] == "xlsx"
+    assert sp.read_object(files[0]["path"])["rows"][0]["region"] == "East"
+    owners = sp.read_list("Finance/Lists/Region Owners")
+    assert owners["row_count"] == 5 and owners["rows"][0] == {"Title": "East", "Owner": "Avery Chen", "OwnerEmail": "avery.chen@example.com", "Active": True}
+    with pytest.raises(gateway.Refused, match="may not use Finance/Shared Documents/Policies"):
+        sp.read_object("Finance/Shared Documents/Policies/data-quality-checks.md")
+    with pytest.raises(gateway.Refused, match="read it as a list"):
+        sp.read_object("Finance/Lists/Region Owners")
+    assert sp.write_object("Finance/Shared Documents/Reports/x.csv", b"a\n1\n", "text/csv", True) == {
+        "written": False, "would_write": "Finance/Shared Documents/Reports/x.csv", "bytes": 4}
+    assert sp.write_object("Finance/Shared Documents/Reports/x.csv", b"a\n1\n", "text/csv", False)["written"]
+    assert (run / "sharepoint/Finance/Shared Documents/Reports/x.csv").read_text() == "a\n1\n"
+    with pytest.raises(gateway.Refused, match="never overwrite"):
+        sp.write_object("Finance/Shared Documents/Reports/X.csv", b"b", "text/csv", False)     # SharePoint names ignore case
+    reader = gateway.connect("sharepoint", limits.mint({"connection": "sharepoint", "actions": ["read_object"], "paths": ["Finance"], "source": "sample"}))
+    with pytest.raises(gateway.Refused, match="may not read list"):
+        reader.read_list("Finance/Lists/Region Owners")
+
+
+class _Resp:
+    def __init__(self, status, body=None, raw=b"", headers=None):
+        self.status_code, self._body, self.text = status, body, json.dumps(body) if body is not None else ""
+        self.headers = headers or {"content-type": "application/json"}
+        self.raw = __import__("io").BytesIO(raw)
+        self.raw.read = (lambda f: lambda n, decode_content=True: f(n))(self.raw.read)
+
+    def json(self):
+        return self._body
+
+    def close(self):
+        pass
+
+
+class FakeGraph:
+    """Microsoft Graph, as far as the connector uses it: one site, one library, a folder, a file and a list."""
+
+    def __init__(self):
+        self.headers, self.calls, self.uploaded = {}, [], {}
+
+    def get(self, url, params=None, headers=None, **kw):
+        self.calls.append(("GET", url, params, headers))
+        path = url.replace("https://graph.microsoft.com/v1.0", "")
+        if path == "/sites/contoso.sharepoint.com:/sites/Finance":
+            return _Resp(200, {"id": "site-1"})
+        if path.startswith("/sites/contoso.sharepoint.com:/sites/"):
+            return _Resp(404, {"error": {"message": "not found"}})
+        if path == "/sites/site-1/drives":
+            return _Resp(200, {"value": [{"id": "drive-1", "name": "Documents", "webUrl": "https://contoso.sharepoint.com/sites/Finance/Shared%20Documents"}]})
+        if path == "/drives/drive-1/root/children":
+            return _Resp(200, {"value": []})
+        if path == "/drives/drive-1/root:/Targets:/children":
+            return _Resp(200, {"value": [{"name": "q4.csv", "size": 25, "lastModifiedDateTime": "2026-10-01T08:00:00Z", "file": {"mimeType": "text/csv"}},
+                                         {"name": "old", "folder": {"childCount": 1}}], "@odata.nextLink": "https://graph.microsoft.com/v1.0/next-page"})
+        if path == "/next-page":
+            return _Resp(200, {"value": [{"name": "notes.txt", "size": 5, "lastModifiedDateTime": "2026-09-01T08:00:00Z", "file": {}}]})
+        if path == "/drives/drive-1/root:/Targets/old:/children":
+            return _Resp(200, {"value": [{"name": "q3.csv", "size": 10, "lastModifiedDateTime": "2026-07-01T08:00:00Z", "file": {}}]})
+        if path == "/drives/drive-1/root:/Targets/q4.csv:":
+            return _Resp(200, {"size": 25, "lastModifiedDateTime": "2026-10-01T08:00:00Z", "file": {}})
+        if path == "/drives/drive-1/root:/Targets/q4.csv:/content":
+            return _Resp(206, raw=b"region,target\nEast,41000\n")
+        if path == "/sites/site-1/lists/Region%20Owners/items":
+            return _Resp(200, {"value": [{"id": "1", "fields": {"Title": "East", "OwnerEmail": "a@example.com", "@odata.etag": "x", "ContentType": "Item"}}]})
+        return _Resp(404, {"error": {"message": f"no {path}"}})
+
+    def put(self, url, data=None, params=None, headers=None, **kw):
+        self.calls.append(("PUT", url, params, headers))
+        if url.endswith("/Reports/new.csv:/content"):
+            if url in self.uploaded:
+                return _Resp(409, {"error": {"message": "nameAlreadyExists"}})
+            self.uploaded[url] = data
+            return _Resp(201, {"webUrl": "https://contoso.sharepoint.com/sites/Finance/Shared%20Documents/Reports/new.csv"})
+        return _Resp(403, {"error": {"message": "Access denied"}})
+
+
+def test_live_sharepoint_signs_in_as_the_app_and_keeps_the_limits(run, monkeypatch, tmp_path):
+    import base64 as b64
+    import requests
+    from agent_service.runtime import sharepoint_api, vault
+    monkeypatch.setenv("AGENT_SERVICE_VAULT", str(tmp_path / "vault"))
+    vault.save("connector-m365", {"client_secret": "s3cret"})
+    claims = b64.urlsafe_b64encode(json.dumps({"app_displayname": "Agent Orchestrator", "roles": ["Sites.Selected"]}).encode()).decode().rstrip("=")
+    posted = []
+
+    def post(url, data=None, timeout=None):
+        posted.append((url, data))
+        return _Resp(200, {"access_token": f"h.{claims}.s", "expires_in": 3600})
+
+    graph = FakeGraph()
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(requests, "Session", lambda: graph)
+    sharepoint_api._TOKENS.clear()
+    up = {"connector": "m365", "tenant_id": "tenant-1", "client_id": "app-1", "hostname": "contoso.sharepoint.com",
+          "allowed": ["Finance/Shared Documents", "Finance/Lists/Region Owners"]}
+    sp = gateway.connect("sharepoint", limits.mint({"connection": "sharepoint", "actions": ["list_objects", "read_object", "read_list", "write_object"],
+                                                     "paths": ["Finance/Shared Documents/Targets", "Finance/Shared Documents/Reports", "Finance/Lists/Region Owners",
+                                                               "HR/Shared Documents"], "source": "live", "upstream": up}))
+    assert posted[0][0] == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token" and posted[0][1]["scope"] == "https://graph.microsoft.com/.default"
+    assert sp.store.allow == ["Finance/Shared Documents/Targets", "Finance/Shared Documents/Reports", "Finance/Lists/Region Owners"]   # HR isn't the connector's
+    files = sp.list_objects("Finance/Shared Documents/Targets", modified_after="2026-08-01")
+    assert [f["path"] for f in files] == ["Finance/Shared Documents/Targets/q4.csv", "Finance/Shared Documents/Targets/notes.txt"]
+    assert sp.read_object("Finance/Shared Documents/Targets/q4.csv")["rows"] == [{"region": "East", "target": 41000}]
+    assert [c for c in graph.calls if c[1].endswith("/content")][0][3] == {"Range": "bytes=0-24"}
+    assert sp.read_list("Finance/Lists/Region Owners")["rows"] == [{"id": "1", "Title": "East", "OwnerEmail": "a@example.com"}]
+    out = sp.write_object("Finance/Shared Documents/Reports/new.csv", b"a\n", "text/csv", False)
+    assert out["written"] and graph.calls[-1][2] == {"@microsoft.graph.conflictBehavior": "fail"}
+    with pytest.raises(gateway.Refused, match="never overwrite"):
+        sp.write_object("Finance/Shared Documents/Reports/new.csv", b"a\n", "text/csv", False)
+    with pytest.raises(gateway.Refused, match="may not use HR"):
+        sp.list_objects("HR/Shared Documents")
+    assert sharepoint_api.identity_and_check(up) == ("Signed in as the app Agent Orchestrator (Sites.Selected). Can see "
+                                                     "Finance/Shared Documents (0 files), Finance/Lists/Region Owners (1 items).")
+    assert len(posted) == 1                                       # the token is reused until it expires
+
+
+class FakeSMTP:
+    sent: list = []
+
+    def __init__(self, host, port, timeout=None):
+        self.host, self.port, self.log = host, port, []
+
+    def ehlo(self):
+        self.log.append("ehlo")
+
+    def starttls(self, context=None):
+        self.log.append("starttls")
+
+    def login(self, user, password):
+        self.log.append(("login", user, password))
+
+    def send_message(self, msg, to_addrs=None):
+        FakeSMTP.sent.append((self.host, self.port, self.log, msg, to_addrs))
+        return {}
+
+    def noop(self):
+        return (250, b"ok")
+
+    def quit(self):
+        pass
+
+
+def test_smtp_sends_only_to_the_steps_recipients_through_the_relay(run, monkeypatch, tmp_path):
+    import smtplib
+    from agent_service.runtime import sampledata, vault
+    monkeypatch.setenv("AGENT_SERVICE_VAULT", str(tmp_path / "vault"))
+    vault.save("connector-m365", {"smtp_password": "pw"})
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    FakeSMTP.sent = []
+    up = {"connector": "m365", "smtp": {"host": "smtp.office365.com", "security": "starttls", "username": "agents@example.com",
+                                        "from_address": "agents@example.com"}}
+    mail = gateway.connect("smtp", limits.mint({"connection": "smtp", "actions": ["send"], "recipients": ["@example.com"], "max_emails": 2,
+                                                 "source": "live", "upstream": up}))
+    with pytest.raises(gateway.Refused, match="may not send email to x@other.org"):
+        mail.send(["a@example.com", "x@other.org"], "Hi", "Body")
+    out = mail.send(["a@example.com"], "Sales load", "All loaded.", cc=["b@example.com"])
+    assert out["status"] == "sent" and out["message_id"].endswith("@example.com>")
+    [(host, port, log, msg, to)] = FakeSMTP.sent
+    assert (host, port, to) == ("smtp.office365.com", 587, ["a@example.com", "b@example.com"])
+    assert log == ["ehlo", "starttls", "ehlo", ("login", "agents@example.com", "pw")] and msg["From"] == "agents@example.com"
+    mail.send(["a@example.com"], "Two", "x")
+    with pytest.raises(gateway.Refused, match="already sent 2"):
+        mail.send(["a@example.com"], "Three", "x")
+    assert [m["subject"] for m in sampledata.outbox()] == ["Sales load", "Two"]
+    test_run = gateway.connect("smtp", limits.mint({"connection": "smtp", "actions": ["send"], "recipients": ["@example.com"], "source": "sample"}))
+    assert test_run.send(["a@example.com"], "Test", "x")["status"] == "sent (test run: not delivered)" and len(FakeSMTP.sent) == 2
+    with pytest.raises(limits.LimitsError, match="no SMTP server"):
+        gateway.connect("smtp", limits.mint({"connection": "smtp", "actions": ["send"], "source": "live", "upstream": {"connector": "m365"}}))
+    from agent_service.runtime import smtp_api
+    assert smtp_api.check(up) == "Reached smtp.office365.com:587 (STARTTLS, signed in as agents@example.com); email goes from agents@example.com."
+
+
+# ------------------------------------------------------------------ Trino and Spark SQL (Dataproc)
+
+def test_sql_checks_allow_one_select_within_the_steps_data():
+    from agent_service.runtime import sql_engines as s
+    trino = s.Names("trino", "iceberg", "sales")
+    tree, tables = s.check("WITH x AS (SELECT * FROM orders WHERE region = @r) SELECT count(*) FROM x", {"r": "West's"}, "trino", trino, ["iceberg.sales"])
+    assert tables == ["iceberg.sales.orders"]
+    assert s.capped(tree, 10, "trino") == ("SELECT * FROM (WITH x AS (SELECT * FROM orders WHERE region = 'West''s') SELECT COUNT(*) FROM x) "
+                                           "AS q LIMIT 11")
+    assert "'@r'" in s.capped(s.check("SELECT * FROM orders WHERE note = '@r'", {}, "trino", trino, ["iceberg"])[0], 5, "trino")   # not a parameter
+    for sql, why in [("SELECT * FROM hive.hr.salaries", "may not read hive.hr.salaries"), ("DELETE FROM orders", "this is DELETE"),
+                     ("SELECT 1; SELECT 2", "2 statements"), ("SELECT * FROM orders WHERE x = @missing", "passes no missing"),
+                     ("SELEC * FROM orders", "doesn't parse")]:
+        with pytest.raises(s.QueryRefused, match=why):
+            s.check(sql, {}, "trino", trino, ["iceberg.sales"])
+    with pytest.raises(s.QueryRefused, match="in full"):
+        s.check("SELECT * FROM orders", {}, "trino", s.Names("trino", None, None), ["iceberg"])
+    spark = s.Names("spark-sql", None, None)
+    assert s.check("SELECT * FROM sales.orders", {}, "spark-sql", spark, ["sales"])[1] == ["spark_catalog.sales.orders"]
+    for sql in ("SELECT * FROM lake.sales.orders", "SELECT * FROM orders"):          # another catalog; the default schema
+        with pytest.raises(s.QueryRefused, match="may not read"):
+            s.check(sql, {}, "spark-sql", spark, ["sales"])
+    for sql in ("CREATE TABLE sales.x AS SELECT 1", "INSERT OVERWRITE DIRECTORY 'gs://x/y' SELECT 1", "CACHE TABLE sales.orders"):
+        with pytest.raises(s.QueryRefused, match="Only a single SELECT"):
+            s.check(sql, {}, "spark-sql", spark, ["sales"])
+
+
+def test_trino_and_spark_steps_run_on_sample_tables(run, monkeypatch):
+    use_sample(monkeypatch, "bigquery-sales")
+    trino = gateway.connect("trino", limits.mint({"connection": "trino", "actions": ["query", "list_tables", "get_schema"],
+                                                   "datasets": ["iceberg.sales_processed"], "max_rows": 2, "source": "sample"}))
+    out = trino.query("SELECT region, total_revenue FROM iceberg.sales_processed.revenue_by_region WHERE total_orders > @n "
+                      "ORDER BY total_revenue DESC", {"n": 0})
+    assert out["row_count"] == 2 and out["truncated"] and out["tables"] == ["iceberg.sales_processed.revenue_by_region"]
+    assert out["rows"][0] == {"region": "West", "total_revenue": 151200.4}
+    assert trino.list_tables("iceberg.sales_processed") == [{"table": f"iceberg.sales_processed.{t}"} for t in
+                                                            ("monthly_trend", "revenue_by_product", "revenue_by_region")]
+    assert {"name": "total_revenue", "type": "DOUBLE"} in trino.get_schema("iceberg.sales_processed.revenue_by_region")["columns"]
+    with pytest.raises(gateway.Refused, match="may not read iceberg.hr.people"):
+        trino.query("SELECT * FROM iceberg.hr.people")
+    spark = gateway.connect("spark-sql", limits.mint({"connection": "spark-sql", "actions": ["query"], "datasets": ["sales_processed"], "source": "sample"}))
+    rows = spark.query("SELECT substring(month, 1, 4) AS year, sum(total_orders) AS n FROM sales_processed.monthly_trend GROUP BY 1 ORDER BY 1")["rows"]
+    assert rows[0]["year"].isdigit() and sum(r["n"] for r in rows) > 0
+    with pytest.raises(gateway.Refused, match="may not get schema"):
+        spark.get_schema("sales_processed.monthly_trend")
+
+
+def test_a_step_naming_data_its_connector_doesnt_allow_is_told_so(run):
+    from agent_service.runtime import sql_engines
+    eng = sql_engines.Engine.__new__(sql_engines.Engine)
+    eng.limits, eng.service, eng.up = {"datasets": ["sales"]}, "spark-sql", {"name": "Spark SQL (sales lake)", "allowed": ["sales_processed"]}
+    eng.names = sql_engines.Names("spark-sql", None, None)
+    eng.allow = eng._scope(True)
+    eng.max_rows, eng.engine = 10, None
+    with pytest.raises(sql_engines.QueryRefused) as exc:
+        eng.query("SELECT * FROM sales.orders")
+    assert str(exc.value) == ("This step may not read spark_catalog.sales.orders. It may read: nothing. This step's Uses name sales, but "
+                              "Spark SQL (sales lake) only allows sales_processed: change the step's data to something within that, "
+                              "or ask an admin to allow more.")
+
+
+def test_live_trino_runs_capped_queries_as_the_connectors_user(run, monkeypatch, tmp_path):
+    import trino as trino_client
+    from agent_service.runtime import vault
+    monkeypatch.setenv("AGENT_SERVICE_VAULT", str(tmp_path / "vault"))
+    vault.save("connector-tr", {"password": "pw"})
+    seen = {}
+
+    class Cursor:
+        description = [("region",), ("n",)]
+
+        def execute(self, sql):
+            seen["sql"] = sql
+
+        def fetchall(self):
+            return [("East", 3), ("West", 2), ("South", 1)]
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr(trino_client.dbapi, "connect", lambda **kw: seen.update(kw) or Conn())
+    up = {"connector": "tr", "server": "https://cluster-m.example.com:8443", "user": "agents", "auth": {"kind": "basic"},
+          "catalog": "iceberg", "schema": "sales", "allowed": ["iceberg.sales"], "max_seconds": 60}
+    t = gateway.connect("trino", limits.mint({"connection": "trino", "actions": ["query"], "datasets": ["iceberg.sales", "hive"], "max_rows": 2,
+                                               "source": "live", "upstream": up, "agent": "lake-check"}))
+    assert t.wh.allow == ["iceberg.sales"]                                     # hive isn't the connector's
+    out = t.query("SELECT region, count(*) AS n FROM orders GROUP BY region")
+    assert out["rows"] == [{"region": "East", "n": 3}, {"region": "West", "n": 2}] and out["truncated"] and seen["closed"]
+    assert seen["sql"].endswith("SELECT * FROM (SELECT region, COUNT(*) AS n FROM orders GROUP BY region) AS q LIMIT 3")
+    assert (seen["host"], seen["port"], seen["http_scheme"], seen["user"], seen["catalog"]) == ("cluster-m.example.com", 8443, "https", "agents", "iceberg")
+    assert seen["auth"]._password == "pw" and seen["session_properties"] == {"query_max_run_time": "60s"}
+
+
+class FakeDataproc:
+    """Dataproc and Cloud Storage, as far as Spark SQL uses them: the query file goes up, the job or batch runs (after
+    one PENDING check), and its JSON rows are there to read."""
+
+    def __init__(self, end="SUCCEEDED", rows=None):
+        self.end, self.rows, self.calls, self.files, self.checks = end, rows or [], [], {}, 0
+
+    def post(self, url, params=None, json=None, data=None, headers=None, timeout=None):
+        self.calls.append(("POST", url, params, json))
+        if "/upload/" in url:
+            self.files[params["name"]] = data
+            return _Resp(200, {"name": params["name"]})
+        if url.endswith("/batches"):
+            return _Resp(200, {"name": "projects/demo-project/regions/us-central1/operations/op-1"})
+        if url.endswith("/jobs:submit"):
+            return _Resp(200, {"reference": json["job"]["reference"]})
+        return _Resp(200, {})
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append(("GET", url, params, None))
+        if "/batches/" in url or "/jobs/" in url:
+            self.checks += 1
+            done = self.checks > 1
+            if "/jobs/" in url:
+                state = {"SUCCEEDED": "DONE", "FAILED": "ERROR"}.get(self.end, self.end) if done else "RUNNING"
+                return _Resp(200, {"status": {"state": state, "details": "Table or view not found: sales.nope"}})
+            return _Resp(200, {"state": self.end if done else "PENDING", "stateMessage": "Table or view not found: sales.nope"})
+        if url.endswith("/o"):
+            return _Resp(200, {"items": [{"name": params["prefix"] + "_SUCCESS"}, {"name": params["prefix"] + "part-00000.json"}]})
+        r = _Resp(200)
+        r.text = "".join(__import__("json").dumps(x) + "\n" for x in self.rows)
+        return r
+
+
+def test_live_spark_sql_runs_as_a_serverless_batch_or_a_cluster_job(run, monkeypatch):
+    import google.auth.transport.requests as gtr
+    from agent_service.runtime import bigquery_api, sql_engines
+    monkeypatch.setattr(bigquery_api, "credentials", lambda up, scopes=None: object())
+    monkeypatch.setattr(sql_engines.time, "sleep", lambda s: None)
+    fake = FakeDataproc(rows=[{"region": "East", "n": 3}, {"region": "West", "n": 2}])
+    monkeypatch.setattr(gtr, "AuthorizedSession", lambda creds: fake)
+    up = {"connector": "dp", "project": "demo-project", "region": "us-central1", "staging": "gs://stage-bkt/agent-sql", "mode": "serverless",
+          "service_account": "spark@demo-project.iam.gserviceaccount.com", "subnetwork": "agent-orchestrator-us-central1",
+          "properties": {"spark.sql.catalog.lake": "org.apache.iceberg.spark.SparkCatalog"}, "allowed": ["sales"],
+          "jars": ["gs://spark-lib/iceberg/iceberg-spark-runtime-3.5_2.13-1.6.1.jar"],
+          "setup": ["CREATE DATABASE IF NOT EXISTS sales;", "CALL spark_catalog.system.register_table(table => 'sales.orders', metadata_file => 'gs://b/m.json')"]}
+    spark = gateway.connect("spark-sql", limits.mint({"connection": "spark-sql", "actions": ["query"], "max_rows": 1, "source": "live",
+                                                       "upstream": up, "agent": "lake-check"}))
+    out = spark.query("SELECT region, count(*) AS n FROM sales.orders GROUP BY region")
+    assert out["rows"] == [{"region": "East", "n": 3}] and out["truncated"]
+    [(name, script)] = fake.files.items()
+    assert name.startswith("agent-sql/ao-") and name.endswith("/query.sql")
+    assert script.decode() == ("CREATE DATABASE IF NOT EXISTS sales;\n"
+                               "CALL spark_catalog.system.register_table(table => 'sales.orders', metadata_file => 'gs://b/m.json');\n"
+                               f"INSERT OVERWRITE DIRECTORY 'gs://stage-bkt/{name[:-len('/query.sql')]}/rows' USING json\n"
+                               "SELECT * FROM (SELECT region, COUNT(*) AS n FROM sales.orders GROUP BY region) AS q LIMIT 2;\n")
+    batch = next(c for c in fake.calls if c[1].endswith("/locations/us-central1/batches"))
+    assert batch[3]["sparkSqlBatch"]["queryFileUri"] == f"gs://stage-bkt/{name}" and batch[3]["labels"]["agent"] == "lake-check"
+    assert batch[3]["sparkSqlBatch"]["jarFileUris"] == ["gs://spark-lib/iceberg/iceberg-spark-runtime-3.5_2.13-1.6.1.jar"]
+    assert batch[3]["environmentConfig"]["executionConfig"] == {"serviceAccount": "spark@demo-project.iam.gserviceaccount.com",
+                                                                "subnetworkUri": "agent-orchestrator-us-central1"}
+    assert batch[3]["runtimeConfig"]["properties"] == {"spark.sql.catalog.lake": "org.apache.iceberg.spark.SparkCatalog"}
+    fake.__init__(end="FAILED")
+    with pytest.raises(gateway.Refused, match="Spark SQL failed: Table or view not found"):
+        spark.query("SELECT * FROM sales.nope")
+    fake.__init__(rows=[{"ok": 1}])
+    cluster = gateway.connect("spark-sql", limits.mint({"connection": "spark-sql", "actions": ["query"], "source": "live",
+                                                         "upstream": {**up, "mode": "cluster", "cluster": "etl-cluster"}}))
+    assert cluster.query("SELECT 1 AS ok FROM sales.orders")["rows"] == [{"ok": 1}]
+    job = next(c for c in fake.calls if c[1].endswith("/regions/us-central1/jobs:submit"))
+    assert job[3]["job"]["placement"] == {"clusterName": "etl-cluster"} and job[3]["job"]["sparkSqlJob"]["queryFileUri"].endswith("/query.sql")
+    fake.__init__(end="RUNNING")
+    slow = gateway.connect("spark-sql", limits.mint({"connection": "spark-sql", "actions": ["query"], "source": "live",
+                                                      "upstream": {**up, "max_seconds": 1}}))
+    monkeypatch.setattr(sql_engines.time, "time", iter(range(0, 10_000, 5)).__next__)
+    with pytest.raises(gateway.Refused, match="longer than 1 seconds, so it was cancelled"):
+        slow.query("SELECT 1 AS ok FROM sales.orders")
+    assert fake.calls[-1][1] == "https://dataproc.googleapis.com/v1/projects/demo-project/regions/us-central1/operations/op-1:cancel"
+    with pytest.raises(limits.LimitsError, match="Fill in a staging folder"):
+        gateway.connect("spark-sql", limits.mint({"connection": "spark-sql", "actions": ["query"], "source": "live",
+                                                   "upstream": {"project": "p", "region": "r"}}))

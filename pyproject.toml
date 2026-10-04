@@ -14,9 +14,13 @@ dependencies = [
     "google-auth-oauthlib>=1.4.1",
     "google-cloud-bigquery>=3.45.2",
     "mcp>=2.2.0",
+    "openpyxl>=3.1.5",
     "pydantic>=2.9",
+    "pypdf>=6.19.0",
     "pyyaml>=6.0",
     "quickjs>=1.19.4",
+    "sqlglot>=30.21.0",
+    "trino>=0.340.0",
     "uvicorn[standard]>=0.53.0",
     "vl-convert-python>=1.9.0.post1",
 ]

@@ -6,8 +6,9 @@ import { ArgLimits, StepHeader, TakesEditor, UsesEditor, useMcpTools, useStep } 
 export default function Act() {
   const { step, set, p, refs, draft } = useStep()
   const action = step.create_events ? 'create_events' : step.call_tool ? 'call_tool' : step.insert_rows ? 'insert_rows' : step.send_email ? 'send_email' : step.write_object ? 'write_object' : 'add_row'
-  const gmailConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gmail')?.[0]
-  const gcsConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gcs')?.[0]
+  const gmailConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gmail' || c.service === 'smtp')?.[0]
+  const gcsConn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === 'gcs' || c.service === 'sharepoint')?.[0]
+  const fileService = draft.connections?.[step.uses?.connection]?.service
   const wo: Json = step.write_object ?? {}
   const se: Json = step.send_email ?? {}
   const seType = refs.find((r) => r.ref === se.for_each)?.type.replace(/^list of /, '') ?? ''
@@ -22,8 +23,8 @@ export default function Act() {
   const row: Json = step.add_row?.row ?? {}
   const yesNo = Object.entries(draft.run_options ?? {}).filter(([, o]: [string, any]) => o.type === 'yes/no').map(([k]) => `run.${k}`)
   const switchTo = (a: string) => {
-    const service = a === 'create_events' ? 'google-calendar' : a === 'call_tool' ? 'mcp' : a === 'insert_rows' ? 'bigquery' : a === 'send_email' ? 'gmail' : a === 'write_object' ? 'gcs' : 'google-sheets'
-    const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => c.service === service)?.[0] ?? ''
+    const services = a === 'create_events' ? ['google-calendar'] : a === 'call_tool' ? ['mcp'] : a === 'insert_rows' ? ['bigquery'] : a === 'send_email' ? ['gmail', 'smtp'] : a === 'write_object' ? ['gcs', 'sharepoint'] : ['google-sheets']
+    const conn = Object.entries(draft.connections ?? {}).find(([, c]: [string, any]) => services.includes(c.service))?.[0] ?? ''
     set(['create_events'], a === 'create_events' ? { calendar: 'Personal', templates: { default: { title: '', starts: '{start}', ends: '{end}' } }, never_twice: { match_fields: [] } } : undefined)
     set(['add_row'], a === 'add_row' ? { sheet: '', row: {} } : undefined)
     set(['call_tool'], a === 'call_tool' ? { tool: '', arguments: {} } : undefined)
@@ -58,17 +59,17 @@ export default function Act() {
       <StepHeader note="The only kind of step that changes the outside world, and it takes no text a model wrote: only checked fields." />
       <Block title="Does">
         <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : []), ...(bqConn || action === 'insert_rows' ? ['insert_rows'] : []), ...(gmailConn || action === 'send_email' ? ['send_email'] : []), ...(gcsConn || action === 'write_object' ? ['write_object'] : [])]} value={action} onChange={switchTo}
-          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery', send_email: 'Send an email', write_object: 'Write a file (GCS)' }} />
+          labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery', send_email: 'Send an email', write_object: 'Write a file' }} />
       </Block>
       {action === 'write_object' ? (
         <>
           <Block title="Uses"><UsesEditor actions={['write_object']} limits={['paths']} />
-            <span className="faint">It can only add new files under these prefixes: never overwrite or delete one.</span></Block>
+            <span className="faint">It can only add new files under these {fileService === 'sharepoint' ? 'folders' : 'prefixes'}: never overwrite or delete one.</span></Block>
           <Block title="Fills in from" aside="content, plus values for the path"><TakesEditor />
             <span className="faint"><code className="mono">content</code> is what goes in the file. Other inputs fill <code className="mono">{'{name}'}</code> in the path, e.g. <code className="mono">load_id: trigger.load_id</code>.</span></Block>
           <Block title="The file">
             <span className="row" style={{ flexWrap: 'nowrap' }}><span className="muted" style={{ width: 60 }}>Path</span>
-              <input className="input mono grow" value={wo.path ?? ''} placeholder="bucket/reports/{load_id}/summary.json" aria-label="Path" onChange={(e) => set(['write_object', 'path'], e.target.value)} /></span>
+              <input className="input mono grow" value={wo.path ?? ''} placeholder={fileService === 'sharepoint' ? 'Site/Shared Documents/Reports/{load_id}.csv' : 'bucket/reports/{load_id}/summary.json'} aria-label="Path" onChange={(e) => set(['write_object', 'path'], e.target.value)} /></span>
             <span className="row"><span className="muted" style={{ width: 60 }}>As</span>
               <Select value={wo.format ?? 'json'} options={['json', 'jsonl', 'csv', 'text', 'png']} onChange={(v) => set(['write_object', 'format'], v)} label="Format"
                 labels={{ json: 'JSON', jsonl: 'JSON lines', csv: 'CSV (from a list of records)', text: 'Text', png: 'A chart (its image)' }} /></span>

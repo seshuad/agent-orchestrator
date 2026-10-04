@@ -21,7 +21,7 @@ from ..definition import ActStep, ApproveStep, AskStep, BranchBlock, BuiltInStep
 from ..runtime.cel import Rule, RuleError
 from .connections import check_accounts
 
-UNTRUSTED = {"gmail", "github", "mcp"}     # BigQuery is your own data, not other people's    # services whose content other people wrote
+UNTRUSTED = {"gmail", "github", "mcp", "sharepoint"}     # services whose content other people wrote (BigQuery is your own data)
 RUN_BUILT_INS = {"started"}        # run.* values every run has, besides its run options
 
 
@@ -29,6 +29,28 @@ def _loc(loc: tuple[Any, ...]) -> str:
     """Pydantic's error location, without the discriminator tags it adds for step kinds."""
     kinds = {"ask", "built-in", "free-form", "branch", "approve", "act"}
     return ".".join(str(p) for p in loc if p not in kinds and not (isinstance(p, str) and p.endswith("Step") or str(p).endswith("Block")))
+
+
+def _sql_problems(raw: dict[str, Any]) -> list[dict[str, str]]:
+    """Trino and Spark SQL steps' queries, parsed in their dialect on every save: the SQL parses, and it only reads.
+    (Which tables it may read is checked when it runs, against the connector's and the step's limits.)"""
+    from ..runtime import sql_engines
+    errors = []
+
+    def walk(steps: list[dict[str, Any]], path: str) -> None:
+        for i, s in enumerate(steps or []):
+            op = s.get("operation") or {}
+            for kind in ("trino", "spark-sql"):
+                sql = str((op.get(kind) or {}).get("sql") or "") if isinstance(op.get(kind), dict) else ""
+                if sql.strip():
+                    params = {k: 0 for k in (s.get("takes") or {})}
+                    try:
+                        sql_engines.parse(sql_engines.bind(sql, params, sql_engines.DIALECT[kind]), sql_engines.DIALECT[kind])
+                    except sql_engines.QueryRefused as exc:
+                        errors.append({"path": f"{path}.{i}.operation.{kind}.sql", "message": str(exc)})
+            walk(s.get("steps") or [], f"{path}.{i}.steps")
+    walk(raw.get("steps") or [], "steps")
+    return errors
 
 
 def _cel_sites(raw: dict[str, Any]) -> list[tuple[str, str]]:
@@ -137,7 +159,7 @@ def _policy(agent: definition.Agent) -> list[dict[str, str]]:
                 continue
         if isinstance(s, ActStep) and reads_untrusted and not approved:
             warnings.append({"path": f"steps.{i}", "message": f"{s.name} changes something outside the agent with no approval "
-                             "first, using values from content other people wrote (email, GitHub, MCP tools). Add an Approve step if a person should check them."})
+                             "first, using values from content other people wrote (email, GitHub, SharePoint, MCP tools). Add an Approve step if a person should check them."})
     return warnings
 
 
@@ -160,6 +182,7 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
         return {"ok": False, "errors": errors, "warnings": [], "compiled": None}
     policy_warnings = _policy(agent)
     errors += _run_option_refs(raw)
+    errors += _sql_problems(raw)
     if accounts is not None:
         errors += check_accounts(raw, accounts, connectors)
     compiled = None
@@ -184,9 +207,12 @@ def _type_of_returns(step: Any) -> list[tuple[str, str]]:
         return [(n, f.type) for n, f in step.returns.items()]
     if isinstance(step, BuiltInStep) and step.op == "chart":
         return [("image", "chart"), ("title", "text")]
-    if isinstance(step, BuiltInStep) and step.op == "gcs-list":
+    if isinstance(step, BuiltInStep) and step.op in ("gcs-list", "sharepoint-list"):
         return [("files", "list of files"), ("count", "number")]
-    if isinstance(step, BuiltInStep) and step.op == "gcs-read":
+    if isinstance(step, BuiltInStep) and step.op == "sharepoint-items":
+        rows = step.returns.get("rows")
+        return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no")]
+    if isinstance(step, BuiltInStep) and step.op in ("gcs-read", "sharepoint-read"):
         rows = step.returns.get("rows")
         return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),
                 ("files", "list of files"), ("text", "text")]
@@ -198,6 +224,10 @@ def _type_of_returns(step: Any) -> list[tuple[str, str]]:
             if c and c.get("save_as"):
                 out.append((c["save_as"], "list of records" if c.get("group_by") else "record"))
         return out
+    if isinstance(step, BuiltInStep) and step.op in ("trino", "spark-sql"):
+        rows = step.returns.get("rows")
+        return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),
+                ("elapsed_seconds", "number")]
     if isinstance(step, BuiltInStep) and step.op == "bigquery":
         rows = step.returns.get("rows")
         return [("rows", rows.type if rows else "list of records"), ("row_count", "number"), ("truncated", "yes/no"),

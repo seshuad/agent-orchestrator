@@ -63,6 +63,42 @@ SERVICES: dict[str, dict[str, Any]] = {
         },
         "never": "Overwriting or deleting files, changing buckets or their permissions: not offered.",
     },
+    "trino": {
+        "name": "Trino", "icon": "database",
+        "permissions": {
+            "read": {"label": "Run read queries", "actions": ["query", "list_tables", "get_schema"], "scope": "Trino (SELECT only)",
+                     "detail": "Query, list tables and read columns, in the catalogs and schemas the connector allows. Each step names its own, a row cap and a time limit."},
+        },
+        "never": "INSERT, UPDATE, DELETE, CREATE, DROP or any other statement that writes: not offered.",
+    },
+    "spark-sql": {
+        "name": "Spark SQL", "icon": "database",
+        "permissions": {
+            "read": {"label": "Run read queries", "actions": ["query", "list_tables", "get_schema"], "scope": "Spark SQL on Dataproc (SELECT only)",
+                     "detail": "Query, list tables and read columns, in the schemas the connector allows, as Dataproc jobs. Each query takes a while to start."},
+        },
+        "never": "INSERT, UPDATE, DELETE, CREATE, DROP or any other statement that writes: not offered.",
+    },
+    "sharepoint": {
+        "name": "SharePoint", "icon": "folder",
+        "permissions": {
+            "read": {"label": "List and read files and lists", "actions": ["list_objects", "read_object", "read_list"],
+                     "scope": "Sites.Selected (read), named sites",
+                     "detail": "List and read files in document libraries (CSV, Excel, JSON as rows; Word, PDF, text as text) and read "
+                               "SharePoint lists as rows. Each step names its folders and lists, and a byte cap."},
+            "write": {"label": "Add new files", "actions": ["write_object"], "scope": "Sites.Selected (write), named folders, new files only",
+                      "detail": "Add new files in folders a step names. Act steps only. Never overwrites or deletes a file."},
+        },
+        "never": "Overwriting or deleting files, changing list items, site settings or permissions: not offered.",
+    },
+    "smtp": {
+        "name": "Email (SMTP)", "icon": "mail",
+        "permissions": {
+            "send": {"label": "Send email", "actions": ["send"], "scope": "the connector's SMTP server",
+                     "detail": "Send email from the connector's address through its mail server. Only Act steps, only to the recipients each step names."},
+        },
+        "never": "Reading email: not offered.",
+    },
     "github": {
         "name": "GitHub", "icon": "code", "sign_in": "token",
         "permissions": {
@@ -170,4 +206,13 @@ def check_accounts(raw: dict[str, Any], accounts: dict[str, dict[str, Any]],
                     errors.append({"path": f"{path}.uses.actions",
                                    "message": f"{account['label']} isn't allowed to {action.replace('_', ' ')}. Add that permission to "
                                               f"the connection, or untick the action."})
+            if account["service"] in ("trino", "spark-sql") and connector is not None and (step.get("uses") or {}).get("datasets"):
+                from ..runtime.sql_engines import Names
+                st = connector.get("settings") or {}
+                names = Names(account["service"], st.get("catalog"), st.get("schema"))
+                up = [names.entry(x) for x in st.get("allowed") or []]
+                outside = [d for d in step["uses"]["datasets"] if not any(names.within(names.entry(d), u) for u in up)]
+                if outside:
+                    errors.append({"path": f"{path}.uses.datasets", "message": f"{connector['name']} only allows "
+                                   f"{', '.join(st.get('allowed') or []) or 'nothing yet'}; {', '.join(outside)} is outside that."})
     return errors

@@ -5,8 +5,8 @@
       .say(chat_id, text)         the builder's next message; Claude answers in the background
       .get(chat_id)               what the page shows: the transcript, what Claude looked at, the draft
 
-Claude has read-only tools on the workspace's BigQuery and Cloud Storage accounts (tables and schemas; folders and
-files), plus `save_draft`. Every look goes through the connector gateway with the connector's own limits, small caps,
+Claude has read-only tools on the workspace's BigQuery, Cloud Storage and SharePoint accounts (tables and schemas;
+folders, files and lists), plus `save_draft`. Every look goes through the connector gateway with the connector's own limits, small caps,
 and the gateway log, so Claude sees only what an agent on that account could see. An admin can switch off sample rows
 and file contents per connector ("share samples"): then Claude sees names, sizes and schemas only. `save_draft` runs
 the same checks as the editor; errors go back to Claude to fix, and a draft that passes is saved (and, later in the
@@ -35,6 +35,7 @@ MODEL = author.MODEL
 MAX_TURNS = 24
 SAMPLE_ROWS = 5
 READ_BYTES = "64KB"
+OFFICE_READ_BYTES = "8MB"             # SharePoint: Excel, Word and PDF files are read whole, then cut to a sample
 _env_lock = threading.Lock()          # the gateway reads its run folder and vault from the environment
 
 INTRO = """You help a builder design one agent for Agent Orchestrator, in a conversation. Work in this order:
@@ -62,14 +63,16 @@ TOOLS = [
     {"name": "bigquery_table", "description": "A BigQuery table's columns and row count, and (if the admin allows samples) its first few rows.",
      "input_schema": {"type": "object", "properties": {"account": {"type": "string"}, "table": {"type": "string", "description": "project.dataset.table"}},
                       "required": ["account", "table"]}},
-    {"name": "storage_list", "description": "List what's under a Cloud Storage bucket/prefix the account may use: its folders (with file counts "
-                                            "and the newest update) and up to 40 files (path, size, updated, format).",
-     "input_schema": {"type": "object", "properties": {"account": {"type": "string", "description": "A Cloud Storage account id."},
-                                                       "prefix": {"type": "string", "description": "bucket/ or bucket/prefix/"}},
+    {"name": "storage_list", "description": "List what's under a Cloud Storage bucket/prefix, or a SharePoint site/library/folder, the account "
+                                            "may use: its folders (with file counts and the newest update) and up to 40 files (path, size, updated, format).",
+     "input_schema": {"type": "object", "properties": {"account": {"type": "string", "description": "A Cloud Storage or SharePoint account id."},
+                                                       "prefix": {"type": "string", "description": "bucket/prefix/, or site/library/folder"}},
                       "required": ["account", "prefix"]}},
-    {"name": "storage_read", "description": "The head of one file: up to 5 rows for CSV, JSON, JSON lines and Parquet, or the first few KB of text "
-                                            "(logs, scripts). Only if the admin allows samples.",
-     "input_schema": {"type": "object", "properties": {"account": {"type": "string"}, "path": {"type": "string", "description": "bucket/name"}},
+    {"name": "storage_read", "description": "The head of one file: up to 5 rows for CSV, JSON, JSON lines, Parquet and Excel, or the first few KB "
+                                            "of text (logs, scripts, Word, PDF). For SharePoint, a list (site/Lists/<title>) gives its first 5 items. "
+                                            "Only if the admin allows samples.",
+     "input_schema": {"type": "object", "properties": {"account": {"type": "string"},
+                                                       "path": {"type": "string", "description": "bucket/name, site/library/folder/file or site/Lists/<title>"}},
                       "required": ["account", "path"]}},
     {"name": "save_draft", "description": "Save the agent as a draft, after the same checks the editor runs. Returns the problems to fix, or "
                                           "the agent's name once saved. Saving again changes the same draft.",
@@ -182,16 +185,17 @@ class Chats:
         lines = ["", "## What you can look at in this conversation"]
         for a in self.store.connections():
             c = connectors.get(a.get("connector") or "") or {}
-            if a["service"] in ("bigquery", "gcs"):
+            if a["service"] in ("bigquery", "gcs", "sharepoint"):
                 st = c.get("settings") or {}
                 where = (st.get("allowed") or [])
                 samples = "samples allowed" if st.get("share_samples", True) else "names and schemas only (the admin turned off samples)"
-                lines.append(f"- {a['id']} ({'BigQuery' if a['service'] == 'bigquery' else 'Cloud Storage'}): {', '.join(where) or 'nothing allowed yet'}"
+                kind = {"bigquery": "BigQuery", "gcs": "Cloud Storage", "sharepoint": "SharePoint"}[a["service"]]
+                lines.append(f"- {a['id']} ({kind}): {', '.join(where) or 'nothing allowed yet'}"
                              + (f"; billing project {st.get('billing_project')}" if st.get("billing_project") else "") + f"; {samples}")
         if chat["source"] == "sample":
             lines.append(f"(You're looking at the sample set {chat.get('sample_set')!r}, not the real data.)")
         if len(lines) == 2:
-            lines.append("No BigQuery or Cloud Storage accounts yet: you can't look at data, only design from what the builder tells you.")
+            lines.append("No BigQuery, Cloud Storage or SharePoint accounts yet: you can't look at data, only design from what the builder tells you.")
         return text + "\n".join(lines)
 
     def _answer(self, cid: str) -> None:
@@ -249,8 +253,10 @@ class Chats:
     def _connection(self, chat: dict[str, Any], account: str, service: str) -> tuple[Any, bool]:
         """A gateway connection for one look, as a step on that account would have it, but read-only and capped."""
         acct = self.store.accounts().get(account)
+        if service == "files" and acct is not None and acct["service"] in ("gcs", "sharepoint"):
+            service = acct["service"]
         if acct is None or acct["service"] != service:
-            raise ValueError(f"There's no {service} account {account!r} in this workspace.")
+            raise ValueError(f"There's no {'Cloud Storage or SharePoint' if service == 'files' else service} account {account!r} in this workspace.")
         connectors = {c["id"]: c for c in self.store.connectors()}
         st = (connectors.get(acct.get("connector") or "") or {}).get("settings") or {}
         live = chat["source"] == "live"
@@ -259,6 +265,11 @@ class Chats:
                       "agent": "build-chat", "source": "live" if live else "sample"}
             limits["upstream"] = runner._warehouse(account, self.store.accounts(), connectors, self.store.runs_root())[0] if live \
                 else {"allowed": st.get("allowed") or [], "billing_project": st.get("billing_project")}
+        elif service == "sharepoint":
+            limits = {"connection": "sharepoint", "actions": ["list_objects", "read_object", "read_list"], "max_bytes": OFFICE_READ_BYTES,
+                      "max_rows": SAMPLE_ROWS, "source": "live" if live else "sample", "paths": st.get("allowed") or []}
+            if live:
+                limits["upstream"] = runner._microsoft(account, self.store.accounts(), connectors)
         else:
             limits = {"connection": "gcs", "actions": ["list_objects", "read_object"], "max_bytes": READ_BYTES, "max_rows": SAMPLE_ROWS,
                       "source": "live" if live else "sample", "paths": st.get("allowed") or []}
@@ -277,7 +288,7 @@ class Chats:
     def _look(self, chat: dict[str, Any], name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if name not in ("bigquery_list_tables", "bigquery_table", "storage_list", "storage_read"):
             raise ValueError(f"No tool {name!r}.")
-        service = "bigquery" if name.startswith("bigquery") else "gcs"
+        service = "bigquery" if name.startswith("bigquery") else "files"
         with _env_lock:
             saved = {k: os.environ.get(k) for k in ("AGENT_SERVICE_RUN_DIR", "AGENT_SERVICE_VAULT", "AGENT_SERVICE_STEP", "AGENT_SERVICE_SAMPLE_DATA")}
             os.environ.update(self._env(chat))
@@ -348,9 +359,10 @@ def _do(conn: Any, name: str, args: dict[str, Any], samples: bool) -> tuple[str,
         cols = [c.get("name") for c in schema.get("columns") or []]
         return j(out), f"{len(cols)} columns" + (f", {schema.get('rows')} rows" if schema.get("rows") is not None else "") + ("" if samples else " (no samples)"), \
             {"kind": "table", "name": args["table"], "detail": ", ".join(str(c) for c in cols)[:200]}
+    service = conn.limits.get("connection")
     if name == "storage_list":
-        files = gateway.call(conn, "gcs", "list_objects", {"prefix": args["prefix"], "modified_after": None, "limit": 1000})
-        base = args["prefix"].removeprefix("gs://").rstrip("/") + "/"
+        files = gateway.call(conn, service, "list_objects", {"prefix": args["prefix"], "modified_after": None, "limit": 1000})
+        base = args["prefix"].removeprefix("gs://").strip().strip("/") + "/"
         folders: dict[str, dict[str, Any]] = {}
         for f in files:
             rest = f["path"][len(base):] if f["path"].startswith(base) else f["path"]
@@ -365,10 +377,16 @@ def _do(conn: Any, name: str, args: dict[str, Any], samples: bool) -> tuple[str,
             {"kind": "folder", "name": base, "detail": ", ".join(folders)[:200] or f"{len(files)} files"}
     if not samples:
         raise ValueError("The admin turned off samples for this connector: you can see names, sizes and schemas, not contents.")
-    read = gateway.call(conn, "gcs", "read_object", {"path": args["path"], "format": "auto"})
-    if read["format"] == "text":
+    from ..runtime.sharepoint_api import is_list, parts
+    if service == "sharepoint" and is_list(parts(args["path"])):
+        items = gateway.call(conn, "sharepoint", "read_list", {"path": args["path"], "limit": SAMPLE_ROWS})
+        cols = list((items["rows"] or [{}])[0])
+        return j({"list": items["path"], "columns": cols, "rows": items["rows"], "truncated": items["truncated"]}), \
+            f"list: {len(cols)} columns", {"kind": "table", "name": items["path"], "detail": ", ".join(cols)[:200]}
+    read = gateway.call(conn, service, "read_object", {"path": args["path"], "format": "auto"})
+    if read.get("text") is not None:
         text = (read.get("text") or "")[:4000]
-        return text, f"{len(text):,} characters of text", {"kind": "file", "name": read["path"], "detail": "text"}
+        return text, f"{len(text):,} characters of text", {"kind": "file", "name": read["path"], "detail": read["format"]}
     cols = list((read["rows"] or [{}])[0])
     return j({"format": read["format"], "columns": cols, "rows": read["rows"], "bytes": read["bytes"], "truncated": read["truncated"]}), \
         f"{read['format']}: {len(cols)} columns", {"kind": "file", "name": read["path"], "detail": ", ".join(cols)[:200]}

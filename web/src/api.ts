@@ -91,7 +91,8 @@ export interface McpTool {
   pin?: string; approved_pin?: string | null; new?: boolean; changed?: boolean
 }
 export interface Connector {
-  id: string; type: 'google' | 'github' | 'mcp' | 'bigquery' | 'gcs'; type_name: string; name: string; icon: string; reach: string
+  id: string; type: 'google' | 'github' | 'mcp' | 'bigquery' | 'gcs' | 'microsoft365' | 'trino' | 'dataproc'; type_name: string; name: string; icon: string; reach: string
+  secrets_set?: { client_secret: boolean; smtp_password: boolean }
   settings: Json; offered?: Record<string, string[]>; tools?: McpTool[]; who: 'builders' | 'admins'; domains: string[]
   status: { state: 'ready' | 'attention' | 'setup'; message?: string; tested_at?: number | null; tested_by?: string; reason?: string }
   secret_set: boolean; secret_set_at?: number | null; accounts: number; created_by?: string

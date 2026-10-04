@@ -218,9 +218,19 @@ def create_app(home: Path | None = None) -> FastAPI:
             return False
         connector = store.connector(conn.get("connector"))
         kind = conn_types.sign_in_kind(connector)
-        if connector and connector["type"] in ("bigquery", "gcs"):   # the service's gcloud account or its own credentials need no secret
+        if connector and connector["type"] == "trino":                # a password or token only if the server signs in
+            kind = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "none")
+            return kind == "none" or bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
+        if connector and connector["type"] in ("bigquery", "gcs", "dataproc"):   # the service's gcloud account or its own credentials need no secret
             auth = ((connector.get("settings") or {}).get("auth") or {}).get("kind", "gcloud")
             return auth != "service_account" or bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
+        if connector and connector["type"] == "microsoft365":    # SharePoint needs the app's secret; a relay may need no password
+            secret = vault.load(conn_types.secret_key(conn["connector"]), vault_dir) or {}
+            st = connector.get("settings") or {}
+            if conn["service"] == "smtp":
+                smtp = st.get("smtp") or {}
+                return bool(smtp.get("host") and smtp.get("from_address")) and (not smtp.get("username") or bool(secret.get("smtp_password")))
+            return bool(st.get("tenant_id") and st.get("client_id") and secret.get("client_secret"))
         if kind == "shared":
             return bool(vault.load(conn_types.secret_key(conn["connector"]), vault_dir))
         if kind == "none" and conn["service"] == "mcp":
@@ -402,14 +412,33 @@ def create_app(home: Path | None = None) -> FastAPI:
             vault.delete(conn_types.secret_key(cid), vault_dir)
             return
         value: Any = secret.strip()
-        if ctype in ("bigquery", "gcs"):
+        if ctype == "microsoft365":     # {client_secret?, smtp_password?}: each replaces only itself; "" removes it
+            try:
+                given = json.loads(value)
+                assert isinstance(given, dict)
+            except (ValueError, AssertionError):
+                raise fail(ValueError("Send the Microsoft 365 secrets as {\"client_secret\": ..., \"smtp_password\": ...}."), 422)
+            merged = {**(vault.load(conn_types.secret_key(cid), vault_dir) or {})}
+            for k in ("client_secret", "smtp_password"):
+                if k in given:
+                    if str(given[k] or "").strip():
+                        merged[k] = str(given[k]).strip()
+                    else:
+                        merged.pop(k, None)
+            merged.pop("_set_at", None)
+            if merged:
+                vault.save(conn_types.secret_key(cid), {**merged, "_set_at": time.time()}, vault_dir)
+            else:
+                vault.delete(conn_types.secret_key(cid), vault_dir)
+            return
+        if ctype in ("bigquery", "gcs", "dataproc"):
             try:
                 value = json.loads(value)
             except ValueError:
                 raise fail(ValueError("Paste the service account's whole JSON key file."), 422)
             if value.get("type") != "service_account" or "private_key" not in value:
                 raise fail(ValueError("That isn't a service account key (it needs \"type\": \"service_account\" and a private key)."), 422)
-        field = "client_secret" if ctype == "google" else "key" if ctype in ("bigquery", "gcs") else "token"
+        field = "client_secret" if ctype == "google" else "key" if ctype in ("bigquery", "gcs", "dataproc") else "password" if ctype == "trino" else "token"
         vault.save(conn_types.secret_key(cid), {field: value, "_set_at": time.time()}, vault_dir)
 
     def _connector_fields(body: ConnectorIn, existing: dict[str, Any] | None, ctype: str) -> dict[str, Any]:
@@ -438,7 +467,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     def add_connector(body: ConnectorIn) -> dict[str, Any]:
         require_admin()
         if body.type not in conn_types.TYPES:
-            raise fail(ValueError("Pick a connector type: Google Workspace, GitHub or an MCP server."), 422)
+            raise fail(ValueError("Pick a connector type: Google Workspace, Microsoft 365, GitHub, BigQuery, Cloud Storage, Trino, Spark SQL (Dataproc) or an MCP server."), 422)
         base = conn_types.slug(body.name or conn_types.TYPES[body.type]["name"])
         cid, n = base, 2
         while store.connector(cid) is not None or cid in store.accounts():
@@ -498,6 +527,10 @@ def create_app(home: Path | None = None) -> FastAPI:
             ok, msg = conn_types.test_bigquery(c, vault_dir)
         elif c["type"] == "gcs":
             ok, msg = conn_types.test_gcs(c, vault_dir)
+        elif c["type"] == "microsoft365":
+            ok, msg = conn_types.test_microsoft(c, vault_dir)
+        elif c["type"] in ("trino", "dataproc"):
+            ok, msg = conn_types.test_sql_engine(c, vault_dir)
         else:
             auth = ((c.get("settings") or {}).get("auth") or {}).get("kind", "none")
             if auth == "oauth" and not vault.load(conn_types.secret_key(cid) + "-admin", vault_dir):

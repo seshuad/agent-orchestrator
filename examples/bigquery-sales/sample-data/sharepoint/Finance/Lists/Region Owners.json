@@ -1,0 +1,36 @@
+[
+ {
+  "Title": "East",
+  "Owner": "Avery Chen",
+  "OwnerEmail": "avery.chen@example.com",
+  "Active": true,
+  "@odata.etag": "\"1\"",
+  "ContentType": "Item",
+  "AuthorLookupId": "11",
+  "_UIVersionString": "1.0"
+ },
+ {
+  "Title": "North",
+  "Owner": "Sam Okafor",
+  "OwnerEmail": "sam.okafor@example.com",
+  "Active": true
+ },
+ {
+  "Title": "South",
+  "Owner": "Riley Morgan",
+  "OwnerEmail": "riley.morgan@example.com",
+  "Active": true
+ },
+ {
+  "Title": "West",
+  "Owner": "Jordan Lee",
+  "OwnerEmail": "jordan@example.com",
+  "Active": true
+ },
+ {
+  "Title": "Central",
+  "Owner": "Casey Patel",
+  "OwnerEmail": "casey.patel@example.com",
+  "Active": false
+ }
+]

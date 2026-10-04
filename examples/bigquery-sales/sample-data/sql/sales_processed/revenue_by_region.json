@@ -1,0 +1,26 @@
+[
+{
+"region": "West",
+"total_orders": 205,
+"total_revenue": 151200.4,
+"avg_order_value": 737.56
+},
+{
+"region": "South",
+"total_orders": 196,
+"total_revenue": 137800.0,
+"avg_order_value": 703.06
+},
+{
+"region": "East",
+"total_orders": 191,
+"total_revenue": 132540.2,
+"avg_order_value": 693.93
+},
+{
+"region": "North",
+"total_orders": 139,
+"total_revenue": 122133.2,
+"avg_order_value": 878.66
+}
+]

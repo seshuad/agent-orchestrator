@@ -100,6 +100,26 @@ def html_body(text: str, cids: list[str]) -> str:
     return '<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222">' + "".join(out) + "</div>"
 
 
+def compose(to: list[str], cc: list[str], subject: str, body: str, images: list[Any] | None = None) -> Any:
+    """The email, for any way of sending it. With images (PNG files), it goes as HTML with each image inline under the
+    text, and the plain text as the alternative."""
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["To"], msg["Subject"] = ", ".join(to), subject
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    msg.set_content(body)
+    if images:
+        from email.utils import make_msgid
+        cids = [make_msgid(domain="agent-service") for _ in images]
+        msg.add_alternative(html_body(body, [c[1:-1] for c in cids]), subtype="html")
+        html = msg.get_payload()[1]
+        for path, cid in zip(images, cids):
+            html.add_related(Path(path).read_bytes(), maintype="image", subtype="png", cid=cid,
+                             filename=Path(path).name, disposition="inline")
+    return msg
+
+
 class LiveGmail:
     """The same two operations the sample mailbox offers, against the real account.
 
@@ -164,23 +184,8 @@ class LiveGmail:
         return {**self._summary(msg), "body": body}
 
     def send(self, to: list[str], cc: list[str], subject: str, body: str, images: list[Any] | None = None) -> str:
-        """Send an email from the account; returns Gmail's message id. With images (PNG files), it goes as HTML with
-        each image inline under the text, and the plain text as the alternative."""
-        from email.message import EmailMessage
-        msg = EmailMessage()
-        msg["To"], msg["Subject"] = ", ".join(to), subject
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        msg.set_content(body)
-        if images:
-            from email.utils import make_msgid
-            cids = [make_msgid(domain="agent-service") for _ in images]
-            msg.add_alternative(html_body(body, [c[1:-1] for c in cids]), subtype="html")
-            html = msg.get_payload()[1]
-            for path, cid in zip(images, cids):
-                html.add_related(Path(path).read_bytes(), maintype="image", subtype="png", cid=cid,
-                                 filename=Path(path).name, disposition="inline")
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        """Send an email from the account; returns Gmail's message id."""
+        raw = base64.urlsafe_b64encode(compose(to, cc, subject, body, images).as_bytes()).decode()
         try:
             return self.svc.users().messages().send(userId="me", body={"raw": raw}).execute(num_retries=RETRIES)["id"]
         except Exception as exc:

@@ -30,7 +30,7 @@ function access(draft: Json): string {
     const u = s.uses
     if (u) {
       const service = draft.connections?.[u.connection]?.service
-      if (service === 'gmail' && (u.actions ?? []).includes('send')) {
+      if ((service === 'gmail' || service === 'smtp') && (u.actions ?? []).includes('send')) {
         writes.push(`send email to ${(u.recipients ?? []).join(', ') || 'no one yet'}`)
       } else if (service === 'gmail') {
         if (u.senders) senders += u.senders.length
@@ -43,6 +43,8 @@ function access(draft: Json): string {
       } else if (service === 'google-calendar') writes.push(`create events on ${u.calendar ?? 'a calendar'}`)
       else if (service === 'github') reads.push(`read GitHub ${(u.repos ?? []).join(', ') || '(no repositories yet)'}`)
       else if (service === 'gcs') (s.kind === 'act' ? writes : reads).push(`${s.kind === 'act' ? 'write new files under' : 'read files in'} ${(u.paths ?? []).join(', ') || 'Cloud Storage'}`)
+      else if (service === 'sharepoint') (s.kind === 'act' ? writes : reads).push(`${s.kind === 'act' ? 'add new files in' : 'read'} ${(u.paths ?? []).join(', ') || 'SharePoint'}`)
+      else if (service === 'trino' || service === 'spark-sql') reads.push(`query ${(u.datasets ?? []).join(', ') || (service === 'trino' ? 'Trino' : 'Spark SQL')}`)
       else if (service === 'bigquery') (s.kind === 'act' ? writes : reads).push(s.kind === 'act' ? `insert rows into ${(u.tables ?? []).join(', ') || 'a table'}` : `query ${(u.datasets ?? []).join(', ') || 'BigQuery'}`)
       else if (service === 'mcp') (s.kind === 'act' ? writes : reads).push(`${s.kind === 'act' ? 'call' : 'use'} ${(u.actions ?? []).join(', ') || 'no tool yet'} on ${u.connection}`)
     }

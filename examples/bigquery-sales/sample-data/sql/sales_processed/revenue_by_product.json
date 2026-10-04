@@ -1,0 +1,58 @@
+[
+{
+"product_id": "P001",
+"product_name": "Laptop",
+"category": "Electronics",
+"units_sold": 210,
+"total_revenue": 231000.0
+},
+{
+"product_id": "P002",
+"product_name": "Monitor",
+"category": "Electronics",
+"units_sold": 280,
+"total_revenue": 84000.0
+},
+{
+"product_id": "P007",
+"product_name": "Desk Chair",
+"category": "Furniture",
+"units_sold": 410,
+"total_revenue": 163658.8
+},
+{
+"product_id": "P005",
+"product_name": "Headset",
+"category": "Electronics",
+"units_sold": 250,
+"total_revenue": 20000.0
+},
+{
+"product_id": "P003",
+"product_name": "Keyboard",
+"category": "Electronics",
+"units_sold": 240,
+"total_revenue": 12000.0
+},
+{
+"product_id": "P004",
+"product_name": "Mouse",
+"category": "Electronics",
+"units_sold": 270,
+"total_revenue": 8100.0
+},
+{
+"product_id": "P006",
+"product_name": "Webcam",
+"category": "Electronics",
+"units_sold": 284,
+"total_revenue": 17040.0
+},
+{
+"product_id": "P008",
+"product_name": "USB Hub",
+"category": "Electronics",
+"units_sold": 315,
+"total_revenue": 7875.0
+}
+]

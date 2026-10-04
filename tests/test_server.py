@@ -1266,6 +1266,128 @@ def test_cloud_storage_lists_reads_checks_and_writes_new_files(api):
     assert d["status"] == "failed" and "may not use sales-landing/orders/" in json.dumps(d["error"])
 
 
+@needs_conductor
+def test_microsoft_365_reads_sharepoint_writes_a_file_and_emails_through_smtp(api, monkeypatch):
+    c = api.post("/api/connectors", json={"type": "microsoft365", "name": "Contoso 365", "settings": {
+        "tenant_id": "tenant-1", "client_id": "app-1", "hostname": "contoso.sharepoint.com", "allowed": ["Finance"],
+        "smtp": {"host": "relay.example.com", "port": 25, "security": "none", "from_address": "agents@example.com"}},
+        "secret": json.dumps({"client_secret": "s3cret"})}).json()
+    assert c["reach"] == "Microsoft 365 · Finance · email via relay.example.com" and c["sign_in"] == "shared"
+    assert c["secrets_set"] == {"client_secret": True, "smtp_password": False} and set(c["services"]) == {"sharepoint", "smtp"}
+    c = api.put(f"/api/connectors/{c['id']}", json={"settings": {}, "secret": json.dumps({"smtp_password": "pw"})}).json()
+    assert c["secrets_set"] == {"client_secret": True, "smtp_password": True}                # one secret changes, the other stays
+    assert api.put(f"/api/connectors/{c['id']}", json={"settings": {}, "secret": "not json"}).status_code == 422
+    files = api.post("/api/connections", json={"connector": c["id"], "service": "sharepoint", "label": "Finance site", "permissions": ["read", "write"]}).json()
+    assert files["allowed"] == ["list_objects", "read_list", "read_object", "write_object"]
+    mail = api.post("/api/connections", json={"connector": c["id"], "service": "smtp", "label": "Agents mailbox", "permissions": ["send"]}).json()
+    api.post("/api/agents", json={"name": "targets-report", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/targets-report").json()["draft"]
+    draft["connections"] = {"sp": {"service": "sharepoint", "permission": "read, write", "account": files["id"]},
+                            "mail": {"service": "smtp", "permission": "send", "account": mail["id"]}}
+    draft["steps"] = [
+        {"id": "owners", "kind": "built-in", "name": "Region owners",
+         "uses": {"connection": "sp", "actions": ["read_list"], "paths": ["Finance/Lists/Region Owners"]},
+         "operation": {"sharepoint-items": {"list": "Finance/Lists/Region Owners"}}},
+        {"id": "target_files", "kind": "built-in", "name": "Target workbooks",
+         "uses": {"connection": "sp", "actions": ["list_objects"], "paths": ["Finance/Shared Documents/Targets"]},
+         "operation": {"sharepoint-list": {"prefix": "Finance/Shared Documents/Targets", "match": "*.xlsx"}}},
+        {"id": "targets", "kind": "built-in", "name": "Read targets",
+         "uses": {"connection": "sp", "actions": ["read_object"], "paths": ["Finance/Shared Documents/Targets"], "max_bytes": "5MB"},
+         "takes": {"files": "target_files.files"}, "operation": {"sharepoint-read": {}}},
+        {"id": "october", "kind": "built-in", "name": "October, active owners", "takes": {"items": "targets.rows", "owners": "owners.rows"},
+         "operation": {"cel": [{"keep": "has(item.month) && item.month == '2026-10'"},
+                               {"match": {"with": "owners", "key": "item.region", "other_key": "other.Title", "as": "owner"}},
+                               {"keep": "has(item.owner) && item.owner.Active"},
+                               {"add_fields": {"email": "item.owner.OwnerEmail"}}]}},
+        {"id": "save", "kind": "act", "name": "Save the targets",
+         "uses": {"connection": "sp", "actions": ["write_object"], "paths": ["Finance/Shared Documents/Reports"]},
+         "takes": {"content": "october.items"}, "write_object": {"path": "Finance/Shared Documents/Reports/october-targets.csv", "format": "csv"}},
+        {"id": "tell", "kind": "act", "name": "Email each owner",
+         "uses": {"connection": "mail", "actions": ["send"], "recipients": ["@example.com"]},
+         "send_email": {"to": ["{email}"], "subject": "October target for {region}", "body": "Your October target is {revenue_target}.",
+                        "for_each": "october.items"}}]
+    fb = api.put("/api/agents/targets-report", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    assert any("SharePoint" in w["message"] for w in fb["warnings"])           # acts on what people wrote, with no approval first
+    refs = {r["ref"]: r["type"] for r in api.get("/api/agents/targets-report/references?step=october").json()}
+    assert refs["owners.rows"] == "list of records" and refs["target_files.files"] == "list of files"
+    d = wait_run(api, api.post("/api/agents/targets-report/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    items = api.get(f"/api/runs/{d['id']}/steps/october/0").json()["output"]["items"]
+    assert [(i["region"], i["email"]) for i in items] == [("East", "avery.chen@example.com"), ("North", "sam.okafor@example.com"),
+                                                          ("South", "riley.morgan@example.com"), ("West", "jordan@example.com")]
+    assert [m["subject"] for m in d["outcome"]["emails"]] == [f"October target for {r}" for r in ("East", "North", "South", "West")]
+    assert all(m["status"] == "sent (test run: not delivered)" for m in d["outcome"]["emails"])
+    draft["steps"][5]["uses"]["recipients"] = ["finance@example.com"]          # the gateway refuses the owners now
+    api.put("/api/agents/targets-report", json={"draft": draft})
+    d = wait_run(api, api.post("/api/agents/targets-report/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "failed" and "may not send email to avery.chen@example.com" in json.dumps(d["error"])
+    draft["connections"]["mail"]["service"] = "gmail"
+    assert not api.put("/api/agents/targets-report", json={"draft": draft}).json()["feedback"]["ok"]
+    import requests
+    import smtplib
+
+    def unreachable(*a, **kw):
+        raise ConnectionRefusedError("Connection refused")
+    monkeypatch.setattr(requests, "post", lambda url, **kw: type("R", (), {"status_code": 401, "headers": {"content-type": "application/json"},
+        "json": lambda self: {"error_description": "AADSTS7000215: Invalid client secret provided."}, "text": ""})())
+    monkeypatch.setattr(smtplib, "SMTP", unreachable)
+    from agent_service.runtime import sharepoint_api
+    monkeypatch.setattr(sharepoint_api, "_TOKENS", {})
+    t = api.post(f"/api/connectors/{c['id']}/test").json()["status"]
+    assert t["state"] == "attention" and t["message"] == ("SharePoint refused: Microsoft sign-in refused the app: AADSTS7000215: Invalid client "
+                                                          "secret provided. Email failed: Connection refused")
+
+
+@needs_conductor
+def test_trino_and_spark_sql_connectors_run_checked_queries(api):
+    tr = api.post("/api/connectors", json={"type": "trino", "name": "Lake Trino", "settings": {
+        "server": "http://etl-cluster-m:8060", "user": "agents", "auth": {"kind": "none"}, "catalog": "iceberg", "schema": "sales_processed",
+        "allowed": ["iceberg.sales_processed"]}}).json()
+    assert tr["reach"] == "Trino · etl-cluster-m:8060 · iceberg.sales_processed" and tr["sign_in"] == "shared"
+    dp = api.post("/api/connectors", json={"type": "dataproc", "name": "Lake Spark", "settings": {
+        "auth": {"kind": "adc"}, "project": "p", "region": "us-central1", "mode": "serverless", "staging": "gs://stage/agent-sql",
+        "allowed": ["sales_processed"]}}).json()
+    assert dp["reach"] == "Spark SQL · Serverless · us-central1 · sales_processed"
+    t_acct = api.post("/api/connections", json={"connector": tr["id"], "service": "trino", "label": "Lake (Trino)", "permissions": ["read"]}).json()
+    s_acct = api.post("/api/connections", json={"connector": dp["id"], "service": "spark-sql", "label": "Lake (Spark)", "permissions": ["read"]}).json()
+    assert t_acct["allowed"] == ["get_schema", "list_tables", "query"] and t_acct["signed_in"] and s_acct["signed_in"]
+    api.post("/api/agents", json={"name": "lake-check", "sample_set": "Sales (BigQuery)"})
+    draft = api.get("/api/agents/lake-check").json()["draft"]
+    draft["connections"] = {"trino": {"service": "trino", "permission": "read", "account": t_acct["id"]},
+                            "spark": {"service": "spark-sql", "permission": "read", "account": s_acct["id"]}}
+    draft["run_options"] = {"min_orders": {"type": "number", "default": 150}}
+    draft["steps"] = [
+        {"id": "by_region", "kind": "built-in", "name": "Orders by region (Trino)",
+         "uses": {"connection": "trino", "actions": ["query"], "datasets": ["iceberg.sales_processed"]}, "takes": {"min_orders": "run.min_orders"},
+         "operation": {"trino": {"sql": "SELECT region, total_orders AS orders FROM iceberg.sales_processed.revenue_by_region "
+                                        "WHERE total_orders >= @min_orders ORDER BY orders DESC, region"}}},
+        {"id": "by_month", "kind": "built-in", "name": "Orders by month (Spark)",
+         "uses": {"connection": "spark", "actions": ["query"], "datasets": ["sales_processed"], "max_rows": 3},
+         "operation": {"spark-sql": {"sql": "SELECT month, total_orders AS orders FROM sales_processed.monthly_trend ORDER BY month DESC"}}}]
+    fb = api.put("/api/agents/lake-check", json={"draft": draft}).json()["feedback"]
+    assert fb["ok"], fb["errors"]
+    refs = {r["ref"]: r["type"] for r in api.get("/api/agents/lake-check/references").json()}
+    assert refs["by_region.rows"] == "list of records" and refs["by_month.elapsed_seconds"] == "number"
+    d = wait_run(api, api.post("/api/agents/lake-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "succeeded", d.get("error")
+    regions = api.get(f"/api/runs/{d['id']}/steps/by_region/0").json()["output"]
+    assert [r["region"] for r in regions["rows"]] == ["West", "South", "East"] and regions["tables"] == ["iceberg.sales_processed.revenue_by_region"]
+    months = api.get(f"/api/runs/{d['id']}/steps/by_month/0").json()["output"]
+    assert months["row_count"] == 3 and months["truncated"]
+    draft["steps"][1]["uses"]["datasets"] = ["sales"]                                      # outside what the connector allows: caught on save
+    fb = api.put("/api/agents/lake-check", json={"draft": draft}).json()["feedback"]
+    assert {"path": "steps.1.uses.datasets", "message": "Lake Spark only allows sales_processed; sales is outside that."} in fb["errors"]
+    draft["steps"][1]["uses"]["datasets"] = ["sales_processed"]
+    draft["steps"][1]["operation"]["spark-sql"]["sql"] = "DROP TABLE sales_processed.monthly_trend"   # caught on save, before anything runs
+    fb = api.put("/api/agents/lake-check", json={"draft": draft}).json()["feedback"]
+    assert {"path": "steps.1.operation.spark-sql.sql", "message": "Only a single SELECT can run here (this is DROP)."} in fb["errors"]
+    draft["steps"][1]["operation"]["spark-sql"]["sql"] = "SELECT * FROM hr.people"
+    api.put("/api/agents/lake-check", json={"draft": draft})
+    d = wait_run(api, api.post("/api/agents/lake-check/runs", json={"inputs": {}, "source": "sample"}).json()["id"])
+    assert d["status"] == "failed" and "may not read spark_catalog.hr.people" in json.dumps(d["error"])
+
+
 class ScriptedClaude:
     """Answers with scripted content blocks (text, or tool calls), one list per request; records what it was sent."""
 

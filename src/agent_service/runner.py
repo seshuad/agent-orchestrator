@@ -105,6 +105,33 @@ def _storage(account_id: str | None, accounts: dict[str, dict[str, Any]], connec
             "allowed": st.get("allowed") or [], "max_read_bytes": st.get("max_read_bytes")}
 
 
+def _microsoft(account_id: str | None, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """A Microsoft 365 connector's settings for the gateway: the Graph app and SharePoint host, the most a step may use,
+    the read cap, and the SMTP server. Its secrets stay in the vault, where only the gateway reads them."""
+    account = accounts.get(account_id or "")
+    connector = connectors.get((account or {}).get("connector") or "")
+    if account is None or connector is None:
+        raise RunError("This agent's Microsoft 365 connection isn't linked to a workspace account. Pick one in its Connections.")
+    if (connector.get("status") or {}).get("state") == "attention":
+        raise RunError(f"{connector['name']} needs an admin's attention (Connections → Connectors): {connector['status'].get('message', '')}")
+    st = connector.get("settings") or {}
+    return {"connector": connector["id"], "name": connector["name"], "tenant_id": st.get("tenant_id"), "client_id": st.get("client_id"),
+            "hostname": st.get("hostname"), "allowed": st.get("allowed") or [], "max_read_bytes": st.get("max_read_bytes"),
+            "smtp": st.get("smtp") or {}}
+
+
+def _engine(account_id: str | None, accounts: dict[str, dict[str, Any]], connectors: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """A Trino or Spark SQL connector's settings for the gateway: where queries run, as whom, the most a step may read,
+    and the time limit. A password or key stays in the vault, where only the gateway reads it."""
+    account = accounts.get(account_id or "")
+    connector = connectors.get((account or {}).get("connector") or "")
+    if account is None or connector is None:
+        raise RunError("This agent's Trino or Spark SQL connection isn't linked to a workspace account. Pick one in its Connections.")
+    if (connector.get("status") or {}).get("state") == "attention":
+        raise RunError(f"{connector['name']} needs an admin's attention (Connections → Connectors): {connector['status'].get('message', '')}")
+    return {"connector": connector["id"], "name": connector["name"], **(connector.get("settings") or {})}
+
+
 def month_spend(connector_id: str, runs_root: Path) -> float:
     """What a BigQuery connector's queries cost this calendar month, from every run's gateway log."""
     from .runtime.bigquery_api import cost_of
@@ -153,7 +180,7 @@ def conductor_command() -> list[str]:
     return [python, str(CACHED)] if python and Path(python).exists() and "python" in Path(python).name else ["conductor"]
 
 
-LIVE_SERVICES = {"gmail", "github", "bigquery", "gcs"}    # services a run can use for real so far; the rest stay on sample data
+LIVE_SERVICES = {"gmail", "github", "bigquery", "gcs", "sharepoint", "smtp", "trino", "spark-sql"}    # services a run can use for real so far; the rest stay on sample data
 ALWAYS_LIVE = {"mcp"}                  # an MCP connector has no sample data: its steps always reach the real system
 
 
@@ -208,6 +235,10 @@ def prepare(agent: Agent, *, sample_data: Path, runs_root: Path, inputs: dict[st
             spec["upstream"] = _upstream(spec["account"], accounts or {}, connectors or {})
         if spec["connection"] == "gcs" and spec["source"] == "live":
             spec["upstream"] = _storage(spec.get("account"), accounts or {}, connectors or {})
+        if spec["connection"] in ("trino", "spark-sql") and spec["source"] == "live":
+            spec["upstream"] = _engine(spec.get("account"), accounts or {}, connectors or {})
+        if spec["connection"] in ("sharepoint", "smtp") and spec["source"] == "live":
+            spec["upstream"] = _microsoft(spec.get("account"), accounts or {}, connectors or {})
         if spec["connection"] == "bigquery":
             spec["upstream"], spec["budget_left_usd"] = _warehouse(spec.get("account"), accounts or {}, connectors or {}, runs_root)
             if vault is None:
