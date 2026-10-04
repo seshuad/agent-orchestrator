@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, type AgentDetail, type Feedback, type Json, type Reference } from '../api'
-import { Dialog, Icon, Pill, ProblemsContext, SessionContext, Toast } from '../ui'
+import { Dialog, Icon, Pill, ProblemsContext, SessionContext, SuggestionsContext, Toast } from '../ui'
 import { AiStrip, RefineDialog } from './AiNote'
 import { AgentTabs, testSummary } from '../pages/Tests'
 import type { TestCase } from '../api'
@@ -122,7 +122,7 @@ export default function Editor() {
 
   return (
     <EditorContext.Provider value={ctx}>
-      <ProblemsContext.Provider value={feedback.errors}>
+      <ProblemsContext.Provider value={feedback.errors}><SuggestionsContext.Provider value={feedback.suggestions ?? []}>
         <div className="stack grow" style={{ gap: 0, minHeight: 0 }}>
           <div className="spread" style={{ padding: '10px 22px', background: '#fff', borderBottom: '1px solid var(--line)' }}>
             <div className="row" style={{ gap: 10 }}>
@@ -190,7 +190,7 @@ export default function Editor() {
         {dialog === 'delete' && <DeleteAgent agent={name} onClose={() => setDialog(null)} onDeleted={() => navigate('/')} />}
         {dialog === 'run' && <RunNow agent={name} draftOnly onClose={() => setDialog(null)} onStarted={(r) => navigate(`/agents/${name}/runs/${r.id}`)} />}
         <Toast message={toast} onDone={() => setToast(null)} />
-      </ProblemsContext.Provider>
+      </SuggestionsContext.Provider></ProblemsContext.Provider>
     </EditorContext.Provider>
   )
 }

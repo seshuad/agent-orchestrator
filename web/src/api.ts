@@ -25,7 +25,7 @@ export interface Graph {
   loops: { from: string; to: string; label: string }[]
   groups?: { name: string; members: string[] }[]     // rows the planner can run at the same time
 }
-export interface Feedback { ok: boolean; errors: Problem[]; warnings: Problem[]; compiled: string | null; graphs: Record<string, Graph> }
+export interface Feedback { ok: boolean; errors: Problem[]; warnings: Problem[]; suggestions?: Problem[]; compiled: string | null; graphs: Record<string, Graph> }
 
 export interface AgentDetail {
   meta: Json & { owner: string; published: number | null; versions: { version: number; published_at: number; note: string }[]; sample_set: string | null; replay: string | null; ai?: AiNote | null; can_undo_ai?: boolean }

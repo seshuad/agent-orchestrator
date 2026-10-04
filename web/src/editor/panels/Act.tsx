@@ -1,6 +1,6 @@
 // Act: changes something outside the agent, using only checked fields. No model involved.
 import type { Json } from '../../api'
-import { Area, Block, Chips, FieldErrors, Guarantees, Icon, RefPicker, Segmented, Select, Text } from '../../ui'
+import { Area, Block, Chips, FieldErrors, Guarantees, Icon, RefPicker, Segmented, Select, Suggestions, Text } from '../../ui'
 import { ArgLimits, StepHeader, TakesEditor, UsesEditor, useMcpTools, useStep } from './common'
 
 export default function Act() {
@@ -57,6 +57,7 @@ export default function Act() {
   return (
     <>
       <StepHeader note="The only kind of step that changes the outside world, and it takes no text a model wrote: only checked fields." />
+      <Suggestions path={p()} />
       <Block title="Does">
         <Segmented options={['create_events', 'add_row', ...(mcpConn || action === 'call_tool' ? ['call_tool'] : []), ...(bqConn || action === 'insert_rows' ? ['insert_rows'] : []), ...(gmailConn || action === 'send_email' ? ['send_email'] : []), ...(gcsConn || action === 'write_object' ? ['write_object'] : [])]} value={action} onChange={switchTo}
           labels={{ create_events: 'Create calendar events', add_row: 'Add a row to a sheet', call_tool: 'Call a tool', insert_rows: 'Insert rows into BigQuery', send_email: 'Send an email', write_object: 'Write a file' }} />

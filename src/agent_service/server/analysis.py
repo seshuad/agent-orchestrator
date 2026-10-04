@@ -4,8 +4,9 @@
     references(raw, step)   what a step's inputs can point at, with types, for the pickers
     graph(block, agent)     a Free-form block's steps in the order their data sets, its loops, and what runs together
 
-Errors block publishing; warnings don't. Whether a person approves before an agent changes anything is
-the builder's choice: acting on other people's content with no Approve step first is a warning.
+Errors block publishing; warnings don't. Whether a person approves before an agent changes anything is the
+builder's choice: an Approve step is available, never required. Where one might matter, the Act step gets a
+suggestion on its own panel.
 """
 
 from __future__ import annotations
@@ -140,8 +141,9 @@ def _flat_values(values: Any) -> list[str]:
 
 
 def _policy(agent: definition.Agent) -> list[dict[str, str]]:
-    """Human approval is the builder's choice, not the service's. An agent that changes something outside itself
-    after reading content other people wrote, with no Approve step first, gets a warning (shown again on publish)."""
+    """Human approval is available, never required: whether a person checks before an Act step is the builder's call.
+    Where one might matter, the Act step gets a suggestion on its own panel (not a warning): it emails text a model
+    wrote, or it acts on values from content other people wrote, with no Approve step before it."""
     warnings = []
     reads_untrusted = any(getattr(s, "uses", None) and agent.connections[s.uses.connection].service in UNTRUSTED
                           and not isinstance(s, ActStep) for s in agent.all_steps())     # sending email reads nothing
@@ -154,12 +156,12 @@ def _policy(agent: definition.Agent) -> list[dict[str, str]]:
                            or (isinstance(x, BranchBlock) and x.decide == "model")}
             refs = [v for v in _flat_values(s.takes.values()) + [s.send_email.get("for_each") or ""]]
             if any(r.rstrip("?").split(".")[0] in model_steps for r in refs if r):
-                warnings.append({"path": f"steps.{i}", "message": f"{s.name} emails text a model wrote. Add an Approve step before it, "
-                                 "so a person reads the email before it goes out."})
+                warnings.append({"path": f"steps.{i}", "message": "This email includes text a model wrote. If a person should read it "
+                                 "before it goes out, add an Approve step before this one."})
                 continue
         if isinstance(s, ActStep) and reads_untrusted and not approved:
-            warnings.append({"path": f"steps.{i}", "message": f"{s.name} changes something outside the agent with no approval "
-                             "first, using values from content other people wrote (email, GitHub, SharePoint, MCP tools). Add an Approve step if a person should check them."})
+            warnings.append({"path": f"steps.{i}", "message": "This acts on values from content other people wrote (email, GitHub, "
+                             "SharePoint, MCP tools). If a person should check them first, add an Approve step before this one."})
     return warnings
 
 
@@ -179,8 +181,8 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
     except ValidationError as exc:
         for e in exc.errors():
             errors.append({"path": _loc(e["loc"]), "message": e["msg"].removeprefix("Value error, ")})
-        return {"ok": False, "errors": errors, "warnings": [], "compiled": None}
-    policy_warnings = _policy(agent)
+        return {"ok": False, "errors": errors, "warnings": [], "suggestions": [], "compiled": None}
+    suggestions = _policy(agent)
     errors += _run_option_refs(raw)
     errors += _sql_problems(raw)
     if accounts is not None:
@@ -191,11 +193,11 @@ def check(raw: dict[str, Any], accounts: dict[str, dict[str, Any]] | None = None
     except CompileError as exc:
         if not str(exc).startswith("Unknown run option"):      # that one is already pinned to its field above
             errors.append({"path": "", "message": str(exc)})
-    warnings = list(policy_warnings)
+    warnings: list[dict[str, str]] = []
     for s in agent.all_steps():
         if isinstance(s, FreeFormBlock) and not s.before_finishing:
             warnings.append({"path": "", "message": f"{s.name} has no Before finishing rules: the planner decides alone when it's done."})
-    return {"ok": not errors, "errors": errors, "warnings": warnings, "compiled": compiled}
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "suggestions": suggestions, "compiled": compiled}
 
 
 # ------------------------------------------------------------------ references for the pickers

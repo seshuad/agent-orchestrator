@@ -42,7 +42,7 @@ def test_acting_without_approval_is_the_builders_choice(api):
     draft["steps"] = [s for s in draft["steps"] if s["kind"] != "approve"]
     draft["steps"][-1]["takes"]["records"] = "find_and_check.trips[*].bookings"
     fb = api.put("/api/agents/travel-sync", json={"draft": draft}).json()["feedback"]
-    assert fb["ok"] and any("no approval" in w["message"] for w in fb["warnings"])
+    assert fb["ok"] and not fb["warnings"] and any("Approve step" in w["message"] for w in fb["suggestions"])   # optional, never required
     assert api.post("/api/agents/travel-sync/publish", json={}).status_code == 200
 
 
@@ -1028,7 +1028,7 @@ def test_an_act_step_sends_email_only_to_its_recipients(api):
     draft = email_agent(api, "mail-report", body="{summary}\n\n{points}")
     fb = api.put("/api/agents/mail-report", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
-    assert not fb["warnings"]                                     # no model wrote anything: no approval needed
+    assert not fb["warnings"] and not fb["suggestions"]           # no model wrote anything: nothing to suggest
     run = api.post("/api/agents/mail-report/runs", json={"scripted": False, "inputs": {"dry_run": "false"}}).json()
     d = wait_run(api, run["id"])
     assert d["status"] == "succeeded", d.get("error")
@@ -1044,7 +1044,7 @@ def test_an_act_step_sends_email_only_to_its_recipients(api):
     draft["steps"].insert(1, ask)
     draft["steps"][2]["takes"] = {"summary": "write.text"}
     fb = api.put("/api/agents/mail-report", json={"draft": draft}).json()["feedback"]
-    assert any("emails text a model wrote" in w["message"] for w in fb["warnings"])
+    assert any("text a model wrote" in w["message"] for w in fb["suggestions"]) and not fb["warnings"]
 
 
 @needs_conductor
@@ -1109,7 +1109,7 @@ def test_sales_load_check_reports_a_passing_load_after_approval(api, tmp_path):
     draft["connections"]["bq"]["account"], draft["connections"]["mail"]["account"] = bq["id"], mail["id"]
     fb = api.put("/api/agents/sales-load-check", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
-    assert not fb["warnings"]                       # the report is approved before it's sent; the alert holds only checked values
+    assert not fb["suggestions"]                    # the report is approved before it's sent; the alert holds only checked values
     store = Store(tmp_path)
     store.set_test_data("sales-load-check", store.meta("sales-load-check")["sample_data"], str(EXAMPLES / "bigquery-sales/replay-load-check.yaml"))
     d = run_scripted(api, "sales-load-check", {"inputs": {"dry_run": "true"}}, approve="all")
@@ -1308,7 +1308,7 @@ def test_microsoft_365_reads_sharepoint_writes_a_file_and_emails_through_smtp(ap
                         "for_each": "october.items"}}]
     fb = api.put("/api/agents/targets-report", json={"draft": draft}).json()["feedback"]
     assert fb["ok"], fb["errors"]
-    assert any("SharePoint" in w["message"] for w in fb["warnings"])           # acts on what people wrote, with no approval first
+    assert any("SharePoint" in w["message"] for w in fb["suggestions"])        # acts on what people wrote: an Approve step is suggested
     refs = {r["ref"]: r["type"] for r in api.get("/api/agents/targets-report/references?step=october").json()}
     assert refs["owners.rows"] == "list of records" and refs["target_files.files"] == "list of files"
     d = wait_run(api, api.post("/api/agents/targets-report/runs", json={"inputs": {}, "source": "sample"}).json()["id"])

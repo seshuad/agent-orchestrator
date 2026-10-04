@@ -90,6 +90,17 @@ export function Block({ title, aside, children }: { title: ReactNode; aside?: Re
 
 // Errors from the service are pinned to paths like "steps.0.steps.1.uses.actions".
 export const ProblemsContext = createContext<Problem[]>([])
+export const SuggestionsContext = createContext<Problem[]>([])
+
+/** Optional suggestions for one step (e.g. an Approve step it could have): a quiet note, never a problem. */
+export function Suggestions({ path }: { path: string }) {
+  const all = useContext(SuggestionsContext).filter((s) => s.path === path)
+  if (!all.length) return null
+  return <>{all.map((s, i) => (
+    <span key={i} className="row faint" style={{ gap: 6, alignItems: 'flex-start', flexWrap: 'nowrap' }}>
+      <Icon name="person" size={13} color="var(--muted)" /><span>Optional: {s.message}</span></span>
+  ))}</>
+}
 
 export function useProblems(path: string, exact = false): Problem[] {
   const all = useContext(ProblemsContext)
