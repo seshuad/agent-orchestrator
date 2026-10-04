@@ -3,6 +3,34 @@
 > Snapshot of the living Claude Docs document, taken 2026-09-24. The live version is the source of truth:
 > https://claude.ai/code/artifact/8dd90b77-a44b-454a-a27b-1e1dda2c1a95
 
+## Since this snapshot
+
+This is the original design, kept as written. The prototype has since diverged from it in the ways below. For how
+things work now, see the [README](../README.md) and [Core concepts in depth](concepts.md).
+
+| Topic | This document | Now |
+|---|---|---|
+| Approvals | An Approve step is required wherever untrusted content can reach an outward action; publishing is refused otherwise | Available, never required. An Act step that emails model-written text, or acts on content other people wrote, gets a suggestion on its panel. This settles the last open question below |
+| Non-goals | No model-chosen step order; no user-supplied MCP servers | Free-form blocks (a planner picks the next step, bounded by data order and "Before finishing" rules) and model-decided Branches. Admins add MCP servers; each tool is marked read or act, and pinned |
+| Domain rules (open question) | A rules block, or an Ask step? | CEL throughout: Branch conditions, hard rules, "Before finishing", test expectations, and the CEL operators (keep, add fields, check, remove duplicates, sort, summarize, match, link). JavaScript (QuickJS) is the next tier |
+| Built-in steps | validate, filter, dedupe, group_by_date, merge, format | CEL operators, JavaScript, SQL (BigQuery, Trino, Spark SQL on Dataproc), charts, and file and SharePoint reads |
+| Flow blocks | Branch on a condition; a parallel group | Branch decided by rules or by a model (with hard rules first, and memory); Parallel together or once per item; Free-form |
+| Memory | Not covered | Reviewed precedent for model-decided Branches and Free-form: a person is asked only about unsure decisions plus a small sample, anything can be corrected, and runs use a snapshot |
+| Connections | Per-person OAuth connections; Slack and Microsoft 365 planned | Three layers: connector (admin), account (builder), step limits. Built: Google Workspace, GitHub, BigQuery, Cloud Storage, Microsoft 365 (SharePoint, and email through SMTP), Trino, Spark SQL on Dataproc, any MCP server. Not built: Slack |
+| Triggers | Schedule, manual, webhook, new item | Pub/Sub fires on its own. Schedules and email triggers are defined, but a run starts from Run now (on an email you pick, for an email trigger); no webhooks |
+| Architecture | A multi-tenant control plane; a hardened container per run; approval waits release the worker | One service with its workspace on disk, one `conductor run` process per run; runs locally or as one pod on GKE Autopilot. Releasing workers during approval waits is still open |
+| Testing and publishing | Publish only after a passing test run | Test runs on sample data and saved test cases with CEL expectations. Publishing is blocked only by errors; it shows whether tests pass |
+| Drafting with AI | Describe it | Describe it, Refine with AI, and Build with Claude: a conversation that looks at the data first (read-only, through the gateway), then drafts |
+| Use cases | Personal automation (travel-sync) | Also back-office checks, triage, and data and ETL pipelines: agents beside the pipeline that check loads, explain failures and report, never in the data path |
+| Phases | Spikes, private beta, teams, breadth | Superseded by the prototype as built; see [Operating it](operating.md) for what production would still need |
+
+Still as designed: users never see or edit Conductor YAML and can't upload it; only the compiler writes it, and every
+command it emits is the service's own. Tokens stay in the vault and only the gateway uses them. Limits travel as a
+signed token the gateway enforces. Ask steps only read, and only Act steps change anything, with checked fields.
+Untrusted text is treated as data, and safety rests on structure, not prompts.
+
+---
+
 
  · 
 
