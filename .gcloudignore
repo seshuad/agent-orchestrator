@@ -1,0 +1,11 @@
+.git
+.venv
+.workspace
+.runs
+**/__pycache__
+**/.DS_Store
+web/node_modules
+web/dist
+designer
+tests
+deploy

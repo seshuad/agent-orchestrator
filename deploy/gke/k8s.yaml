@@ -1,0 +1,84 @@
+# The designer on GKE Autopilot: one spot pod, a persistent disk for the workspace, no public address
+# (reach it with kubectl port-forward). deploy.sh fills in ${IMAGE} and ${GSA}.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-orchestrator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-orchestrator
+  namespace: agent-orchestrator
+  annotations:
+    iam.gke.io/gcp-service-account: ${GSA}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workspace
+  namespace: agent-orchestrator
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-orchestrator
+  namespace: agent-orchestrator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                  # one pod owns the disk
+  selector:
+    matchLabels: {app: agent-orchestrator}
+  template:
+    metadata:
+      labels: {app: agent-orchestrator}
+    spec:
+      serviceAccountName: agent-orchestrator
+      nodeSelector:
+        cloud.google.com/gke-spot: "true"
+      terminationGracePeriodSeconds: 25
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: designer
+          image: ${IMAGE}
+          ports:
+            - containerPort: 8700
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: {name: anthropic, key: api-key, optional: true}
+          resources:
+            requests: {cpu: 500m, memory: 2Gi, ephemeral-storage: 1Gi}
+            limits: {cpu: 500m, memory: 2Gi, ephemeral-storage: 1Gi}
+          readinessProbe:
+            httpGet: {path: /api/session, port: 8700}
+            periodSeconds: 10
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: workspace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-orchestrator
+  namespace: agent-orchestrator
+spec:
+  type: ClusterIP
+  selector: {app: agent-orchestrator}
+  ports:
+    - port: 8700
+      targetPort: 8700

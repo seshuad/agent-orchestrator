@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -85,16 +86,18 @@ def main() -> None:
     r.add_argument("--input", action="append", default=[], help="A run option, as name=value.")
     r.add_argument("--replay", help="A replay script: run without a model or a person.")
     v = sub.add_parser("serve", help="Start the designer: the web app and its API.")
-    v.add_argument("--port", type=int, default=8700)
-    v.add_argument("--home", default=".workspace", help="Where agents and runs are stored.")
+    v.add_argument("--port", type=int, default=int(os.environ.get("AGENT_SERVICE_PORT", 8700)))
+    v.add_argument("--home", default=os.environ.get("AGENT_SERVICE_HOME", ".workspace"), help="Where agents and runs are stored.")
+    v.add_argument("--host", default=os.environ.get("AGENT_SERVICE_BIND", "127.0.0.1"),
+                   help="The address to listen on: 127.0.0.1 on a laptop; 0.0.0.0 in a container.")
     a = p.parse_args()
     if a.command == "compile":
         cmd_compile(a)
     elif a.command == "serve":
         import uvicorn
         from .server.app import create_app
-        print(f"Designer: http://127.0.0.1:{a.port}", flush=True)
-        uvicorn.run(create_app(Path(a.home)), host="127.0.0.1", port=a.port, log_level="warning")
+        print(f"Designer: http://{a.host}:{a.port} (workspace {a.home})", flush=True)
+        uvicorn.run(create_app(Path(a.home)), host=a.host, port=a.port, log_level="warning")
     else:
         sys.exit(cmd_run(a))
 

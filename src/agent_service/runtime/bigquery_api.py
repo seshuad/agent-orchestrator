@@ -22,6 +22,7 @@ import decimal
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,8 @@ def credentials(up: dict[str, Any], scopes: list[str] | None = None):
             raise PermissionError("The BigQuery connector has no service account key. An admin adds it under Connectors.")
         info = key if isinstance(key, dict) else json.loads(key)
         return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    if kind == "gcloud" and not shutil.which("gcloud"):
+        kind = "adc"                        # no gcloud here (e.g. on GKE): the machine's own identity (Workload Identity)
     if kind == "gcloud":
         from google.oauth2.credentials import Credentials
         out = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, timeout=30)
@@ -128,10 +131,15 @@ def identity(up: dict[str, Any]) -> str:
     if kind == "service_account":
         key = (vault.load(f"connector-{up.get('connector')}") or {}).get("key")
         return (key if isinstance(key, dict) else json.loads(key or "{}")).get("client_email", "a service account")
-    if kind == "gcloud":
+    if kind == "gcloud" and shutil.which("gcloud"):
         out = subprocess.run(["gcloud", "config", "get-value", "account"], capture_output=True, text=True, timeout=30)
         return out.stdout.strip() or "the gcloud account"
-    return "this machine's application default credentials"
+    try:                                    # application default credentials: on GKE, the Workload Identity service account
+        import google.auth
+        creds, _ = google.auth.default()
+        return getattr(creds, "service_account_email", None) or "this machine's application default credentials"
+    except Exception:
+        return "this machine's application default credentials"
 
 
 class _Live:
